@@ -111,17 +111,31 @@ export function testProbeMarkerOf(
 }
 
 /**
+ * The test probe's record of its base worktree (ADR-0039): the repository
+ * it is registered in, and the untracked paths its setup left. Written
+ * before the worktree is made and removed only after git's registration of
+ * it is gone, so a cleanup a dying worker cut short is found and finished
+ * by the next one, even with the directory already gone.
+ */
+export function testProbeBaseRecordOf(runRoot: string): string {
+  return join(runRoot, 'test-probe', 'base.json')
+}
+
+/**
  * The paths of a finished repository run that may be removed, and nothing
  * else of the run: its git worktrees (the agent's, then the test probe's
- * base) and its other directories (the review snapshots).
+ * base), its other directories (the review snapshots), and the files that
+ * go only after the worktrees (the base's record).
  */
 export function removableRunPathsOf(runRoot: string): {
   worktrees: string[]
   dirs: string[]
+  files: string[]
 } {
   return {
     worktrees: [repoWorkdirOf(runRoot), baseWorkdirOf(runRoot)],
     dirs: [reviewSnapshotsDirOf(runRoot)],
+    files: [testProbeBaseRecordOf(runRoot)],
   }
 }
 

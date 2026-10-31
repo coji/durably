@@ -69,6 +69,7 @@ import { fixProfile } from '../src/factory/job.js'
 import {
   archiveMarkerOf,
   reviewSnapshotsDirOf,
+  testProbeBaseRecordOf,
   testProbeMarkerOf,
 } from '../src/factory/layout.js'
 import { codePrompt, REVIEW_STATUS_COMPLETE } from '../src/factory/prompts.js'
@@ -85,6 +86,7 @@ import {
 import {
   probeTargets,
   runTestProbe,
+  testProbeOutcomeOf,
   testProbeText,
 } from '../src/factory/test-probe.js'
 import {
@@ -6166,6 +6168,132 @@ describe('the test probe', { timeout: 300000 }, () => {
     await assert.rejects(made)
     assert.equal(existsSync(base), false)
     assert.equal(await baseRegistered(repo), false)
+  })
+
+  it("keeps what setup wrote in the base worktree and removes what an earlier candidate's tests wrote", async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-test-probe-setup-'))
+    const repo = await seedRepo(root)
+    const runRoot = join(root, 'state', 'runs', 'run-1')
+    const base = join(runRoot, 'base-work')
+    // Fixtures setup generates and no .gitignore covers.
+    const setup = [
+      "const fs = require('node:fs')",
+      "fs.mkdirSync('fixtures', { recursive: true })",
+      "fs.writeFileSync('fixtures/data.txt', 'd')",
+      "fs.mkdirSync('gen', { recursive: true })",
+      "fs.writeFileSync('gen/a.txt', 'a')",
+    ].join('\n')
+    // Passes only with the fixture, says whether an earlier run left its
+    // output, then leaves some, also in a directory setup made.
+    const reader = [
+      "const fs = require('node:fs')",
+      "console.log(`left=${fs.existsSync('probe-out.txt')} extra=${fs.existsSync('gen/extra.txt')} out=${fs.existsSync('out')}`)",
+      "fs.writeFileSync('probe-out.txt', 'x')",
+      "fs.mkdirSync('out/deep', { recursive: true })",
+      "fs.writeFileSync('out/deep/f', 'x')",
+      "fs.writeFileSync('gen/extra.txt', 'x')",
+      "process.exit(fs.existsSync('fixtures/data.txt') ? 0 : 1)",
+    ].join('\n')
+    const config = await prepareRepoTarget({
+      repoPath: repo,
+      baseRef: 'HEAD',
+      branch: `factory/probe-${randomUUID()}`,
+      root: runRoot,
+      task: 'x',
+      spec: null,
+      dispositions: null,
+      issue: null,
+      checkCommand: ['node', '--test'],
+      setupCommand: ['node', '-e', setup],
+      testProbe: [
+        {
+          glob: 'test/**/*.test.js',
+          command: ['node', '-e', reader, '{files}'],
+        },
+      ],
+      checkTimeoutMs: 10000,
+      publish: false,
+      commit: DEFAULT_COMMIT_SETTINGS,
+    })
+    const target = createTarget(config)
+    const seal = (iteration: number) =>
+      target.seal({
+        iteration,
+        runId: 'run-1',
+        attemptId: 'a',
+        signal: new AbortController().signal,
+      })
+    const probe = (candidate: Awaited<ReturnType<typeof seal>>) =>
+      runTestProbe({
+        config,
+        candidate,
+        runRoot,
+        assertIntact: () => target.assertIntact(candidate),
+        signal: new AbortController().signal,
+      })
+    const clean = 'left=false extra=false out=false'
+    await writeFile(join(config.workdir, 'test', 'a.test.js'), '// one\n')
+    const first = await seal(1)
+    const one = await probe(first)
+    assert.equal(testProbeOutcomeOf(one.files[0]!), 'passed-on-both')
+    assert.equal(one.files[0]?.baseOutputTail, clean)
+    assert.equal(existsSync(join(base, 'probe-out.txt')), true)
+
+    await writeFile(join(config.workdir, 'test', 'a.test.js'), '// two\n')
+    const second = await seal(2)
+    const two = await probe(second)
+    assert.equal(testProbeOutcomeOf(two.files[0]!), 'passed-on-both')
+    // The first candidate's output was gone before the second's ran, and
+    // setup's files stayed.
+    assert.equal(two.files[0]?.baseOutputTail, clean)
+    assert.equal(existsSync(join(base, 'fixtures', 'data.txt')), true)
+    assert.equal(existsSync(join(base, 'gen', 'a.txt')), true)
+
+    // A base whose record does not name setup's files, as one set up before
+    // the record did, is made again, and recorded.
+    const record = testProbeBaseRecordOf(runRoot)
+    await writeFile(record, `${JSON.stringify({ repoPath: repo })}\n`)
+    await writeFile(join(config.workdir, 'test', 'a.test.js'), '// three\n')
+    const third = await seal(3)
+    const three = await probe(third)
+    assert.equal(testProbeOutcomeOf(three.files[0]!), 'passed-on-both')
+    assert.equal(three.files[0]?.baseOutputTail, clean)
+    assert.deepEqual(
+      (
+        JSON.parse(await readFile(record, 'utf8')) as {
+          setupUntracked: string[]
+        }
+      ).setupUntracked.sort(),
+      ['fixtures/data.txt', 'gen/a.txt'],
+    )
+    await target.assertIntact(third)
+  })
+
+  it('prunes the registration of a base worktree whose directory a dying worker had already removed, also of a run no longer recorded', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-test-probe-stale-'))
+    const repo = await seedRepo(root)
+    const stateRoot = join(root, 'state')
+    const runRoot = join(stateRoot, 'runs', 'gone-run')
+    const base = join(runRoot, 'base-work')
+    await prepareTestProbeBase({
+      repo,
+      root: runRoot,
+      baseCommit: await resolveCommit(repo, 'HEAD'),
+      setupCommand: null,
+    })
+    // The directory went, and the worker died before the registration did.
+    await rm(base, { recursive: true, force: true })
+    assert.equal(await baseRegistered(repo), true)
+    const durably = createAgentDurably({ stateRoot })
+    await durably.migrate()
+    try {
+      assert.deepEqual(await sweepRunScratch(durably), ['gone-run'])
+      assert.equal(await baseRegistered(repo), false)
+      assert.equal(existsSync(testProbeBaseRecordOf(runRoot)), false)
+      assert.deepEqual(await sweepRunScratch(durably), [])
+    } finally {
+      await durably.db.destroy()
+    }
   })
 
   it('puts back a candidate a worker left mid-probe, and runs the probe again', async () => {

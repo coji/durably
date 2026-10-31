@@ -22,8 +22,13 @@ import {
   baseWorkdirOf,
   reviewSnapshotsDirOf,
   runRootOf,
+  testProbeBaseRecordOf,
 } from './factory/layout.js'
-import { removeQuietly, removeTestProbeBase } from './targets/repo.js'
+import {
+  readTestProbeBaseRecord,
+  removeQuietly,
+  removeTestProbeBase,
+} from './targets/repo.js'
 
 /**
  * Where the database and every run's data live: outside both the durably
@@ -313,9 +318,12 @@ async function repoPathOf(
 /**
  * Remove what only a running run reads, for a run that has ended: its
  * review snapshots, and the test probe's base worktree with git's
- * registration of it. The base's path follows from the run's directory, and
- * the repository it is registered in from the run's own record; without
- * one, only the directory goes. Never throws.
+ * registration of it and its record. The base's path follows from the
+ * run's directory, and the repository it is registered in from its record
+ * (`testProbeBaseRecordOf`), or else from the run's own; a record left
+ * without its directory, by a worker that died while removing it, still
+ * has its registration pruned. Without either, only the directory goes.
+ * Never throws.
  */
 async function removeRunScratch(
   durably: RunRecords,
@@ -325,10 +333,16 @@ async function removeRunScratch(
   const runRoot = runRootOf(stateRoot, runId)
   await removeQuietly(reviewSnapshotsDirOf(runRoot))
   const base = baseWorkdirOf(runRoot)
-  if (!existsSync(base)) return
-  const repoPath = await repoPathOf(durably, runId).catch(() => null)
+  if (!existsSync(base) && !existsSync(testProbeBaseRecordOf(runRoot))) return
+  const repoPath =
+    (await readTestProbeBaseRecord(runRoot))?.repoPath ??
+    (await repoPathOf(durably, runId).catch(() => null))
   if (repoPath) await removeTestProbeBase(repoPath, base)
-  else await removeQuietly(base)
+  else
+    await Promise.all([
+      removeQuietly(base),
+      removeQuietly(testProbeBaseRecordOf(runRoot)),
+    ])
 }
 
 /**
@@ -339,9 +353,9 @@ async function removeRunScratch(
  * an ended run will run again to remove them. A run that may still run
  * keeps its own. The runs are those under the instance's own state root.
  * Only a run directory that still has a `review-snapshots` or `base-work`
- * entry is looked up, so the cost is two existence checks per retained run
- * and one lookup per run with either. Returns the runs whose leftovers were
- * removed.
+ * entry, or the base's record, is looked up, so the cost is three existence
+ * checks per retained run and one lookup per run with any. Returns the runs
+ * whose leftovers were removed.
  */
 export async function sweepRunScratch(
   durably: AgentLoopDurably,
@@ -358,7 +372,8 @@ export async function sweepRunScratch(
     const runRoot = runRootOf(stateRoot, runId)
     if (
       !existsSync(reviewSnapshotsDirOf(runRoot)) &&
-      !existsSync(baseWorkdirOf(runRoot))
+      !existsSync(baseWorkdirOf(runRoot)) &&
+      !existsSync(testProbeBaseRecordOf(runRoot))
     )
       continue
     const run = await durably.getRun(runId)

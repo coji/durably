@@ -77,6 +77,7 @@ import {
   reviewWorkdirOf,
   specReviewWorkdirOf,
   stageContextDirOf,
+  testProbeBaseRecordOf,
   worktreeRetiredMarkerOf,
 } from '../factory/layout.js'
 import { changedPathsLine, trustedContextLines } from '../factory/prompts.js'
@@ -940,21 +941,71 @@ export async function removeRunWorktree(
     const warning = await forceRemoveWorktree(repoPath, dir)
     if (warning) warnings.push(`${dir}: ${warning}`)
   }
+  await Promise.all(paths.files.map(removeQuietly))
   return warnings
 }
 
+/** What `testProbeBaseRecordOf` holds. */
+export interface TestProbeBaseRecord {
+  /** The repository the base worktree is registered in. */
+  repoPath: string
+  /**
+   * The untracked paths `.gitignore` does not cover that its setup left
+   * (`untrackedPaths`), which the probe keeps when it puts the base back.
+   * Absent until setup has succeeded.
+   */
+  setupUntracked?: string[]
+}
+
+/** The base worktree's record of the run at `runRoot`, or null. */
+export async function readTestProbeBaseRecord(
+  runRoot: string,
+): Promise<TestProbeBaseRecord | null> {
+  try {
+    const record = JSON.parse(
+      await readFile(testProbeBaseRecordOf(runRoot), 'utf8'),
+    ) as Partial<TestProbeBaseRecord> | null
+    if (typeof record?.repoPath !== 'string') return null
+    return {
+      repoPath: record.repoPath,
+      ...(Array.isArray(record.setupUntracked)
+        ? { setupUntracked: record.setupUntracked.map(String) }
+        : {}),
+    }
+  } catch {
+    return null
+  }
+}
+
+/** Write the base worktree's record of the run at `runRoot`. */
+export async function writeTestProbeBaseRecord(
+  runRoot: string,
+  record: TestProbeBaseRecord,
+): Promise<void> {
+  const file = testProbeBaseRecordOf(runRoot)
+  await mkdir(dirname(file), { recursive: true })
+  await writeFile(file, `${JSON.stringify(record)}\n`)
+}
+
 /**
- * Remove the test probe's base worktree and prune git's registration of it.
- * It holds nothing anyone works in, so its directory is removed outright,
- * whether or not git still has it registered. Asking again does nothing,
- * and it never throws.
+ * Remove the test probe's base worktree, git's registration of it, and
+ * then its record (`testProbeBaseRecordOf`), from the run directory `dir`
+ * is in. `git worktree remove` takes the registration with the directory;
+ * a directory git refuses, or never registered, is then removed outright,
+ * since it holds nothing anyone works in, and pruned again. The record goes
+ * last, so a worker that dies midway leaves it for the next cleanup to
+ * find. Asking again does nothing, and it never throws.
  */
 export async function removeTestProbeBase(
   repoPath: string,
   dir: string,
 ): Promise<void> {
-  await removeQuietly(dir)
   await forceRemoveWorktree(repoPath, dir)
+  if (existsSync(dir)) {
+    await removeQuietly(dir)
+    await forceRemoveWorktree(repoPath, dir)
+  }
+  await removeQuietly(testProbeBaseRecordOf(dirname(dir)))
 }
 
 /** Remove a directory, ignoring every failure; for best-effort cleanup. */

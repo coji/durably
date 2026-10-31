@@ -16,6 +16,7 @@ import {
   discardWorktree,
   repoRoot,
   resolveCommit,
+  untrackedPaths,
 } from '../engine/git.js'
 import { baseWorkdirOf, repoWorkdirOf } from '../factory/layout.js'
 import type {
@@ -26,7 +27,11 @@ import type {
   TestProbeBase,
 } from '../factory/target.js'
 import type { TestProbeRule } from '../factory/types.js'
-import { RepoTarget, removeTestProbeBase } from './repo.js'
+import {
+  RepoTarget,
+  removeTestProbeBase,
+  writeTestProbeBaseRecord,
+} from './repo.js'
 import { SubjectTarget } from './subject.js'
 
 export { prepareSubjectTarget } from './subject.js'
@@ -166,10 +171,14 @@ async function runSetupCommand(
  * under the run's directory, set up with the same `setupCommand` as the
  * agent's. Whatever an earlier attempt left there is discarded first, so a
  * setup that runs again, or a probe that finds the worktree gone, starts
- * clean. A worktree that cannot be made or set up is removed again and its
- * reason returned: the probe records it, and nothing stops the run. A cancel
- * or a lost lease still throws, after removing what was made of it, since
- * no step will run again to remove it.
+ * clean. Its record (`testProbeBaseRecordOf`) names the repository before
+ * the worktree is made, and once setup has succeeded the untracked files
+ * setup left, which the probe keeps when it puts the base back. A worktree
+ * that cannot be made or set up is removed again and its reason returned:
+ * the probe records it, and nothing stops the run. A cancel or a lost lease
+ * still throws, after removing what was made of it: a cancelled run never
+ * runs a step again, and a run whose lease was lost makes the base again
+ * when its setup or a probe runs again.
  */
 export async function prepareTestProbeBase(args: {
   repo: string
@@ -181,6 +190,7 @@ export async function prepareTestProbeBase(args: {
 }): Promise<TestProbeBase> {
   const workdir = baseWorkdirOf(args.root)
   await removeTestProbeBase(args.repo, workdir)
+  await writeTestProbeBaseRecord(args.root, { repoPath: args.repo })
   try {
     await addWorktree({
       repo: args.repo,
@@ -189,6 +199,10 @@ export async function prepareTestProbeBase(args: {
       ...(args.signal ? { signal: args.signal } : {}),
     })
     await runSetupCommand(args.setupCommand, workdir, args.signal)
+    await writeTestProbeBaseRecord(args.root, {
+      repoPath: args.repo,
+      setupUntracked: await untrackedPaths(workdir, args.signal),
+    })
     return { workdir, setupFailure: null }
   } catch (error) {
     await removeTestProbeBase(args.repo, workdir)

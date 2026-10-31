@@ -495,6 +495,32 @@ export async function cleanUntracked(
   await git(cwd, ['clean', '-ffd'], signal ? { signal } : {})
 }
 
+/** The longest `untrackedPaths` listing read, in characters. */
+const UNTRACKED_LIST_CHARS = 10_000_000
+
+/**
+ * Every untracked path `.gitignore` does not cover, relative to `cwd`, a
+ * worktree's top: each file, and a nested repository as its directory with
+ * a trailing `/`. Throws when the listing is too long to read in full,
+ * since a cut one would leave some out.
+ */
+export async function untrackedPaths(
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const out = await git(
+    cwd,
+    ['ls-files', '--others', '--exclude-standard', '-z'],
+    {
+      maxOutputChars: UNTRACKED_LIST_CHARS,
+      ...(signal ? { signal } : {}),
+    },
+  )
+  if (out.length >= UNTRACKED_LIST_CHARS)
+    throw new Error(`too many untracked files in ${cwd} to list`)
+  return out.split('\0').filter(Boolean)
+}
+
 /**
  * Up to `limit` paths that `cleanUntracked` would remove, as `git clean`
  * itself reports them in a dry run. Using the same command keeps this check

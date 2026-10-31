@@ -1181,8 +1181,9 @@ reportの要約、`demo compare` の設定ごとの行、`demo compare --trend` 
 - setupでは、エージェントのworktreeと並べて、baseのcommitの切り離したworktree
   （`runs/<id>/base-work`）を作り、同じ `setup` を実行します。候補ごとにこの
   worktreeをbaseに戻し（前の候補のテストが書いた未追跡のファイルも消します。
-  `setup` が書いたファイルも、`.gitignore` に当たらないものは最初のprobeの前に
-  消えます）、
+  `setup` が終わった直後に残っていた未追跡のファイルは
+  `runs/<id>/test-probe/base.json` に記録してあり、それは消しません。`setup` が
+  作った `.gitignore` に当たらないfixtureも、候補側と同じようにbaseに残ります）、
   対象のテストファイルだけを候補から持ってきて実行します。候補側はエージェントの
   worktreeで同じファイルを実行します。テストが追跡中のファイルを書き換えても、
   新しいファイルを書いても、レビューの前に封印した内容に戻し（`.gitignore` に
@@ -1219,7 +1220,9 @@ reportの要約、`demo compare` の設定ごとの行、`demo compare --trend` 
   失敗）に、gitの登録も含めて消します。specや承認を人が決めるのを待つ間はrunが
   終わっていないので残し、待機のあとのprobeはそのまま使います。消えていれば
   作り直します。別のプロセスからのcancelもその場で消し、それと行き違って残った
-  ものはworkerの起動時に消します。`demo archive` と `demo prune --apply` も
+  ものはworkerの起動時に消します。gitの登録はディレクトリと一緒か先に消し、
+  `base.json` は最後に消すので、片付けの途中でworkerが止まっても、起動時の
+  片付けが `base.json` から登録の残りを見つけて消します。`demo archive` と `demo prune --apply` も
   worktreeと一緒に消します。
 - reportのJSON（`testProbes`）とMarkdown（「Test probe」節）には、候補ごとに
   対象のファイル数、baseで落ちた数、所要時間、実行できなかった理由が出ます。
