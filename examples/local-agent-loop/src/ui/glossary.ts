@@ -818,6 +818,14 @@ export const RECORD = {
    * check or its last reviews.
    */
   findingsFromParent: '修正元の実行の記録から作成',
+  /**
+   * The owner's confirmed context, as stored: every code, repair and
+   * review prompt was given exactly this.
+   */
+  contextContent:
+    '確定事項の内容（実装・修正・レビューに信頼できる情報として渡した内容）',
+  /** An input stored without the file it was read from. */
+  storedWithoutFile: 'ファイルからではなく本文で指定',
   notGiven: '指定なし',
   notes: '注記',
 } as const
@@ -833,6 +841,7 @@ export const INPUT_NAME = {
   task: 'タスク',
   spec: '仕様',
   dispositions: '指摘の扱い',
+  context: '確定事項',
   findings: '外部の指摘',
 } as const
 

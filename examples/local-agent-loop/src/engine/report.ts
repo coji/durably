@@ -16,6 +16,7 @@ import type { StepAttempt } from '@coji/durably'
 import { INTERRUPTED_CHECK } from './failure-details.js'
 import { retryText, type FailureClassification } from './failure-reasons.js'
 import { formatters } from './format.js'
+import { fencedText } from './markdown.js'
 import { PRICE_BASIS } from './pricing.js'
 import {
   NOT_SENT,
@@ -142,10 +143,26 @@ export type ReportFindings =
   | ReportInputFile
   | { parentRun: string; sha256: string }
 
+/**
+ * The owner's confirmed context as the run stored it: where it was read
+ * from (null when it was not read from a file), the content the prompts
+ * were given, and the SHA-256 of that content.
+ */
+export interface ReportContextFile {
+  path: string | null
+  sha256: string
+  content: string
+}
+
 export interface ReportInputs {
   task: ReportInputFile | null
   spec: ReportInputFile | null
   dispositions: ReportInputFile | null
+  /**
+   * Null on a run without one, and on a run stored before it existed;
+   * absent from a report built before it existed.
+   */
+  context?: ReportContextFile | null
   /** A repair run's outside findings; null on every other run. */
   findings: ReportFindings | null
 }
@@ -1664,13 +1681,21 @@ export function reportToMarkdown(r: LoopReport): string {
     const source = !file
       ? null
       : 'path' in file
-        ? file.path
+        ? (file.path ?? 'stored without a file')
         : `built from the stored record of run ${file.parentRun}`
     lines.push(
       `- ${name}: ${file ? `${file.sha256} (${source})` : 'not given'}`,
     )
   }
   lines.push('')
+  // Its path and hash are among the inputs above; here, what the prompts
+  // were given.
+  if (r.inputs.context) {
+    lines.push('## Owner context (trusted, as stored)')
+    lines.push('')
+    lines.push(...fencedText(r.inputs.context.content))
+    lines.push('')
+  }
   lines.push('## Repair runs (from outside findings)')
   lines.push('')
   const parent = r.lineage.parent

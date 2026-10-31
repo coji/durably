@@ -2683,6 +2683,11 @@ describe('repair', { timeout: 240000 }, () => {
       ['--findings-file', 'ok.md', '--dispositions-file', 'empty.md'],
       /--dispositions-file empty\.md: file is empty/,
     )
+    await writeFile(join(box.root, 'context.md'), 'x'.repeat(32 * 1024 + 1))
+    await refused(
+      ['--findings-file', 'ok.md', '--context-file', 'context.md'],
+      /--context-file context\.md: file is 32769 bytes; the limit is 32 KiB/,
+    )
     await refused(
       ['--findings-file', 'ok.md', '--reload-config'],
       /--reload-config is not accepted/,
@@ -2697,7 +2702,7 @@ describe('repair', { timeout: 240000 }, () => {
       await refused(
         ['--findings-file', 'ok.md', ...flag],
         new RegExp(
-          `repair takes only --run, --findings-file, --dispositions-file and --max-iterations; not accepted: ${flag[0]}\\.`,
+          `repair takes only --run, --findings-file, --dispositions-file, --context-file and --max-iterations; not accepted: ${flag[0]}\\.`,
         ),
       )
     await refused(
@@ -5150,5 +5155,386 @@ describe('auto-started worker', { timeout: 300000 }, () => {
       if (workerPid !== null) await reap(workerPid)
       await reapRootWorker(box.stateRoot)
     }
+  })
+})
+
+describe('--context-file', { timeout: 180000 }, () => {
+  /** A context whose Markdown would read as report headings and fences. */
+  const CONTEXT = [
+    '# Decisions',
+    '',
+    '## Settled',
+    '',
+    'mul() keeps its integer wiring; do not change it.',
+    '````',
+    'not the end of anything',
+    '````',
+    '',
+  ].join('\n')
+
+  it('stores the content and the path at trigger, and reads neither again', async () => {
+    const box = await sandbox({ check: CHECK })
+    await writeFile(join(box.root, 'context.md'), CONTEXT)
+    await writeFile(
+      join(box.root, 'dispositions.md'),
+      'mul() is out of scope\n',
+    )
+    const runId = await trigger(box, [
+      '--repo',
+      box.repo,
+      '--task',
+      'Fix add()',
+      '--dispositions-file',
+      'dispositions.md',
+      '--context-file',
+      'context.md',
+    ])
+    await writeFile(join(box.root, 'context.md'), 'DIFFERENT CONTEXT\n')
+    await rm(join(box.root, 'dispositions.md'))
+
+    const input = (await inputOf(box, runId)) as RunInput & {
+      target: { context?: string | null }
+    }
+    assert.equal(input.target.context, CONTEXT)
+    assert.deepEqual(input.target.inputFiles['context'], {
+      path: join(realpathSync(box.root), 'context.md'),
+    })
+    // Dispositions stay as they were: their own input, not the context.
+    assert.equal(input.target.dispositions, 'mul() is out of scope\n')
+
+    // The report shows the stored content, its path and its hash, the
+    // Markdown fenced past every backtick run in it.
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    try {
+      await durably.migrate()
+      const report = await buildReport(durably, runId)
+      assert.deepEqual(report.inputs.context, {
+        path: join(realpathSync(box.root), 'context.md'),
+        sha256: sha256(CONTEXT),
+        content: CONTEXT,
+      })
+      assert.ok(reportToJson(report).includes(sha256(CONTEXT)))
+      const markdown = reportToMarkdown(report)
+      assert.ok(!markdown.includes('DIFFERENT'))
+      // Its path and hash once, among the inputs; its content in a section
+      // of its own.
+      assert.ok(
+        markdown.includes(
+          `- context: ${sha256(CONTEXT)} (${join(realpathSync(box.root), 'context.md')})`,
+        ),
+      )
+      assert.equal(markdown.split(sha256(CONTEXT)).length, 2)
+      const section = markdown.split('## Owner context (trusted, as stored)')[1]
+      // Five backticks: one more than the longest run in the content.
+      assert.ok(
+        section?.includes(`\n\`\`\`\`\`\n${CONTEXT.trimEnd()}\n\`\`\`\`\`\n`),
+      )
+      // Its headings appear only inside that fence, so none is the report's.
+      assert.equal(markdown.split('\n## Settled\n').length, 2)
+    } finally {
+      await durably.db.destroy()
+    }
+  })
+
+  it('reports a run without a context, and one stored before it existed', async () => {
+    const box = await sandbox({ check: CHECK })
+    const runId = await trigger(box, ['--repo', box.repo, '--task', 'Fix'])
+    const input = await inputOf(box, runId)
+    assert.equal((input.target as { context?: unknown }).context, null)
+    // A run stored before the context existed has neither field.
+    const db = new Database(dbPath(box.stateRoot))
+    try {
+      const older = structuredClone(input) as RunInput & {
+        target: { context?: unknown }
+      }
+      delete older.target.context
+      delete older.target.inputFiles['context']
+      db.prepare('UPDATE durably_runs SET input = ? WHERE id = ?').run(
+        JSON.stringify(older),
+        runId,
+      )
+    } finally {
+      db.close()
+    }
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    try {
+      await durably.migrate()
+      const report = await buildReport(durably, runId)
+      assert.equal(report.inputs.context, null)
+      const markdown = reportToMarkdown(report)
+      assert.match(markdown, /\n- context: not given\n/)
+      assert.ok(!markdown.includes('## Owner context'))
+    } finally {
+      await durably.db.destroy()
+    }
+  })
+
+  it('reports a context stored without the file it was read from', async () => {
+    const box = await sandbox({ check: CHECK })
+    const runId = await trigger(box, ['--repo', box.repo, '--task', 'Fix'])
+    const input = (await inputOf(box, runId)) as RunInput & {
+      target: { context?: unknown }
+    }
+    // As a run triggered through the API, not the CLI, may store it.
+    input.target.context = CONTEXT
+    delete input.target.inputFiles['context']
+    const db = new Database(dbPath(box.stateRoot))
+    try {
+      db.prepare('UPDATE durably_runs SET input = ? WHERE id = ?').run(
+        JSON.stringify(input),
+        runId,
+      )
+    } finally {
+      db.close()
+    }
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    try {
+      await durably.migrate()
+      const report = await buildReport(durably, runId)
+      assert.deepEqual(report.inputs.context, {
+        path: null,
+        sha256: sha256(CONTEXT),
+        content: CONTEXT,
+      })
+      const markdown = reportToMarkdown(report)
+      assert.ok(
+        markdown.includes(
+          `- context: ${sha256(CONTEXT)} (stored without a file)`,
+        ),
+      )
+      assert.ok(markdown.includes('## Owner context (trusted, as stored)'))
+    } finally {
+      await durably.db.destroy()
+    }
+  })
+
+  it('accepts 32 KiB and refuses more, an empty file or one not UTF-8, before the run exists', async () => {
+    const box = await sandbox({ check: CHECK })
+    await writeFile(join(box.root, 'edge.md'), 'x'.repeat(32 * 1024))
+    await writeFile(join(box.root, 'big.md'), 'x'.repeat(32 * 1024 + 1))
+    await writeFile(join(box.root, 'empty.md'), ' \n\t\n')
+    await writeFile(join(box.root, 'bad.md'), Buffer.from([0x66, 0xff, 0xfe]))
+    const base = ['--repo', box.repo, '--task', 'x', '--context-file']
+    await rejected(
+      box,
+      [...base, 'big.md'],
+      /--context-file big\.md: file is 32769 bytes; the limit is 32 KiB/,
+    )
+    await rejected(
+      box,
+      [...base, 'empty.md'],
+      /--context-file empty\.md: file is empty/,
+    )
+    await rejected(
+      box,
+      [...base, 'bad.md'],
+      /--context-file bad\.md: not UTF-8 text/,
+    )
+    await rejected(
+      box,
+      [...base, 'gone.md'],
+      /--context-file gone\.md: cannot read file/,
+    )
+    await rejected(
+      box,
+      ['--context-file', 'edge.md'],
+      /--context-file needs --repo <path>/,
+    )
+    const runId = await trigger(box, [...base, 'edge.md'])
+    const input = await inputOf(box, runId)
+    assert.equal(
+      (input.target as { context?: string }).context,
+      'x'.repeat(32 * 1024),
+    )
+  })
+
+  it('refuses a stored context over 32 KiB, counted in UTF-8 bytes', async () => {
+    const durably = createAgentDurably({
+      stateRoot: await mkdtemp(join(tmpdir(), 'context-schema-')),
+    })
+    await durably.migrate()
+    const target = (context: string) => ({
+      provider: 'fake' as const,
+      target: {
+        kind: 'repo' as const,
+        repoPath: '/repo',
+        baseRef: 'HEAD',
+        task: 'task',
+        spec: null,
+        dispositions: null,
+        context,
+        inputFiles: { task: null, spec: null, dispositions: null },
+        issue: null,
+        checkCommand: ['true'],
+        setupCommand: null,
+        publish: false,
+      },
+      maxIterations: 1,
+      context: 'reuse' as const,
+      checkTimeoutMs: 120000,
+      agentTimeoutMs: 600000,
+      codexPath: null,
+    })
+    try {
+      // 10,923 three-byte characters: fewer than 32,768 code units, more
+      // than 32,768 bytes.
+      await assert.rejects(
+        durably.jobs.agentLoop.trigger(target('あ'.repeat(10923))),
+        /the context is 32769 bytes; the limit is 32 KiB/,
+      )
+      // Nor a blank one, which `--context-file` refuses too.
+      await assert.rejects(
+        durably.jobs.agentLoop.trigger(target(' \n\t')),
+        /the context is empty/,
+      )
+      await durably.jobs.agentLoop.trigger(target('あ'.repeat(10922)))
+    } finally {
+      await durably.db.destroy()
+    }
+  })
+
+  it('checks a repair run context file like trigger does', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'context-repair-'))
+    await writeFile(join(root, 'big.md'), 'x'.repeat(32 * 1024 + 1))
+    await writeFile(join(root, 'ok.md'), CONTEXT)
+    await assert.rejects(
+      readRepairFiles({ run: 'p', 'context-file': join(root, 'big.md') }),
+      /--context-file .*big\.md: file is 32769 bytes; the limit is 32 KiB/,
+    )
+    const files = await readRepairFiles({
+      run: 'p',
+      'context-file': join(root, 'ok.md'),
+    })
+    assert.deepEqual(files.context, {
+      content: CONTEXT,
+      ref: { path: join(root, 'ok.md') },
+    })
+    assert.equal((await readRepairFiles({ run: 'p' })).context, null)
+  })
+
+  it("inherits the parent's context, replaces it when given, and names its content in the child's identity", () => {
+    const commit = 'a'.repeat(40)
+    const profile = (role: string) => ({
+      id: `fake:provider-default:provider-default:${role}`,
+      provider: 'fake',
+      requestedModel: null,
+      requestedEffort: null,
+      effectiveModel: null,
+      effectiveEffort: null,
+    })
+    const parent = (context: string | null) => ({
+      id: 'p',
+      status: 'completed',
+      input: {
+        provider: 'fake',
+        target: {
+          kind: 'repo',
+          inputFiles: {
+            task: null,
+            spec: null,
+            dispositions: null,
+            ...(context ? { context: { path: '/parent-context.md' } } : {}),
+          },
+        },
+      },
+      output: {
+        approved: true,
+        conclusion: 'approved',
+        candidate: { commit, branch: 'factory/p' },
+        delivery: { commit },
+      },
+    })
+    const setup = (context: string | null) => ({
+      contextMode: 'reuse',
+      maxIterations: 1,
+      agentTimeoutMs: 600000,
+      autoApprove: true,
+      profiles: {
+        code: profile('code'),
+        correctness: profile('correctness'),
+        'edge-cases': profile('edge-cases'),
+      },
+      target: {
+        kind: 'repo',
+        repoPath: '/repo',
+        task: 'task',
+        spec: null,
+        dispositions: 'DISPOSITIONS',
+        // A parent set up before the context existed has no field.
+        ...(context !== null ? { context } : {}),
+        issue: null,
+        checkCommand: ['true'],
+        setupCommand: null,
+        checkTimeoutMs: 120000,
+        publish: false,
+      },
+    })
+    const findings = { content: 'FINDING\n', ref: { path: '/f.md' } }
+    const repair = (
+      parentContext: string | null,
+      context?: { content: string; path: string },
+    ) =>
+      buildRepairInput(parent(parentContext), setup(parentContext), {
+        findings,
+        dispositions: null,
+        ...(context
+          ? {
+              context: {
+                content: context.content,
+                ref: { path: context.path },
+              },
+            }
+          : {}),
+      })
+
+    // Inherited, content and path both.
+    const inherited = repair('PARENT CONTEXT')
+    assert.equal(inherited.input.target.context, 'PARENT CONTEXT')
+    assert.deepEqual(inherited.input.target.inputFiles.context, {
+      path: '/parent-context.md',
+    })
+    // Dispositions are inherited on their own, as before.
+    assert.equal(inherited.input.target.dispositions, 'DISPOSITIONS')
+    // Replaced, content and path both.
+    const replaced = repair('PARENT CONTEXT', {
+      content: 'CHILD CONTEXT',
+      path: '/child.md',
+    })
+    assert.equal(replaced.input.target.context, 'CHILD CONTEXT')
+    assert.deepEqual(replaced.input.target.inputFiles.context, {
+      path: '/child.md',
+    })
+    assert.notEqual(replaced.idempotencyKey, inherited.idempotencyKey)
+    // The same content from another path is the same child; given or
+    // inherited, the same content is the same child too.
+    assert.equal(
+      repair('PARENT CONTEXT', {
+        content: 'CHILD CONTEXT',
+        path: '/elsewhere.md',
+      }).idempotencyKey,
+      replaced.idempotencyKey,
+    )
+    assert.equal(
+      repair('PARENT CONTEXT', {
+        content: 'PARENT CONTEXT',
+        path: '/again.md',
+      }).idempotencyKey,
+      inherited.idempotencyKey,
+    )
+    assert.ok(
+      inherited.idempotencyKey.endsWith(`-context-${sha256('PARENT CONTEXT')}`),
+    )
+    // Without a context, the key is the one a child got before it existed.
+    const none = repair(null)
+    assert.equal(none.input.target.context, null)
+    assert.equal(none.input.target.inputFiles.context, null)
+    assert.equal(
+      none.idempotencyKey,
+      `repair-of-p-findings-${sha256('FINDING\n')}-dispositions-${sha256('DISPOSITIONS')}`,
+    )
+    assert.notEqual(
+      repair(null, { content: 'NEW', path: '/new.md' }).idempotencyKey,
+      none.idempotencyKey,
+    )
   })
 })

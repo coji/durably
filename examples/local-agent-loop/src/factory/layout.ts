@@ -66,6 +66,16 @@ export function agentLogsDirBeside(checkpointsDir: string): string {
 }
 
 /**
+ * The factory's own copy of each stage result registered as trusted
+ * context, one `<name>.txt` per result, written from the stored content
+ * before each review round. Outside the worktree, so the implementer never
+ * reaches it, and kept with the run.
+ */
+export function stageContextDirOf(runRoot: string): string {
+  return join(runRoot, 'stage-context')
+}
+
+/**
  * The paths of a finished repository run that may be removed, and nothing
  * else of the run: its worktree and its review snapshots.
  */

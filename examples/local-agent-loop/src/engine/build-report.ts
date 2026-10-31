@@ -92,6 +92,7 @@ interface PersistedInput {
     spec?: string | null
     checkFromSpec?: string[] | null
     dispositions?: string | null
+    context?: string | null
     inputFiles?: Record<string, { path?: string } | null>
   }
   repairOf?: {
@@ -941,10 +942,22 @@ function inputHashes(input: PersistedInput | null): ReportInputs {
     const path = target?.inputFiles?.[name]?.path
     return hashed(path ? { path } : null, target?.[name])
   }
+  // From the stored content, with or without the file it was read from, and
+  // the content too: it is trusted and short, so the report shows exactly
+  // what the prompts were given.
+  const context = target?.context
   return {
     task: entry('task'),
     spec: entry('spec'),
     dispositions: entry('dispositions'),
+    context:
+      typeof context === 'string'
+        ? {
+            path: target?.inputFiles?.context?.path ?? null,
+            sha256: createHash('sha256').update(context).digest('hex'),
+            content: context,
+          }
+        : null,
     findings: findingsHash(input),
   }
 }

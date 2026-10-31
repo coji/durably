@@ -9,7 +9,7 @@
  */
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, readdirSync } from 'node:fs'
 import {
   chmod,
@@ -55,17 +55,32 @@ import {
   type FakeScenario,
   recordFakeReviewCalls,
 } from '../src/engine/providers/fake.js'
-import { READ_ONLY_ROLES } from '../src/engine/providers/types.js'
+import { createProvider } from '../src/engine/providers/index.js'
+import {
+  type AgentCallOptions,
+  type AgentProvider,
+  READ_ONLY_ROLES,
+} from '../src/engine/providers/types.js'
 import { reportToJson, reportToMarkdown } from '../src/engine/report.js'
 import { checkpointPaths } from '../src/engine/runner.js'
 import { diagnose, diagnosisLines, PRUNE_APPLY } from '../src/engine/status.js'
 import { fixProfile } from '../src/factory/job.js'
-import { archiveMarkerOf } from '../src/factory/layout.js'
+import { archiveMarkerOf, reviewSnapshotsDirOf } from '../src/factory/layout.js'
 import { codePrompt, REVIEW_STATUS_COMPLETE } from '../src/factory/prompts.js'
 import { repairLabels } from '../src/factory/repair.js'
-import { specAdviceText } from '../src/factory/stages.js'
-import { BASELINE_STEP, type FactorySetup } from '../src/factory/types.js'
-import { createTarget } from '../src/targets/index.js'
+import {
+  readStageContextFile,
+  reviewStage,
+  specAdviceText,
+  withStageContext,
+} from '../src/factory/stages.js'
+import { DEFAULT_COMMIT_SETTINGS } from '../src/factory/target.js'
+import {
+  BASELINE_STEP,
+  initialState,
+  type FactorySetup,
+} from '../src/factory/types.js'
+import { createTarget, prepareRepoTarget } from '../src/targets/index.js'
 import { assertCandidateUnmoved, extractCommit } from '../src/targets/repo.js'
 import {
   buildRepairInput,
@@ -3417,7 +3432,7 @@ describe('configured reviewers', { timeout: 240000 }, () => {
         call.localInstructionsAtStart?.content ?? '',
         /independent correctness reviewer/,
       )
-      assert.doesNotMatch(call.localInstructionsAtStart?.content ?? '', /owner/)
+      assert.ok(!(call.localInstructionsAtStart?.content ?? '').includes(own))
 
       // Cancelled mid-call: nothing the review used is left.
       process.env.FAKE_REVIEW_SLOW_MS = '60000'
@@ -4954,3 +4969,362 @@ describe(
     })
   },
 )
+
+describe('owner context and stage context', { timeout: 240000 }, () => {
+  afterEach(() => {
+    recording?.stop()
+    recording = null
+  })
+
+  const CONTEXT =
+    'OWNER-CONTEXT: mul() keeps its integer wiring; do not change it.\n'
+  const DISPOSITIONS = 'DISPOSITIONS-BODY: the rounding finding was accepted.'
+
+  /** The text between a trusted block's fences, or null. */
+  const trustedBody = (text: string, label: string) =>
+    new RegExp(
+      `<<<TRUSTED ${label} ([0-9a-f]{16})>>>\\n([\\s\\S]*?)\\n<<<END TRUSTED ${label} \\1>>>`,
+    ).exec(text)?.[2] ?? null
+
+  it('hands the stored context to the repairer and to a command and a local-instructions reviewer as trusted, and reports it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-owner-context-'))
+    const repo = await seedRepo(root)
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    recording = recordFakeReviewCalls()
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      // The first implementation fails the check, so a repair follows.
+      const input = configuredRun(
+        repo,
+        {
+          correctness: {
+            command: '/code-review {base}..{head}',
+            context: 'prompt',
+            output: 'verdict',
+          },
+          'edge-cases': {
+            command: null,
+            context: 'local-instructions',
+            output: 'verdict',
+          },
+        },
+        { fakeScenario: { failIterations: 1 } },
+      )
+      const run = await durably.jobs.agentLoop.trigger({
+        ...input,
+        target: {
+          ...input.target,
+          dispositions: DISPOSITIONS,
+          context: CONTEXT,
+          inputFiles: { ...NO_FILES, context: { path: '/owner/context.md' } },
+        },
+      })
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'completed',
+        150000,
+        'run with a context completes',
+      )
+      const output = (await durably.getRun(run.id))?.output as {
+        conclusion: string
+        iterations: number
+        workdir: string
+      }
+      assert.equal(output.conclusion, 'approved')
+      assert.equal(output.iterations, 2)
+      const calls = endedCalls(output.workdir)
+
+      // The repairer: a trusted section of its own, apart from the data,
+      // and never the dispositions.
+      const repair = calls.find((c) => c.role === 'repair')?.input ?? ''
+      assert.match(repair, /OWNER CONTEXT \(trusted\):/)
+      assert.equal(trustedBody(repair, 'OWNER_CONTEXT'), CONTEXT)
+      assert.ok(
+        repair.indexOf('OWNER CONTEXT (trusted):') <
+          repair.indexOf('UNTRUSTED INPUT DATA:'),
+      )
+      assert.ok(!repair.includes(DISPOSITIONS))
+
+      // Both reviewers, a command given the prompt and local instructions,
+      // read the same block in the TRUSTED CONTEXT; the dispositions stay
+      // their untrusted data.
+      const reviews = [
+        calls.find((c) => c.role === 'review-a')?.input ?? '',
+        calls.find((c) => c.role === 'review-b')?.localInstructionsAtStart
+          ?.content ?? '',
+      ]
+      for (const text of reviews) {
+        assert.match(
+          text,
+          /TRUSTED CONTEXT \(produced by the factory or confirmed by the run's owner, not by the implementer\):/,
+        )
+        assert.equal(trustedBody(text, 'OWNER_CONTEXT'), CONTEXT)
+        assert.ok(
+          text.indexOf(CONTEXT.trimEnd()) <
+            text.indexOf('UNTRUSTED INPUT DATA:'),
+        )
+        assert.match(
+          text,
+          /<<<UNTRUSTED DISPOSITIONS [0-9a-f]{16}>>>\nDISPOSITIONS-BODY/,
+        )
+      }
+
+      // The report shows the stored content, its path and its hash.
+      const report = await buildReport(durably, run.id)
+      const sha256 = createHash('sha256').update(CONTEXT).digest('hex')
+      assert.deepEqual(report.inputs.context, {
+        path: '/owner/context.md',
+        sha256,
+        content: CONTEXT,
+      })
+      assert.ok(reportToJson(report).includes(sha256))
+      assert.ok(
+        reportToMarkdown(report).includes(
+          `- context: ${sha256} (/owner/context.md)`,
+        ),
+      )
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
+  it("hands a stage's settled file to Codex, Claude and command reviewers as trusted and readable, whatever becomes of the original", async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-stage-context-'))
+    const repo = await seedRepo(root)
+    const runRoot = join(root, 'state', 'runs', 'run-1')
+    const prepared = await prepareRepoTarget({
+      repoPath: repo,
+      baseRef: 'HEAD',
+      branch: 'factory/stage-context',
+      root: runRoot,
+      task: 'Fix add() so decimal inputs are not truncated.',
+      spec: null,
+      dispositions: null,
+      context: CONTEXT,
+      issue: null,
+      checkCommand: ['node', '--test', 'test/**/*.test.js'],
+      setupCommand: null,
+      checkTimeoutMs: 120000,
+      publish: false,
+      commit: DEFAULT_COMMIT_SETTINGS,
+    })
+    const config = {
+      ...prepared,
+      reviewSnapshotsDir: reviewSnapshotsDirOf(runRoot),
+    }
+    const worktree = config.workdir
+
+    // A file the implementer can change is never registered, not even
+    // through a link from outside the worktree.
+    await writeFile(join(worktree, 'results.txt'), 'tests pass\n')
+    await symlink(join(worktree, 'results.txt'), join(root, 'link.txt'))
+    for (const file of [join(worktree, 'results.txt'), join(root, 'link.txt')])
+      await assert.rejects(
+        readStageContextFile({ name: 'tests', file, worktree }),
+        /inside the candidate worktree, which the implementer can change/,
+      )
+    await rm(join(worktree, 'results.txt'))
+    await assert.rejects(
+      readStageContextFile({
+        name: '../escape',
+        file: join(root, 'link.txt'),
+        worktree,
+      }),
+      /a name is lower-case letters, digits and dashes/,
+    )
+
+    // A stage's result, outside the worktree, settled by its step.
+    const STAGE =
+      'STAGE-RESULT: 3 new tests fail on the base, pass on the candidate\n'
+    const produced = join(root, 'stage-output', 'tests.txt')
+    await mkdir(dirname(produced), { recursive: true })
+    await writeFile(produced, STAGE)
+    const outputs = new Map<string, unknown>()
+    const attempt = () => ({
+      id: randomUUID(),
+      log: { info: () => {} },
+      setMetadata: async () => {},
+    })
+    // A step completed before is read back, as on a replay.
+    const run = async (
+      name: string,
+      fn: (signal: AbortSignal, attempt: unknown) => Promise<unknown>,
+    ) => {
+      if (outputs.has(name)) return outputs.get(name)
+      const output = await fn(new AbortController().signal, attempt())
+      outputs.set(name, output)
+      return output
+    }
+    const step = {
+      runId: 'run-1',
+      run,
+      all: async (branches: Record<string, never>) =>
+        Object.fromEntries(
+          await Promise.all(
+            Object.entries(branches).map(async ([name, fn]) => [
+              name,
+              await run(name, fn),
+            ]),
+          ),
+        ),
+    }
+    const profile = (role: string) => ({
+      id: `fake:provider-default:provider-default:${role}`,
+      provider: 'fake' as const,
+      requestedModel: null,
+      requestedEffort: null,
+      effectiveModel: 'fake-model',
+      effectiveEffort: 'low',
+    })
+    const baseSetup = {
+      fake: true,
+      contextMode: 'reuse',
+      target: config,
+      checkpointsDir: join(runRoot, 'operation-checkpoints'),
+      instructionsVersion: 'v',
+      configVersion: 'cv',
+      profiles: {
+        code: profile('code'),
+        correctness: profile('correctness'),
+        'edge-cases': profile('edge-cases'),
+      },
+      // The edge-case reviewer runs a command in a directory of its own.
+      review: {
+        'edge-cases': {
+          command: '/review {base}..{head}',
+          context: 'prompt',
+          output: 'verdict',
+        },
+      },
+      maxIterations: 1,
+      agentTimeoutMs: 600000,
+      autoApprove: true,
+    } as unknown as FactorySetup
+    const settle = async () =>
+      withStageContext(
+        baseSetup,
+        (await step.run('stage:tests', () =>
+          readStageContextFile({ name: 'tests', file: produced, worktree }),
+        )) as { name: string; content: string },
+      )
+    const setup = await settle()
+    assert.equal(setup.target.kind, 'repo')
+    if (setup.target.kind !== 'repo') throw new Error('repo target expected')
+    // Only the content is stored; the copy is the factory's, in the run's
+    // own directory.
+    assert.deepEqual(setup.target.stageContext, [
+      { name: 'tests', content: STAGE },
+    ])
+    const copy = join(runRoot, 'stage-context', 'tests.txt')
+    assert.ok(!copy.startsWith(worktree + sep))
+    // The original changes, then goes: nothing the reviewers get does.
+    await writeFile(produced, 'CHANGED\n')
+    await rm(produced)
+
+    // A sealed, verified candidate to review.
+    await writeFile(join(worktree, 'src', 'calc.js'), 'export const x = 1\n')
+    const sealedBy = createTarget(setup.target)
+    const candidate = await sealedBy.seal({
+      iteration: 1,
+      runId: 'run-1',
+      attemptId: 'a',
+      signal: new AbortController().signal,
+    })
+    const seen: {
+      name: string
+      options: AgentCallOptions
+      copy: string | null
+    }[] = []
+    // The fake provider under the names the two lenses run as here.
+    const spy = (name: 'codex' | 'claude'): AgentProvider => {
+      const fake = createProvider('fake')
+      return Object.assign(Object.create(fake) as AgentProvider, {
+        call: async (options: AgentCallOptions) => {
+          seen.push({
+            name,
+            options,
+            copy: await readFile(copy, 'utf8').catch(() => null),
+          })
+          return fake.call(options)
+        },
+      })
+    }
+    const review = async (key: string, reviewSetup: FactorySetup) => {
+      const target = createTarget(reviewSetup.target)
+      return reviewStage({
+        step: step as never,
+        state: {
+          ...initialState(reviewSetup),
+          candidate,
+          iteration: 1,
+          verification: {
+            targetId: candidate.id,
+            passed: true,
+            stdout: '',
+            exitCode: 0,
+            log: null,
+          },
+        } as never,
+        decision: { stage: 'review', reason: 'next' } as never,
+        key,
+        services: {
+          providers: {
+            code: spy('claude'),
+            repair: spy('claude'),
+            correctness: spy('codex'),
+            'edge-cases': spy('claude'),
+          },
+          target,
+        },
+      })
+    }
+    const check = (calls: typeof seen) => {
+      assert.deepEqual(calls.map((c) => c.name).sort(), ['claude', 'codex'])
+      for (const { options, copy: read } of calls) {
+        // In the TRUSTED CONTEXT, with the owner's context, before any
+        // untrusted data.
+        const prompt = options.prompt
+        assert.equal(trustedBody(prompt, 'STAGE tests'), STAGE)
+        assert.equal(trustedBody(prompt, 'OWNER_CONTEXT'), CONTEXT)
+        assert.ok(prompt.includes(`also readable at ${copy}`))
+        assert.ok(
+          prompt.indexOf(STAGE.trimEnd()) <
+            prompt.indexOf('UNTRUSTED INPUT DATA:'),
+        )
+        assert.ok(!prompt.includes('CHANGED'))
+        // Readable, as the stage settled it, while the call runs.
+        assert.equal(read, STAGE)
+        assert.ok(options.readableFiles?.includes(copy))
+        if (options.review)
+          assert.ok(options.review.readableDirs.includes(dirname(copy)))
+        else
+          assert.deepEqual(
+            decideToolPermission(
+              options.workdir,
+              true,
+              'Read',
+              { file_path: copy },
+              options.readableFiles,
+            ),
+            { allow: true },
+          )
+      }
+      // The command reviewer got it in its own directory's prompt.
+      assert.ok(calls.some((c) => c.options.review?.command === true))
+    }
+    const first = await review('stage:1:review', setup)
+    assert.equal(first.type, 'review.completed')
+    check(seen.splice(0))
+
+    // A worker that picks the run up again settles the stage from its
+    // stored step, never the file, and writes its copy again: here it was
+    // changed, then removed.
+    await writeFile(copy, 'TAMPERED\n')
+    await rm(copy)
+    const replayed = await settle()
+    assert.deepEqual(replayed.target, setup.target)
+    await review('stage:2:review', replayed)
+    check(seen.splice(0))
+  })
+})

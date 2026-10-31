@@ -663,10 +663,12 @@ Commands (run from examples/local-agent-loop):
       --max-iterations: implementation and repair stages per run, 1 to 5 (default 2)
       bundled sample (default): no further flags
       real repository:  --repo <path> (--issue 234 | --task "..." | --task-file <file>)
-                        [--spec-file <file>] [--dispositions-file <file>] [--config <file>]
+                        [--spec-file <file>] [--dispositions-file <file>]
+                        [--context-file <file>] [--config <file>]
                         [--check "pnpm validate"] [--setup "pnpm install"] [--base <ref>]
                         [--publish] [--approve auto|manual]
   pnpm demo repair --run <id> [--findings-file <file>] [--dispositions-file <file>]
+                  [--context-file <file>]
                   [--max-iterations <n>]    new run that repairs the last candidate of an approved,
                                             delivered repository run from outside findings, or of
                                             one that stopped verification-failed or
@@ -831,8 +833,9 @@ Repository config: factory.json at the repository root, or --config <file>:
   starts with a repair in a new session, and its max iterations count its
   own repairs only. The findings are stored as untrusted input for the
   repairer and both reviewers; --dispositions-file replaces the parent's
-  dispositions (inherited otherwise). The same parent, findings,
-  dispositions and max iterations return the same child run.
+  dispositions and --context-file the parent's context (each inherited
+  otherwise). The same parent, findings, dispositions, max iterations and
+  context content return the same child run.
   Timeouts are positive integer milliseconds, at most 2147483647; without them, the trigger's
   TEST_TIMEOUT_MS / AGENT_TIMEOUT_MS / AGENT_IDLE_TIMEOUT_MS, then the target's default.
   agentTimeoutMs limits each agent call from its start; agentIdleTimeoutMs stops one
@@ -846,6 +849,12 @@ Repository config: factory.json at the repository root, or --config <file>:
   The config and input files are read once at trigger; the run keeps the
   input file contents and the resolved timeouts and codexPath, and the
   report shows each input file's SHA-256.
+  --context-file (at most 32 KiB, UTF-8, not empty) holds decisions the owner
+  has confirmed. Unlike the task, the spec, the dispositions and the findings,
+  it is trusted: the implementer and the repairer get it in a section of its
+  own, told to make no change against it and to say why under NOTES when one
+  seems needed, and every reviewer gets it in the TRUSTED CONTEXT. The
+  report shows its path, SHA-256 and content.
 State: database and run data live in ${dirname(dbPath())}
   (worktrees, checkpoints, verification scratch, delivery patches under runs/<id>/).
 Auto-started worker: after trigger, repair, retrigger, approve, reject and

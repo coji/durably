@@ -18,6 +18,7 @@ import {
   copyFile,
   mkdir,
   readdir,
+  readFile,
   realpath,
   rename,
   rm,
@@ -75,9 +76,10 @@ import {
   reviewHeadTreeOf,
   reviewWorkdirOf,
   specReviewWorkdirOf,
+  stageContextDirOf,
   worktreeRetiredMarkerOf,
 } from '../factory/layout.js'
-import { changedPathsLine } from '../factory/prompts.js'
+import { changedPathsLine, trustedContextLines } from '../factory/prompts.js'
 import {
   DEFAULT_COMMIT_SETTINGS,
   type CommitSettings,
@@ -87,6 +89,7 @@ import {
   type RepairParentConclusion,
   type RepoTargetConfig,
   type SealArgs,
+  type StageContext,
   type Target,
   type UntrustedInput,
 } from '../factory/target.js'
@@ -262,6 +265,10 @@ export class RepoTarget implements Target {
     const findings = this.config.repairOf?.findings
     if (findings) inputs.push({ label: 'FINDINGS', content: findings })
     return inputs
+  }
+
+  ownerContext(): string | null {
+    return this.config.context ?? null
   }
 
   implementationRules(): string[] {
@@ -642,7 +649,7 @@ export class RepoTarget implements Target {
     )
     const parent = this.config.repairOf
     return [
-      'TRUSTED CONTEXT (produced by the factory, not by the implementer):',
+      "TRUSTED CONTEXT (produced by the factory or confirmed by the run's owner, not by the implementer):",
       `Base commit: ${this.config.baseCommit}`,
       ...(parent
         ? [
@@ -653,9 +660,39 @@ export class RepoTarget implements Target {
         : []),
       `Candidate: ${candidate.id}`,
       changedPathsLine(changes, candidate.changes?.changedFilesPath),
+      ...trustedContextLines(this.ownerContext(), this.stageCopies()),
       '',
       'The task the implementer was given is in the untrusted TASK block below.',
     ].join('\n')
+  }
+
+  /** Each registered stage result with the path of the factory's copy. */
+  private stageCopies(): (StageContext & { path: string })[] {
+    const dir = stageContextDirOf(this.runRoot)
+    return (this.config.stageContext ?? []).map((entry) => ({
+      ...entry,
+      path: join(dir, `${entry.name}.txt`),
+    }))
+  }
+
+  async prepareStageContext(): Promise<{
+    dir: string
+    files: string[]
+  } | null> {
+    const copies = this.stageCopies()
+    if (copies.length === 0) return null
+    const dir = stageContextDirOf(this.runRoot)
+    await mkdir(dir, { recursive: true })
+    // From the stored content every time, so a copy removed or changed
+    // since the stage settled is put back as it was; one that still holds
+    // it is left alone.
+    await Promise.all(
+      copies.map(async ({ path, content }) => {
+        const current = await readFile(path, 'utf8').catch(() => null)
+        if (current !== content) await writeFile(path, content)
+      }),
+    )
+    return { dir, files: copies.map((copy) => copy.path) }
   }
 
   async deliver(args: DeliverArgs): Promise<Delivery> {

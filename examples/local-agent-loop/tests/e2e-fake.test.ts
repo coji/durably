@@ -2654,6 +2654,7 @@ describe('repair across an effort change', { timeout: 300000 }, () => {
         taskBrief: () => 'Fix add().',
         implementationRules: () => [],
         untrustedInputs: () => [],
+        ownerContext: () => null,
         seal: async () => ({
           id: 'candidate-2',
           snapshotDir: root,

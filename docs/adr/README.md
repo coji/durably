@@ -78,6 +78,7 @@ What we considered and why we didn't do it.
 | [0035](0035-isolated-shannon-fullstack-audit.md)                | Isolated Shannon fullstack audit              | accepted |
 | [0036](0036-fail-closed-http-run-subscriptions.md)              | Fail-closed HTTP run subscriptions            | accepted |
 | [0037](0037-local-agent-loop-on-demand-worker.md)               | local-agent-loop on-demand worker             | accepted |
+| [0038](0038-local-agent-loop-trusted-context.md)                | local-agent-loop trusted context              | accepted |
 
 ## Prior Art
 

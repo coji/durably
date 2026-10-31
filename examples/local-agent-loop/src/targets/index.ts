@@ -45,6 +45,8 @@ export interface PrepareRepoArgs {
   task: string
   spec: string | null
   dispositions: string | null
+  /** The owner's confirmed context; absent or null: none. */
+  context?: string | null
   issue: { number: number; title: string; url: string } | null
   /** Empty only with `checkFromSpec`, whose script names the check later. */
   checkCommand: string[]
@@ -119,6 +121,7 @@ export async function prepareRepoTarget(
     task: args.task,
     spec: args.spec,
     dispositions: args.dispositions,
+    context: args.context ?? null,
     issue: args.issue,
     deliveryDir: join(args.root, 'delivery'),
     candidatesDir: join(args.root, 'candidates'),

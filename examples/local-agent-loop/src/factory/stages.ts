@@ -13,10 +13,11 @@ import {
   mkdir,
   readdir,
   readFile,
+  realpath,
   rm,
   writeFile,
 } from 'node:fs/promises'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 
 import type { JsonValue, StepAttemptContext, StepContext } from '@coji/durably'
 import { z } from 'zod'
@@ -39,6 +40,7 @@ import {
   type VerificationOutcome,
 } from '../engine/verification.js'
 import { SpecEventSchema, type SpecEvent } from './events.js'
+import { readInputFile } from './input-file.js'
 import { agentLogsDirBeside } from './layout.js'
 import { specAction } from './policy.js'
 import {
@@ -62,11 +64,14 @@ import {
   specBlockers,
   type SpecState,
 } from './reducer.js'
-import type {
-  Delivery,
-  RepairParentConclusion,
-  Target,
-  UntrustedInput,
+import {
+  checkContextText,
+  MAX_CONTEXT_BYTES,
+  type Delivery,
+  type RepairParentConclusion,
+  type StageContext,
+  type Target,
+  type UntrustedInput,
 } from './target.js'
 import {
   idleLimitOf,
@@ -205,6 +210,9 @@ export const codeStage: StageHandler = async ({
           task: target.taskBrief(),
           rules: target.implementationRules(),
           untrusted: target.untrustedInputs('code'),
+          // The owner's confirmed decisions, trusted and apart from the
+          // data above; the stages' results are for the reviewers.
+          ownerContext: target.ownerContext(),
           // Told it starts a new session only when it does. A repair on the
           // code profile keeps the prompt it always had, unless it repairs a
           // stopped call's work in a new session.
@@ -532,14 +540,20 @@ async function reviewRoundOf(args: {
   snapshotOnly: boolean
 }) {
   const { step, state, key, target, candidate } = args
-  const trustedContext = await target.reviewContext(candidate)
+  // Every reviewer may read the factory's copy of each stage's result,
+  // written again from its stored content for each round.
+  const [trustedContext, stageCopies] = await Promise.all([
+    target.reviewContext(candidate),
+    target.prepareStageContext?.() ?? null,
+  ])
   const reviewCwd = target.reviewCwd(candidate)
   // Both reviewers read the same candidate's diff and changed-file list, and
   // may read those two files even though they sit outside the review cwd.
   const changes = candidate.changes ?? null
-  const readableFiles = changes
-    ? [changes.diffPath, changes.changedFilesPath]
-    : []
+  const readableFiles = [
+    ...(changes ? [changes.diffPath, changes.changedFilesPath] : []),
+    ...(stageCopies?.files ?? []),
+  ]
   const setup = state.setup
   const baseCommit =
     setup.target.kind === 'repo' ? setup.target.baseCommit : null
@@ -660,6 +674,9 @@ async function reviewRoundOf(args: {
                   dirname(changes.diffPath),
                   trees.baseDir,
                   trees.headDir,
+                  // A command-mode reviewer reads by directory; the copies
+                  // share one the factory keeps for nothing else.
+                  ...(stageCopies ? [stageCopies.dir] : []),
                 ]
               : [],
         }
@@ -1405,4 +1422,83 @@ export async function runCheckFromSpec(
     },
     { metadata: { stage: 'spec-check' } as unknown as JsonValue },
   )
+}
+
+/** A stage context's name: it names the block and the factory's copy. */
+const STAGE_CONTEXT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+function checkStageContextName(name: string): void {
+  if (!STAGE_CONTEXT_NAME.test(name))
+    throw new Error(
+      `stage context ${name}: a name is lower-case letters, digits and dashes`,
+    )
+}
+
+/**
+ * Read a file a stage produced, such as the result of a test it ran on the
+ * base and the candidate, for the reviewers' trusted context. Call it inside
+ * that stage's step and return what it gives, so the content is settled
+ * there: a replay reads it back from the step and never reads the file
+ * again. A file inside the candidate worktree is refused, the implementer
+ * can change it; so is one over 32 KiB, empty, or not UTF-8.
+ */
+export async function readStageContextFile(args: {
+  name: string
+  file: string
+  /** The candidate worktree, whose files are never trusted. */
+  worktree: string
+}): Promise<StageContext> {
+  const { name, file } = args
+  checkStageContextName(name)
+  const label = `stage context ${name}:`
+  // Through links, so a link outside the worktree to a file inside it is
+  // refused too.
+  const [real, worktree] = await Promise.all([
+    realpath(file).catch(() => {
+      throw new Error(`${label} ${file}: cannot read file`)
+    }),
+    realpath(args.worktree),
+  ])
+  const from = relative(worktree, real)
+  if (!(from === '..' || from.startsWith(`..${sep}`) || isAbsolute(from)))
+    throw new Error(
+      `${label} ${file}: inside the candidate worktree, which the implementer can change`,
+    )
+  const { content } = await readInputFile(real, {
+    name: label,
+    maxBytes: MAX_CONTEXT_BYTES,
+  })
+  checkContextText(`stage context ${name}`, content)
+  return { name, content }
+}
+
+/**
+ * The internal hook through which a stage hands the reviewers a result of
+ * its own as trusted context: `settled` is that stage's completed step
+ * output, from `readStageContextFile`. Only the content is registered,
+ * never the file the stage read, and the reviewers read the factory's own
+ * copy under the run directory, outside the candidate worktree. A result of
+ * the same name replaces the earlier one. Returns the setup to rebuild the
+ * target from, as the spec stages' advice and the check's notes are.
+ */
+export function withStageContext(
+  setup: FactorySetup,
+  settled: StageContext,
+): FactorySetup {
+  const target = setup.target
+  if (target.kind !== 'repo')
+    throw new Error('stage context needs a repository target')
+  checkStageContextName(settled.name)
+  checkContextText(`stage context ${settled.name}`, settled.content)
+  const entry: StageContext = { name: settled.name, content: settled.content }
+  return {
+    ...setup,
+    target: {
+      ...target,
+      stageContext: [
+        ...(target.stageContext ?? []).filter((e) => e.name !== entry.name),
+        entry,
+      ],
+    },
+  }
 }

@@ -296,7 +296,7 @@ pnpm --filter example-local-agent-loop demo status --format json
   題材で動くので、次の手順には出しません。
 - `baseline-check-failed`、`preflight-failed`、`rejected-invocation`、`agent-timeout` には、
   `demo retrigger --run <id> --reload-config` も表示します。`factory.json` を直してから打つコマンドです。
-  保存したtask、spec、dispositions、issue、対象リポジトリはそのままで、
+  保存したtask、spec、dispositions、context、issue、対象リポジトリはそのままで、
   `factory.json` だけを読み直します。読み直すのはtrigger時に `--config` で
   渡したファイルで、渡していなければリポジトリ直下の `factory.json` です。
   直下の `factory.json` を消した場合は、設定なしのtriggerと同じに扱います。
@@ -825,7 +825,8 @@ HOME=<表示された場所> pnpm --filter example-local-agent-loop demo worker
 ```bash
 pnpm --filter example-local-agent-loop demo trigger \
   --repo ~/progs/myapp --task-file ~/work/task.md \
-  [--spec-file ~/work/spec.md] [--dispositions-file ~/work/dispositions.md]
+  [--spec-file ~/work/spec.md] [--dispositions-file ~/work/dispositions.md] \
+  [--context-file ~/work/decisions.md]
 ```
 
 - `--repo` のリポジトリから `git worktree` を切り、その中だけで作業します。
@@ -836,6 +837,14 @@ pnpm --filter example-local-agent-loop demo trigger \
   レビュー指摘をどう扱ったか）はレビューだけに渡ります。どれも中身を解釈しない
   UTF-8テキストで、1ファイル256 KiBまでです。promptでは「信頼しないデータ」として区切った区画に入り、
   factoryの指示や出力形式とは混ざりません。
+- `--context-file` は、ownerが確定した決定やテストの結果など、**信頼できる情報**を
+  渡すファイルです。UTF-8の空でないテキストで、32 KiB（32,768バイト）までです。
+  超えるもの、空のもの、UTF-8として読めないものはrunを作る前に拒否します。
+  実装と修正のpromptには、TASKやFINDINGSとは別の信頼できる区画として入り、
+  「ownerが確定した決定に反する変更をしない。反すると判断したら変更せず、
+  返答のNOTESで理由を述べる」と指示します。両レビューには、factoryが作る
+  TRUSTED CONTEXTの中に入ります。`--dispositions-file` はこれまでどおり
+  レビューだけに渡る信頼しないデータで、contextに格上げはしません。
 - `check` は**エージェントが走り出す前に固定される採点コマンド**です。argvとして
   そのまま実行するのでshellではありません。configにもフラグにも無ければ起動しません。
   何を直せば通るのかが決まっていない依頼は、そもそもファクトリーに向きません。
@@ -1179,13 +1188,15 @@ baselineの後、triageを含む最初のエージェント呼び出しの前に
 
 ### trigger時点で固定されるもの
 
-`factory.json`、task、spec、dispositionsは `trigger` の時点で一度だけ読みます。
+`factory.json`、task、spec、dispositions、contextは `trigger` の時点で一度だけ読みます。
 フラグを適用した後の各役割のrequested設定と、入力ファイルのpathと本文をrun inputに
 保存します。実際に使うmodelとeffortは、workerがそのrequested設定からproviderの
 presetで解決します。workerは元のファイルを読み直さないので、trigger後にファイルを
 書き換えても、そのrunの設定とpromptは変わりません。timeout、`codexPath`、
 `baselineCheck`、`baselineReuse`、`parallelReview`、`selfCheck`、`commit` も同じく解決済みの値をrun inputに保存します。reportには各入力ファイルの
-pathと、保存した本文から計算したSHA-256が出ます。設定を直した後に同じtaskで
+pathと、保存した本文から計算したSHA-256が出ます。contextは本文もreportに出します。
+Markdownでは本文中のどのバッククォートの並びより長いフェンスで囲むので、
+本文の見出しがreportの見出しと混ざりません。設定を直した後に同じtaskで
 やり直すには、`demo retrigger --run <id> --reload-config` を使います（上の
 「止まったrunと次の手順を見る」を参照）。
 
@@ -1704,7 +1715,7 @@ factoryの外で指摘が見つかったときは、`demo repair` でそのrun�
 ```bash
 pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   [--findings-file findings.md] [--dispositions-file dispositions.md] \
-  [--max-iterations 4]
+  [--context-file decisions.md] [--max-iterations 4]
 ```
 
 - 親にできるのは、repository runのうち次の4種類です。
@@ -1734,7 +1745,7 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   run directoryは残さず、agentは呼びません。ブランチを候補commitに戻せば
   `retrigger` で続けられます。
 - `demo repair` が受け付けるのは `--run`、`--findings-file`、`--dispositions-file`、
-  `--max-iterations` だけです。`--publish`、`--check`、`--config` など、ほかの
+  `--context-file`、`--max-iterations` だけです。`--publish`、`--check`、`--config` など、ほかの
   フラグは黙って無視せずエラーにします。
 - 子runは、親が保存したtask、spec、issue、profile（triageも含む解決済みの値）、
   check、`selfCheck`、setup、timeout、`codexPath`、commitとpublishの設定、`--max-iterations` を
@@ -1797,10 +1808,14 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
 - 子runの `--max-iterations` は、引き継いだ値でも指定した値でも、子run自身の
   修正回数だけを数え、親が使った回数は差し引きません。最初の修正も修正回数と
   使用量に入ります。
-- 同じ親、同じ指摘の内容、同じ処分の内容、同じ修正回数で起動すると、パスが違っても
-  同じ子runを返し、runもブランチも増やしません。記録から作った指摘は親の記録だけで
-  決まるので、繰り返しても同じ子runです。指摘か処分の内容、または修正回数が変われば
-  別の子runです。親と同じ修正回数を指定したときは、省略したときと同じ子runです。
+- `--context-file` を渡すと、子runのcontextは親のものと置き換わります。渡さなければ
+  親が保存したcontextと読込元を引き継ぎます。上限はtriggerと同じ32 KiBです。
+- 同じ親、同じ指摘の内容、同じ処分の内容、同じ修正回数、同じcontextの内容で起動
+  すると、パスが違っても同じ子runを返し、runもブランチも増やしません。記録から
+  作った指摘は親の記録だけで決まるので、繰り返しても同じ子runです。指摘か処分か
+  contextの内容、または修正回数が変われば別の子runです。親と同じ修正回数を指定
+  したときは、省略したときと同じ子runです。contextの無い子runは、contextが加わる
+  前と同じ子runです。
 - `--publish` のDraft PRは通常のrunと同じく既定ブランチ向けです。親がまだ
   mergeされていなければ、PRには親の変更も含まれます。
 - 子runは起動するどの経路（`demo repair`、`demo retrigger`、`demo seed`）でも
@@ -2040,8 +2055,8 @@ pnpm --filter example-local-agent-loop demo report --run <runId> --format md \
 - **Summary**: run 1本を1行に畳んだ値。success、lead time（trigger→終了）、
   work（工程実作業の合計）、human wait とその lead time 比、LLM呼び出し数、
   total tokens、cost、cost per success（成功したrunだけ）、repairs、review rounds
-- **Inputs / Candidate / Delivery**: task、spec、dispositionsの各ファイルの
-  SHA-256、最後に封印したcandidateのbranchとcommit、成果物の場所、branch名、commit SHA、
+- **Inputs / Candidate / Delivery**: task、spec、dispositions、contextの各ファイルの
+  SHA-256（contextは読込元と本文も）、最後に封印したcandidateのbranchとcommit、成果物の場所、branch名、commit SHA、
   squash branchの名前とcommit SHA
 - **Candidates**: 封印したすべての候補（JSONの `candidates`）。候補ごとに
   何回目の実装か、branch、commit、変更ファイル数、追加行数、削除行数、差分ファイルと

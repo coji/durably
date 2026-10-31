@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
 
 import {
@@ -1477,5 +1477,130 @@ describe('a spec reviewer blocker as feedback text', () => {
       findings: null,
     }
     assert.equal(specBlockerText(verdictOnly), verdictOnly.notes)
+  })
+})
+
+describe("the owner's confirmed context and the stages' results in a review", () => {
+  const CONTEXT = 'CONTEXT-BODY: keep the integer wiring of mul'
+  const STAGE =
+    'STAGE-BODY: 3 new tests fail on the base, pass on the candidate'
+
+  /** A one-commit change in a fresh repository, as a target sees it. */
+  async function reviewed(config: Partial<RepoTargetConfig>) {
+    const root = await mkdtemp(join(tmpdir(), 'review-owner-context-'))
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim()
+    git('init', '--initial-branch=main')
+    git('config', 'user.email', 'test@localhost')
+    git('config', 'user.name', 'test')
+    await writeFile(join(root, 'a.txt'), 'a\n')
+    git('add', '-A')
+    git('commit', '-m', 'base')
+    const base = git('rev-parse', 'HEAD')
+    await writeFile(join(root, 'b.txt'), 'b\n')
+    git('add', '-A')
+    git('commit', '-m', 'change')
+    const target: Target = new RepoTarget({
+      ...repoConfig,
+      repoPath: root,
+      workdir: root,
+      baseCommit: base,
+      issue: null,
+      task: TASK,
+      spec: SPEC,
+      dispositions: DISPOSITIONS,
+      ...config,
+    })
+    const context = await target.reviewContext({
+      id: 'candidate-1',
+      snapshotDir: root,
+      sourceHash: 'h',
+      acceptanceHash: 'h',
+    })
+    const prompts = Object.fromEntries(
+      (['correctness', 'edge-cases'] as const).map((lens) => [
+        lens,
+        reviewPrompt(
+          lens,
+          context,
+          target.reviewRules(lens),
+          target.untrustedInputs(lens),
+        ),
+      ]),
+    )
+    await rm(root, { recursive: true, force: true })
+    return { target, context, prompts, root }
+  }
+
+  it('puts the context in the TRUSTED CONTEXT of both reviewers, before any untrusted data', async () => {
+    const { context, prompts } = await reviewed({ context: CONTEXT })
+    assert.match(
+      context,
+      /^TRUSTED CONTEXT \(produced by the factory or confirmed by the run's owner, not by the implementer\):/,
+    )
+    assert.match(
+      context,
+      new RegExp(
+        `Owner context: [^\\n]*a change that keeps to them is not a finding, and one that goes against them is\\.\\n<<<TRUSTED OWNER_CONTEXT ([0-9a-f]{16})>>>\\n${CONTEXT}\\n<<<END TRUSTED OWNER_CONTEXT \\1>>>`,
+      ),
+    )
+    for (const prompt of Object.values(prompts)) {
+      assert.equal(prompt.split(CONTEXT).length, 2)
+      assert.ok(
+        prompt.indexOf(CONTEXT) < prompt.indexOf('UNTRUSTED INPUT DATA:'),
+      )
+      assert.doesNotMatch(prompt, /UNTRUSTED OWNER_CONTEXT/)
+    }
+  })
+
+  it('keeps the dispositions untrusted data for the reviewers alone, never the context', async () => {
+    const { target, context, prompts } = await reviewed({ context: CONTEXT })
+    assert.doesNotMatch(context, /DISPOSITIONS-BODY/)
+    for (const prompt of Object.values(prompts))
+      assert.equal(blockBody(prompt, 'DISPOSITIONS'), DISPOSITIONS)
+    assert.ok(
+      !target
+        .untrustedInputs('code')
+        .some((input) => input.content === DISPOSITIONS),
+    )
+    // The context is not untrusted data for any role.
+    for (const role of ['code', 'correctness', 'edge-cases'] as const)
+      assert.ok(
+        !target.untrustedInputs(role).some((i) => i.content === CONTEXT),
+        role,
+      )
+  })
+
+  it('shows each stage result in its own trusted block with the copy reviewers may read', async () => {
+    const { context, root } = await reviewed({
+      stageContext: [{ name: 'base-and-candidate-tests', content: STAGE }],
+    })
+    // Beside the worktree, in the run's own directory.
+    const path = join(
+      dirname(root),
+      'stage-context',
+      'base-and-candidate-tests.txt',
+    )
+    assert.match(
+      context,
+      /^TRUSTED CONTEXT \(produced by the factory or confirmed by the run's owner, not by the implementer\):/,
+    )
+    assert.ok(
+      context.includes(
+        `Stage result base-and-candidate-tests: produced by the factory, not by the implementer; also readable at ${path}.`,
+      ),
+    )
+    assert.match(
+      context,
+      new RegExp(
+        `<<<TRUSTED STAGE base-and-candidate-tests ([0-9a-f]{16})>>>\\n${STAGE}\\n<<<END TRUSTED STAGE base-and-candidate-tests \\1>>>`,
+      ),
+    )
+    assert.doesNotMatch(context, /Owner context/)
+  })
+
+  it('leaves the trusted context as it was without either', async () => {
+    const { context } = await reviewed({})
+    assert.doesNotMatch(context, /Owner context|Stage result|<<<TRUSTED/)
   })
 })
