@@ -138,7 +138,8 @@ export function TaskRow({
         hidden={!open}
         className="col-start-2 flex min-w-0 flex-col gap-3 pt-2 pb-2"
       >
-        {children}
+        {/* Drawn only when open: most rows of a long list stay closed. */}
+        {open ? children : null}
       </div>
     </li>
   )

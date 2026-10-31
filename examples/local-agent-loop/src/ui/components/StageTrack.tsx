@@ -12,6 +12,38 @@ const STAGE_CLASS: Record<PipelineState, string> = {
   'not-reached': 'text-fg-3',
 }
 
+/** The mark of a stage the run passed. */
+function Check() {
+  return (
+    <svg aria-hidden viewBox="0 0 12 12" className="size-3 shrink-0">
+      <path
+        d="M2.5 6.5l2.25 2.25L9.5 3.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+/** The quiet mark between two stages. */
+function Next() {
+  return (
+    <svg aria-hidden viewBox="0 0 12 12" className="text-fg-3 size-3 shrink-0">
+      <path
+        d="M4.5 3l3 3-3 3"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
 /**
  * One stage as the track shows it: its mark, name, count and state word.
  * `quiet` drops the state's fill, for a row whose badge already carries it.
@@ -24,7 +56,7 @@ function StageChip({ s, quiet }: { s: PipelineStage; quiet?: boolean }) {
       {s.state === 'running' ? (
         <span className="dot-live size-1.5 rounded-full bg-current" />
       ) : null}
-      {s.state === 'done' || s.state === 'auto' ? <span>✓</span> : null}
+      {s.state === 'done' || s.state === 'auto' ? <Check /> : null}
       {stageName(s.stage)}
       {s.count > 1 ? <span className="tabular-nums">×{s.count}</span> : null}
       {PIPELINE_SUFFIX[s.state] ? (
@@ -69,7 +101,7 @@ export function StageTrack({ pipeline }: { pipeline: Pipeline }) {
       <ol aria-hidden className="flex flex-wrap items-center gap-1">
         {pipeline.stages.map((s, i) => (
           <li key={s.stage} className="inline-flex items-center gap-1">
-            {i > 0 ? <span className="text-fg-3">›</span> : null}
+            {i > 0 ? <Next /> : null}
             <StageChip s={s} />
           </li>
         ))}

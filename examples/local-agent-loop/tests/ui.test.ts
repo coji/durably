@@ -142,6 +142,7 @@ import {
   readLogChunk,
   wholeUtf8Length,
   type LogChunk,
+  listRows,
   readOnce,
   runName,
   SUBJECT_RUN_NAME,
@@ -2792,8 +2793,14 @@ describe('web UI over fake runs', { timeout: 300000 }, () => {
         'rejected-invocation',
       )
       assert.equal(row('rejected').diagnosis.failure?.retryable, true)
+      // The failure's details are the run page's; the list leaves them out.
+      assert.deepEqual(row('rejected').diagnosis.failure?.details, [])
+      const rejected = await api<RunDetailResponse>(
+        port,
+        `/api/runs/${ids.rejected}`,
+      )
       assert.ok(
-        row('rejected').diagnosis.failure?.details.includes(
+        rejected.diagnosis.failure?.details.includes(
           'refusal: fake: the review-a call on rejects-review is refused',
         ),
       )
@@ -3622,6 +3629,46 @@ describe('numbers on the screens', () => {
     assert.ok(!list.includes('$0.25'))
   })
 
+  it('sends only the fields of a run the list reads', () => {
+    const full = (id: string, archived = false) =>
+      row({
+        id,
+        archived,
+        diagnosis: {
+          kind: 'finished',
+          reason: 'why',
+          next: ['next'],
+          cleanup: null,
+          worktree: null,
+        },
+        pipeline: {
+          stages: [{ stage: 'code', state: 'done', count: 1 }],
+          label: 'x',
+        },
+      } as unknown as Partial<RunRow>)
+    const rows = [
+      full('01K6D2Q7XB3M9RKT4WSHOWN0'),
+      full('01K6D2Q7XB3M9RKT4WOTHER0'),
+      full('01K6D2Q7XB3M9RKT4WARCHV0', true),
+    ]
+    const tasks = [
+      { representative: '01K6D2Q7XB3M9RKT4WSHOWN0' },
+    ] as unknown as Task[]
+    const [shown, other, archived] = listRows(rows, tasks)
+    // The run that shows its task keeps what its row and actions read.
+    assert.deepEqual(shown?.diagnosis.next, ['next'])
+    assert.deepEqual(shown?.pipeline, rows[0]?.pipeline)
+    assert.equal(shown?.diagnosis.worktree, null)
+    // Any other run, archived or not, is a line: its kind and its row.
+    for (const line of [other, archived]) {
+      assert.equal(line?.diagnosis.kind, 'finished')
+      assert.deepEqual(line?.diagnosis.next, [])
+      assert.deepEqual(line?.pipeline.stages, [])
+    }
+    assert.equal(archived?.archived, true)
+    assert.equal(other?.leadTimeMs, rows[1]?.leadTimeMs)
+  })
+
   it('offers the way back beside an archived run that does not show its task', () => {
     const first = '01K6D2Q7XB3M9RKT4WFIRST0'
     const repair = '01K6D2Q7XB3M9RKT4WREPAIR'
@@ -3660,10 +3707,23 @@ describe('numbers on the screens', () => {
       [tasks.length, task?.attention, task?.representative],
       [1, 'done', repair],
     )
+    // A finished row is closed, and draws its runs only when opened: the
+    // way back shows among them.
     const data = { exists: true, db: '/tmp/x.db', now, runs, tasks }
-    const html = renderToStaticMarkup(
+    const closed = renderToStaticMarkup(
       createElement(RunsScreen, {
         data: data as unknown as RunsResponse,
+        act: noAct,
+      }),
+    )
+    assert.match(closed, /aria-expanded="false"/)
+    assert.ok(!htmlText(closed).includes(ACTION.unarchive))
+    const html = renderToStaticMarkup(
+      createElement(TaskRuns, {
+        task: task as Task,
+        rows: new Map(runs.map((r) => [r.id, r])),
+        now,
+        name: 'task',
         act: noAct,
       }),
     )

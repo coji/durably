@@ -1028,7 +1028,7 @@ export const DESIGN = {
     },
     notice: {
       name: '通知',
-      about: '左の線が状態の色を持ちます。操作の結果は閉じられます。',
+      about: '背景と細い枠が状態の色を持ちます。操作の結果は閉じられます。',
     },
     runActions: {
       name: '実行への操作',

@@ -78,6 +78,7 @@
   --size-meta-cost: 3.5rem;
   --size-meta-ago: 4.5rem;
   --size-filter: 18rem;
+  --size-touch: 44px;
   --size-scroll-margin: calc(var(--space-12) + var(--space-6));
   --size-hatch: 4px;
 
@@ -87,7 +88,7 @@
   --surface-sunken: light-dark(var(--gray-100), var(--gray-1000));
   --text-primary: light-dark(var(--gray-900), var(--gray-50));
   --text-secondary: light-dark(var(--gray-600), var(--gray-400));
-  --text-tertiary: light-dark(var(--gray-500), var(--gray-400));
+  --text-tertiary: light-dark(oklch(52% 0.008 250), var(--gray-400));
   --text-inverse: light-dark(var(--white), var(--gray-950));
   --border-subtle: light-dark(oklch(0% 0 0 / 0.07), oklch(100% 0 0 / 0.07));
   --border-default: light-dark(oklch(0% 0 0 / 0.13), oklch(100% 0 0 / 0.13));
@@ -292,9 +293,20 @@ dd {
   display: grid;
   grid-template-columns: var(--size-stage-name) 1fr;
 }
-/* The bar needs room; on a narrow screen the numbers carry the row alone. */
+/*
+ * The bar needs room; on a narrow screen the numbers carry the row alone,
+ * under the stage's name, so the three values fit the width.
+ */
 .stage-bar {
   display: none;
+}
+@media (width < 40rem) {
+  .stage-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .stage-row > :first-child {
+    grid-column: 1 / -1;
+  }
 }
 @media (width >= 40rem) {
   .stage-row {
@@ -343,6 +355,21 @@ dd {
 @media (width >= 48rem) {
   .task-meta {
     margin-left: auto;
+  }
+}
+/*
+ * On a touch screen every control is at least a fingertip tall; the
+ * laptop the brief names keeps the denser 32px.
+ */
+@media (pointer: coarse) {
+  button,
+  summary,
+  input,
+  select {
+    min-height: var(--size-touch);
+  }
+  .task-row > button {
+    min-width: var(--size-touch);
   }
 }
 /* A heading the design page's contents jump to clears the sticky header. */
