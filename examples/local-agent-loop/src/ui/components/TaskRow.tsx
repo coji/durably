@@ -87,8 +87,7 @@ export function TaskRow({
   children: ReactNode
 }) {
   // Only a person's own toggle is held; until then the row follows
-  // `defaultOpen` on every render, so a poll that gives the task another
-  // open run opens a row first drawn closed.
+  // `defaultOpen` on every render, so the list can open or close it later.
   const [toggled, setToggled] = useState<boolean | null>(null)
   const open = openNow(toggled, defaultOpen ?? false)
   const bodyId = useId()

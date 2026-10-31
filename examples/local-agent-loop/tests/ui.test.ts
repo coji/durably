@@ -3506,7 +3506,13 @@ describe('numbers on the screens', () => {
     return html.slice(at, html.indexOf('id="tasks-done"', at))
   }
 
-  for (const kind of ['running', 'pending', 'lease-expired', 'decided'])
+  for (const kind of [
+    'running',
+    'pending',
+    'lease-expired',
+    'decided',
+    'stopped',
+  ])
     it(`opens a stopped row whose retried repair is ${kind}`, () => {
       const html = listOf(
         [
@@ -3516,11 +3522,15 @@ describe('numbers on the screens', () => {
         ],
         repairs,
       )
-      const rows = [...stopSection(html).matchAll(/aria-expanded="(\w+)"/g)]
+      const section = stopSection(html)
+      const rows = [...section.matchAll(/aria-expanded="(\w+)"/g)]
       assert.deepEqual(
         rows.map((m) => m[1]),
         ['true'],
       )
+      // Open, nothing in the row is hidden, and it lists the retried repair.
+      assert.ok(!section.includes('hidden=""'))
+      assert.ok(htmlText(section).includes(LIST.repairRun(2)))
     })
 
   it('keeps a stopped row closed when nothing else of its task is open', () => {
