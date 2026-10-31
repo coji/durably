@@ -104,6 +104,7 @@ import {
   type Target,
   type TargetConfig,
 } from './target.js'
+import { TEST_PROBE_FILES } from './test-probe.js'
 import {
   BASELINE_STEP,
   EFFORT_RESUME_POLICY,
@@ -178,6 +179,39 @@ export const selfCheckSchema = z
   .min(1)
   .max(5)
 
+/**
+ * `testProbe` in a target and in factory.json (ADR-0039): one or more
+ * entries, each a glob over repository-relative paths and an argv run once
+ * per matching test file, with each `{files}` element replaced by its path.
+ * The path is never part of a longer element, so no shell or tool splits
+ * it.
+ */
+export const testProbeSchema = z
+  .array(
+    z
+      .object({
+        glob: z.string().min(1),
+        command: z
+          .array(z.string().min(1))
+          .min(1)
+          .refine((argv) => argv.includes(TEST_PROBE_FILES), {
+            message: `command needs a "${TEST_PROBE_FILES}" element, which each test file's path replaces`,
+          })
+          .refine(
+            (argv) =>
+              argv.every(
+                (arg) =>
+                  arg === TEST_PROBE_FILES || !arg.includes(TEST_PROBE_FILES),
+              ),
+            {
+              message: `"${TEST_PROBE_FILES}" must be an element of its own, not part of one`,
+            },
+          ),
+      })
+      .strict(),
+  )
+  .min(1)
+
 /** Where an input came from. Its hash is taken from the stored content. */
 const inputFileSchema = z.object({ path: z.string().min(1) })
 
@@ -237,6 +271,11 @@ const targetSchema = z
        * finishing (ADR-0031). Null or absent: no such rule, as before.
        */
       selfCheck: selfCheckSchema.nullable().optional(),
+      /**
+       * The test files to run on the base and on each candidate before its
+       * check and reviews (ADR-0039). Null or absent: none, as before.
+       */
+      testProbe: testProbeSchema.nullable().optional(),
       /** Push the branch and open a draft pull request when approved. */
       publish: z.boolean().default(false),
       /**
@@ -1508,6 +1547,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                   checkFromSpec: input.target.checkFromSpec ?? null,
                   setupCommand: input.target.setupCommand,
                   selfCheck: input.target.selfCheck ?? null,
+                  testProbe: input.target.testProbe ?? null,
                   checkTimeoutMs: testTimeoutMs,
                   publish: input.target.publish,
                   commit: input.target.commit ?? DEFAULT_COMMIT_SETTINGS,
@@ -1954,8 +1994,10 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
       } catch (error) {
         // As the stage loop below does: a suspension on the spec wait, a
         // failure or a cancel leaves no review snapshots behind.
-        if (!(error instanceof Error && error.name === 'LeaseLostError'))
+        if (!(error instanceof Error && error.name === 'LeaseLostError')) {
           await target.releaseReviewSnapshots?.({ base: true })
+          await target.releaseTestProbeBase?.()
+        }
         throw error
       }
       let state = initialState(runSetup, repairSession?.confirmed ?? null)
@@ -1998,9 +2040,13 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
         // A failed or cancelled run never runs again, so its review
         // snapshots go now, before the failure is recorded. A lost lease is
         // left alone: the run may be picked up again and read them. A
-        // suspension for approval finds none left.
-        if (!(error instanceof Error && error.name === 'LeaseLostError'))
+        // suspension for approval finds none left. The probe's base
+        // worktree goes with them; a probe that finds it gone makes it
+        // again.
+        if (!(error instanceof Error && error.name === 'LeaseLostError')) {
           await target.releaseReviewSnapshots?.({ base: true })
+          await target.releaseTestProbeBase?.()
+        }
         throw error
       }
       await target.cleanup()

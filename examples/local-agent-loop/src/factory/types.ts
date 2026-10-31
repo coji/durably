@@ -28,6 +28,7 @@ import type { FactoryEvent } from './events.js'
 import type {
   Delivery,
   RepairParentConclusion,
+  StageContext,
   Target,
   TargetConfig,
 } from './target.js'
@@ -426,6 +427,52 @@ export interface CancelledReviewStepResult {
 export type ParallelReviewStepResult =
   | ReviewStepResult
   | CancelledReviewStepResult
+
+/**
+ * One `testProbe` entry, fixed at trigger: the added or modified files whose
+ * repository-relative path matches `glob` are run one at a time with
+ * `command`, argv whose `{files}` elements are each replaced by that path.
+ */
+export interface TestProbeRule {
+  glob: string
+  command: string[]
+}
+
+/**
+ * One side of one probed test file: its exit code, or why it could not run
+ * (the base could not be prepared, the command did not start, or it timed
+ * out). `elapsedMs` is 0 for a side that was never started.
+ */
+export type TestProbeSide =
+  | { ran: true; exitCode: number | null; elapsedMs: number }
+  | { ran: false; reason: string; elapsedMs: number }
+
+/** One test file the probe ran on the base and on the candidate. */
+export interface TestProbeFile {
+  path: string
+  command: string[]
+  base: TestProbeSide
+  candidate: TestProbeSide
+}
+
+/**
+ * What a candidate's probe step stores: the candidate it ran on, each test
+ * file it ran, how long it took, and the result text the reviewers get as
+ * the `test-probe` stage context. A replay reads all of it back from the
+ * step and runs nothing.
+ */
+export interface TestProbeRecord {
+  candidateId: string
+  files: TestProbeFile[]
+  elapsedMs: number
+  context: StageContext
+}
+
+/** The stage context name the probe's result is registered under. */
+export const TEST_PROBE_CONTEXT = 'test-probe'
+
+/** The probe step of the verify stage whose key is `verifyKey`. */
+export const testProbeStepOf = (verifyKey: string) => `${verifyKey}:test-probe`
 
 export interface FactoryOutcome {
   approved: boolean

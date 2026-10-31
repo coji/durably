@@ -449,6 +449,41 @@ export async function discardWorktree(
 }
 
 /**
+ * Put a worktree's tracked files, its index and its `HEAD` back at `commit`.
+ * Files the index holds that `commit` does not are removed; untracked ones
+ * stay. The test probe uses it to bring each worktree back after a run.
+ */
+export async function resetHard(
+  dir: string,
+  commit: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await git(
+    dir,
+    ['reset', '--hard', '--quiet', commit],
+    signal ? { signal } : {},
+  )
+}
+
+/**
+ * Write `paths` as `commit` has them into a worktree of the same repository,
+ * and nothing else. Each path is taken literally, never as a pathspec
+ * pattern, and git refuses one beyond a symbolic link.
+ */
+export async function checkoutPathsFrom(
+  dir: string,
+  commit: string,
+  paths: string[],
+  signal?: AbortSignal,
+): Promise<void> {
+  if (paths.length === 0) return
+  await git(dir, ['checkout', commit, '--', ...paths], {
+    env: { GIT_LITERAL_PATHSPECS: '1' },
+    ...(signal ? { signal } : {}),
+  })
+}
+
+/**
  * Remove untracked files and directories that `.gitignore` does not cover,
  * including nested repositories (the second `-f`). Ignored files, such as
  * installed dependencies, stay.

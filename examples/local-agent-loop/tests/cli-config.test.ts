@@ -197,6 +197,7 @@ type RunInput = {
     baselineReuse?: { maxAgeMs: number } | null
     parallelReview?: boolean
     selfCheck?: string[][] | null
+    testProbe?: { glob: string; command: string[] }[] | null
     commit?: {
       authorName: string | null
       authorEmail: string | null
@@ -2158,6 +2159,127 @@ describe('selfCheck', { timeout: 240000 }, () => {
     assert.equal(child(setup()).target.selfCheck, null)
     // The inherited limit, 5 included, is the child's own.
     assert.equal(child(setup()).maxIterations, 5)
+  })
+})
+
+describe('testProbe', { timeout: 240000 }, () => {
+  const PROBE = [
+    { glob: 'test/**/*.test.js', command: ['node', '--test', '{files}'] },
+  ]
+  const OTHER = [{ glob: 'spec/**', command: ['node', '-e', '1', '{files}'] }]
+
+  it('stores the entries at trigger, null when left out, and reloads them', async () => {
+    const box = await sandbox({ check: CHECK, testProbe: PROBE })
+    const input = await inputOf(
+      box,
+      await trigger(box, ['--repo', box.repo, '--task', 'x']),
+    )
+    assert.deepEqual(input.target.testProbe, PROBE)
+    const plain = await sandbox({ check: CHECK })
+    const plainInput = await inputOf(
+      plain,
+      await trigger(plain, ['--repo', plain.repo, '--task', 'x']),
+    )
+    assert.equal(plainInput.target.testProbe, null)
+    // `retrigger --reload-config` reads the file as it is now.
+    await writeFile(
+      join(box.repo, 'factory.json'),
+      JSON.stringify({ check: CHECK, testProbe: OTHER }),
+    )
+    const reloaded = await reloadTriggerInput(
+      input as unknown as Parameters<typeof reloadTriggerInput>[0],
+    )
+    assert.deepEqual(
+      (reloaded.input.target as { testProbe?: unknown }).testProbe,
+      OTHER,
+    )
+    await writeFile(
+      join(box.repo, 'factory.json'),
+      JSON.stringify({ check: CHECK }),
+    )
+    const dropped = await reloadTriggerInput(
+      input as unknown as Parameters<typeof reloadTriggerInput>[0],
+    )
+    assert.equal(
+      (dropped.input.target as { testProbe?: unknown }).testProbe,
+      null,
+    )
+  })
+
+  it('refuses an empty list, a command without a whole {files} element, an empty glob or command, and unknown keys', async () => {
+    for (const testProbe of [
+      [],
+      [{ glob: 'test/**', command: ['node', '--test'] }],
+      [{ glob: 'test/**', command: ['node', '--test={files}'] }],
+      [{ glob: 'test/**', command: [] }],
+      [{ glob: '', command: ['node', '{files}'] }],
+      [{ glob: 'test/**', command: ['node', '', '{files}'] }],
+      [{ glob: 'test/**', command: 'node --test {files}' }],
+      [{ glob: 'test/**', command: ['node', '{files}'], shell: true }],
+    ]) {
+      const box = await sandbox({ check: CHECK, testProbe })
+      await rejected(
+        box,
+        ['--repo', box.repo, '--task', 'x'],
+        /invalid factory config[\s\S]*testProbe/,
+      )
+    }
+  })
+
+  it('keeps the entries fixed at trigger for the worker, and gives them to a repair run whatever factory.json says now', async () => {
+    const box = await sandbox({ check: CHECK, testProbe: PROBE })
+    const parentId = await trigger(box, [
+      '--repo',
+      box.repo,
+      '--task',
+      'the parent task',
+      '--max-iterations',
+      '1',
+    ])
+    // Edited after trigger: the run never reads it.
+    await writeFile(
+      join(box.repo, 'factory.json'),
+      JSON.stringify({ check: CHECK, testProbe: OTHER }),
+    )
+    process.env.FAKE_FAIL_FIRST = '0'
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    await durably.init()
+    let setup: FactorySetup
+    let probed: string[]
+    try {
+      await until(
+        async () => (await durably.getRun(parentId))?.status === 'completed',
+        'the parent completes',
+      )
+      setup = (await durably.storage.getCompletedStep(parentId, 'setup'))
+        ?.output as FactorySetup
+      probed = (await durably.storage.getSteps(parentId))
+        .map((s) => s.name)
+        .filter((name) => name.endsWith(':test-probe'))
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+    }
+    assert.equal(setup.target.kind, 'repo')
+    if (setup.target.kind !== 'repo') throw new Error('repo target expected')
+    assert.deepEqual(setup.target.testProbe, PROBE)
+    assert.equal(probed.length, 1)
+    // A repair run takes the parent's value, not the edited file's.
+    await writeFile(join(box.root, 'findings.md'), 'FINDING: refunds\n')
+    const res = await demo(box, [
+      'repair',
+      '--run',
+      parentId,
+      '--findings-file',
+      'findings.md',
+    ])
+    assert.equal(res.code, 0, res.stderr)
+    const child = await inputOf(
+      box,
+      (JSON.parse(res.stdout) as { runId: string }).runId,
+    )
+    assert.deepEqual(child.target.testProbe, PROBE)
   })
 })
 

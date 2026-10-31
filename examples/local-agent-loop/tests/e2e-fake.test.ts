@@ -3911,3 +3911,227 @@ describe(
     })
   },
 )
+
+describe('the test probe', { timeout: 300000 }, () => {
+  const fake = {
+    provider: 'fake' as const,
+    requestedModel: null,
+    requestedEffort: null,
+  }
+  /** A test the candidate adds that fails on the base's truncating add(). */
+  const DECIMAL_TEST =
+    "import assert from 'node:assert/strict'\nimport { it } from 'node:test'\nimport { add } from '../src/calc.js'\nit('adds decimals', () => assert.equal(add(0.1, 0.2), 0.30000000000000004))\n"
+  /** A test the candidate adds that passes on the base as well. */
+  const INTEGER_TEST =
+    "import assert from 'node:assert/strict'\nimport { it } from 'node:test'\nimport { add } from '../src/calc.js'\nit('adds integers', () => assert.equal(add(1, 2), 3))\n"
+
+  /** A repository whose `add()` truncates, with no test of its own. */
+  async function probeRepo(root: string): Promise<string> {
+    const repo = join(root, 'repo')
+    await mkdir(join(repo, 'src'), { recursive: true })
+    await writeFile(
+      join(repo, 'src', 'calc.js'),
+      'export function add(a, b) {\n  return Math.trunc(a) + Math.trunc(b)\n}\n',
+    )
+    await writeFile(join(repo, 'package.json'), '{"type":"module"}\n')
+    for (const args of [
+      ['init', '--initial-branch=main'],
+      ['config', 'user.email', 'test@localhost'],
+      ['config', 'user.name', 'test'],
+      ['add', '-A'],
+      ['commit', '-m', 'base'],
+    ]) {
+      const res = await runChild('git', args, { cwd: repo, timeoutMs: 30000 })
+      if (res.code !== 0)
+        throw new Error(`git ${args.join(' ')}: ${res.stderr}`)
+    }
+    return repo
+  }
+
+  it('hands both reviewers what failed on the base, what passed on it too and what could not run, and reports it', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'e2e-test-probe-'))
+    const dir = join(home, '.local', 'state', 'local-agent-loop')
+    const repo = await probeRepo(home)
+    delete process.env.FAKE_FAIL_FIRST
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    delete process.env.FAKE_REVIEW_SLOW_MS
+    const durably = createAgentDurably({ stateRoot: dir })
+    await durably.migrate()
+    // Both reviewers run a command, so the fake provider records the prompt
+    // each was given and the files each could read.
+    const review = {
+      command: '/review {head}',
+      context: 'prompt' as const,
+      output: 'verdict' as const,
+    }
+    const start = (args: {
+      setupCommand?: string[]
+      parallelReview?: boolean
+      testProbe?: { glob: string; command: string[] }[]
+      changes: Record<string, string>
+    }) =>
+      durably.jobs.agentLoop.trigger({
+        provider: 'fake',
+        profiles: { code: fake, correctness: fake, 'edge-cases': fake },
+        target: {
+          kind: 'repo' as const,
+          repoPath: repo,
+          baseRef: 'HEAD',
+          task: 'Fix add() so decimal inputs are not truncated.',
+          spec: null,
+          dispositions: null,
+          inputFiles: { task: null, spec: null, dispositions: null },
+          issue: null,
+          checkCommand: ['node', '--test'],
+          setupCommand: args.setupCommand ?? null,
+          publish: false,
+          ...(args.testProbe ? { testProbe: args.testProbe } : {}),
+          ...(args.parallelReview ? { parallelReview: true } : {}),
+        },
+        maxIterations: 1,
+        context: 'reuse',
+        review: { correctness: review, 'edge-cases': review },
+        fakeScenario: { failIterations: 0, changes: args.changes },
+      })
+    const testProbe = [
+      { glob: 'test/**/*.test.js', command: ['node', '--test', '{files}'] },
+      // A command that cannot start, on both sides.
+      { glob: 'probe/**', command: ['no-such-probe-command', '{files}'] },
+    ]
+    const recording = recordFakeReviewCalls()
+    try {
+      const all = await start({
+        testProbe,
+        changes: {
+          'test/decimal.test.js': DECIMAL_TEST,
+          'test/integer.test.js': INTEGER_TEST,
+          'probe/case.txt': 'x\n',
+        },
+      })
+      // The base cannot be set up: its side could not run, and the
+      // candidate's still does. The run goes on beside its check.
+      const noBase = await start({
+        testProbe,
+        parallelReview: true,
+        setupCommand: [
+          'node',
+          '-e',
+          "if (process.cwd().endsWith('base-work')) { console.error('BASE-SETUP-BROKE'); process.exit(3) }",
+        ],
+        changes: { 'test/decimal.test.js': DECIMAL_TEST },
+      })
+      // No probe: nothing changes from before.
+      const plain = await start({
+        changes: { 'test/decimal.test.js': DECIMAL_TEST },
+      })
+      await durably.init()
+      for (const run of [all, noBase, plain])
+        await waitFor(
+          async () =>
+            ['completed', 'failed'].includes(
+              (await durably.getRun(run.id))?.status ?? '',
+            ),
+          240000,
+          `run ${run.id} settles`,
+        )
+      const runRoot = (id: string) => join(dir, 'runs', id)
+      for (const run of [all, noBase, plain]) {
+        const settled = await durably.getRun(run.id)
+        assert.equal(settled?.status, 'completed', settled?.error ?? '')
+        assert.equal(
+          (settled?.output as { conclusion?: string } | null)?.conclusion,
+          'approved',
+        )
+        // The base worktree is gone, from disk and from git.
+        assert.equal(existsSync(join(runRoot(run.id), 'base-work')), false)
+      }
+      const worktrees = await runChild('git', ['worktree', 'list'], {
+        cwd: repo,
+        timeoutMs: 30000,
+      })
+      assert.ok(!worktrees.stdout.includes('base-work'), worktrees.stdout)
+
+      const callsOf = (id: string) =>
+        recording.calls.filter((c) => c.workdir.includes(id))
+      const block = (prompt: string) => {
+        const at = prompt.indexOf('Stage result test-probe:')
+        assert.ok(at >= 0, 'the prompt carries the test probe result')
+        return prompt.slice(at, prompt.indexOf('UNTRUSTED INPUT DATA:'))
+      }
+      // Both reviewers get the same result, trusted and readable.
+      const reviewed = callsOf(all.id)
+      assert.deepEqual(reviewed.map((c) => c.role).sort(), [
+        'review-a',
+        'review-b',
+      ])
+      const copyDir = join(runRoot(all.id), 'stage-context')
+      for (const call of reviewed) {
+        const text = block(call.input ?? '')
+        assert.match(
+          text,
+          /## test\/decimal\.test\.js: failed on the base, passed on the candidate/,
+        )
+        assert.match(
+          text,
+          /## test\/integer\.test\.js: passed on the base and on the candidate/,
+        )
+        assert.match(text, /## probe\/case\.txt: could not run/)
+        assert.match(text, /base: could not run: .*no-such-probe-command/)
+        assert.match(text, /base: exit code 1 /)
+        assert.match(text, /3 test file\(s\)/)
+        // The base output tail says why it failed there.
+        assert.match(text, /adds decimals/)
+        assert.ok(
+          call.readable[copyDir]?.['test-probe.txt']?.includes(
+            'failed on the base, passed on the candidate',
+          ),
+        )
+      }
+      for (const call of callsOf(noBase.id)) {
+        const text = block(call.input ?? '')
+        assert.match(
+          text,
+          /base: could not run: the base worktree could not be set up: worktree setup failed \(3\)[\s\S]*BASE-SETUP-BROKE/,
+        )
+        assert.match(text, /candidate: exit code 0 /)
+      }
+      for (const call of callsOf(plain.id))
+        assert.ok(!(call.input ?? '').includes('Stage result test-probe'))
+
+      // The report reads the stored step, per candidate.
+      const report = await buildReport(durably, all.id)
+      assert.equal(report.testProbes?.length, 1)
+      const probe = report.testProbes?.[0]
+      assert.equal(probe?.targets, 3)
+      assert.equal(probe?.failedOnBase, 1)
+      assert.deepEqual(
+        probe?.couldNotRun.map((line) => line.split(':')[0]),
+        ['probe/case.txt (base)', 'probe/case.txt (candidate)'],
+      )
+      assert.ok((probe?.elapsedMs ?? 0) > 0)
+      assert.ok(reportToJson(report).includes('"testProbes"'))
+      const markdown = reportToMarkdown(report)
+      assert.match(
+        markdown,
+        /## Test probe[^\n]*\n\n- candidate-1-[0-9a-f]+: 3 test file\(s\), 1 failed on the base, 2 side\(s\) could not run, /,
+      )
+      assert.ok(markdown.includes('no-such-probe-command'))
+      const noBaseReport = await buildReport(durably, noBase.id)
+      assert.equal(noBaseReport.testProbes?.[0]?.failedOnBase, 0)
+      assert.match(
+        noBaseReport.testProbes?.[0]?.couldNotRun[0] ?? '',
+        /^test\/decimal\.test\.js \(base\): the base worktree could not be set up/,
+      )
+      const plainReport = await buildReport(durably, plain.id)
+      assert.deepEqual(plainReport.testProbes, [])
+      assert.ok(!reportToMarkdown(plainReport).includes('## Test probe'))
+      // No probe step, and no base worktree, without the setting.
+      const steps = await durably.storage.getSteps(plain.id)
+      assert.ok(!steps.some((s) => s.name.endsWith(':test-probe')))
+    } finally {
+      recording.stop()
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+})

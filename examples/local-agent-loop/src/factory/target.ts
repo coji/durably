@@ -15,7 +15,7 @@ import type { CandidateRef, ReviewSnapshots } from '../engine/types.js'
  * database to work from.
  */
 import type { GradeResult } from '../engine/verification.js'
-import type { ProfileRole } from './types.js'
+import type { ProfileRole, TestProbeRule } from './types.js'
 
 export type TargetKind = 'subject' | 'repo'
 
@@ -112,6 +112,17 @@ export interface RepoTargetConfig {
    * Absent: none.
    */
   stageContext?: StageContext[]
+  /**
+   * The added or modified test files to run on the base and on each
+   * candidate before its check and reviews, fixed at trigger. Null or
+   * absent: no probe, and no base worktree.
+   */
+  testProbe?: TestProbeRule[] | null
+  /**
+   * The base worktree the probe runs the base side in, set at setup only
+   * with `testProbe`.
+   */
+  testProbeBase?: TestProbeBase | null
   /** Source issue, when the task came from one. */
   issue: { number: number; title: string; url: string } | null
   /** Where the delivered patch is written. */
@@ -157,6 +168,23 @@ export type RepairParentConclusion =
   | 'review-incomplete'
 
 export type TargetConfig = SubjectTargetConfig | RepoTargetConfig
+
+/**
+ * A detached worktree at the base commit, beside the agent's (ADR-0039),
+ * made by setup with the same `setupCommand`. The agent never works in it;
+ * the probe resets it to the base for each candidate and takes only the
+ * test files from the candidate.
+ */
+export interface TestProbeBase {
+  /** Absolute path, under the run's directory (`baseWorkdirOf`). */
+  workdir: string
+  /**
+   * Why setup could not make or prepare it, or null. With a reason, the
+   * worktree was removed again, and every probe records the base side as
+   * not run for that reason; the run goes on.
+   */
+  setupFailure: string | null
+}
 
 /**
  * The largest owner context or stage context a run stores, in UTF-8 bytes:
@@ -362,11 +390,17 @@ export interface Target {
    * base tree too when `base` is true. Never throws.
    */
   releaseReviewSnapshots?(options: { base: boolean }): Promise<void>
+  /**
+   * Remove the test probe's base worktree and git's registration of it, if
+   * there is one. Never throws; a probe that finds it gone makes it again.
+   */
+  releaseTestProbeBase?(): Promise<void>
   /** Turn an approved candidate into something the human can act on. */
   deliver(args: DeliverArgs): Promise<Delivery>
   /**
    * Best-effort cleanup of what only a running run reads, such as review
-   * snapshots. Never throws. The repository worktree stays.
+   * snapshots and the test probe's base worktree. Never throws. The
+   * repository worktree stays.
    */
   cleanup(): Promise<void>
   /**

@@ -151,6 +151,7 @@ async function repoRunFiles(durably: AgentLoopDurably, run: Run) {
     repoPath: target.repoPath,
     runRoot,
     worktree: own.worktree,
+    baseWorktree: own.baseWorktree,
     reviewSnapshots: own.reviewSnapshots,
     branches: [
       ...(target.branch ? [target.branch] : []),
@@ -182,8 +183,8 @@ export interface RunCleanup {
 }
 
 /**
- * Remove a repository run's worktree and review snapshots, if any are left,
- * and with `deleteBranches` its recorded branches too, after the worktree,
+ * Remove a repository run's worktree, the test probe's base worktree and
+ * the review snapshots, if any are left, and with `deleteBranches` its recorded branches too, after the worktree,
  * since git refuses to delete a branch a worktree has checked out. Branches
  * of a delivered run are never deleted. The caller decides the run may be
  * cleaned up.
@@ -199,7 +200,8 @@ async function cleanUpRun(
   }
   // Called also when the directory is gone, so a worktree deleted outside
   // git leaves no stale registration that would keep its branch checked out.
-  const present = existsSync(files.worktree)
+  // The base worktree goes with it (`removeRunWorktree`).
+  const present = existsSync(files.worktree) || existsSync(files.baseWorktree)
   const warning = await removeRunWorktree(files.repoPath, files.runRoot)
   if (warning) done.warnings.push(`worktree ${files.worktree}: ${warning}`)
   else done.worktreeRemoved = present
@@ -219,11 +221,12 @@ async function cleanUpRun(
  * Refused for any run `archivable` refuses: one still open is decided or
  * worked instead, and one that finished needs no one.
  *
- * A repository run's worktree and review snapshots are removed with it,
- * also when it already was archived, so asking again retries a removal
- * that failed. Its branches are kept unless `deleteBranches` says
- * otherwise (`demo archive --delete-branch`). A failed removal is a
- * warning in the answer, not a refusal: the run is archived either way.
+ * A repository run's worktree, the test probe's base worktree and its
+ * review snapshots are removed with it, also when it already was
+ * archived, so asking again retries a removal that failed. Its branches
+ * are kept unless `deleteBranches` says otherwise (`demo archive
+ * --delete-branch`). A failed removal is a warning in the answer, not a
+ * refusal: the run is archived either way.
  */
 export async function archiveRun(
   durably: AgentLoopDurably,
@@ -422,8 +425,11 @@ export async function planPrune(
       archived.has(run.id) &&
       archivable((await diagnose(durably, run, now)).kind)
     if (!files.delivered && !shelved) continue
-    if (existsSync(files.worktree)) {
-      const bytes = await sizeOf(files.worktree)
+    // A base worktree a cancelled run left counts with the worktree, also
+    // when the worktree itself is gone.
+    if (existsSync(files.worktree) || existsSync(files.baseWorktree)) {
+      const bytes =
+        (await sizeOf(files.worktree)) + (await sizeOf(files.baseWorktree))
       plan.worktrees.push({
         runId: run.id,
         path: files.worktree,

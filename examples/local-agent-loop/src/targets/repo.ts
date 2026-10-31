@@ -93,7 +93,7 @@ import {
   type Target,
   type UntrustedInput,
 } from '../factory/target.js'
-import type { ProfileRole } from '../factory/types.js'
+import { TEST_PROBE_CONTEXT, type ProfileRole } from '../factory/types.js'
 
 /** Why a repair run's unapproved base was never approved (ADR-0030). */
 const UNAPPROVED_BASE: Record<
@@ -302,8 +302,27 @@ export class RepoTarget implements Target {
     return [
       'Judge the change against the task and the trusted context below. You are reading a real repository, so follow its own conventions rather than any assumed layout.',
       'Check that the change is minimal and that nothing unrelated was touched.',
-      'Check the tests: a test that passes whether or not the change is present does not count as coverage. Say needsChanges when the new tests would pass against the base commit.',
+      ...this.testRules(),
       'Check that no dependency was added without need and that no secret, credential or absolute local path was introduced.',
+    ]
+  }
+
+  /**
+   * How a reviewer judges the tests. With `testProbe`, the factory ran the
+   * new and changed test files on the base and on the candidate, and its
+   * result is in the trusted context: the reviewer judges from it, and
+   * reads the code only for a test it does not cover (ADR-0039).
+   */
+  private testRules(): string[] {
+    const coverage =
+      'Check the tests: a test that passes whether or not the change is present does not count as coverage.'
+    if (!this.config.testProbe || this.config.testProbe.length === 0)
+      return [
+        `${coverage} Say needsChanges when the new tests would pass against the base commit.`,
+      ]
+    return [
+      `${coverage} The trusted ${TEST_PROBE_CONTEXT} stage result below is what the factory saw when it ran each added or modified test file on the base commit, with only that file taken from the candidate, and on the candidate. Judge from it: say needsChanges when a test meant to cover the change passed on the base. Read the code to judge only a test the result does not cover, or one it could not run.`,
+      'A test that failed on the base is not evidence by itself that it checks the changed behaviour: read its output tail. Failing only because a module, export or file it imports is missing on the base proves nothing about the behaviour; failing on an assertion about that behaviour does.',
     ]
   }
 
@@ -864,12 +883,19 @@ export class RepoTarget implements Target {
   }
 
   async cleanup(): Promise<void> {
-    // The review snapshots are only read during a review. The worktree is
-    // left here whatever the run came to: only an approved delivery removes
-    // it (`retireWorktree`), and a stop keeps it for a person to look at.
-    // The branches are always kept; they are the delivery.
+    // The review snapshots are only read during a review, and the probe's
+    // base worktree only by a probe. The worktree is left here whatever the
+    // run came to: only an approved delivery removes it (`retireWorktree`),
+    // and a stop keeps it for a person to look at. The branches are always
+    // kept; they are the delivery.
     if (this.config.reviewSnapshotsDir)
       await removeQuietly(this.config.reviewSnapshotsDir)
+    await this.releaseTestProbeBase()
+  }
+
+  async releaseTestProbeBase(): Promise<void> {
+    const base = this.config.testProbeBase
+    if (base) await removeTestProbeBase(this.config.repoPath, base.workdir)
   }
 
   /**
@@ -893,9 +919,10 @@ export class RepoTarget implements Target {
 
 /**
  * Remove a repository run's worktree with `git worktree remove --force`,
- * prune git's registration of it, and remove its review snapshots. Nothing
- * else of the run is touched. Asking again after a removal succeeds and
- * does nothing. Returns why git could not remove the worktree, or null.
+ * prune git's registration of it, and remove its review snapshots and the
+ * test probe's base worktree. Nothing else of the run is touched. Asking
+ * again after a removal succeeds and does nothing. Returns why git could
+ * not remove the worktree, or null.
  */
 export async function removeRunWorktree(
   repoPath: string,
@@ -903,7 +930,22 @@ export async function removeRunWorktree(
 ): Promise<string | null> {
   const paths = removableRunPathsOf(runRoot)
   await removeQuietly(paths.reviewSnapshots)
+  await removeTestProbeBase(repoPath, paths.baseWorktree)
   return forceRemoveWorktree(repoPath, paths.worktree)
+}
+
+/**
+ * Remove the test probe's base worktree and prune git's registration of it.
+ * It holds nothing anyone works in, so its directory is removed outright,
+ * whether or not git still has it registered. Asking again does nothing.
+ * Returns why git could not prune, or null.
+ */
+export async function removeTestProbeBase(
+  repoPath: string,
+  dir: string,
+): Promise<string | null> {
+  await removeQuietly(dir)
+  return forceRemoveWorktree(repoPath, dir)
 }
 
 /** Remove a directory, ignoring every failure; for best-effort cleanup. */
