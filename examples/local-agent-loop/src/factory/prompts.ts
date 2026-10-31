@@ -67,12 +67,13 @@ export function ownerContextSection(context: string | null): string[] {
 }
 
 /**
- * The owner's confirmed context and the stages' results, as part of a
- * reviewer's trusted context. Nothing when there are neither.
+ * The owner's confirmed context and the stages' results, each with the path
+ * of the factory's copy, as part of a reviewer's trusted context. Nothing
+ * when there are neither.
  */
 export function trustedContextLines(
   context: string | null,
-  stageContext: StageContext[],
+  stageContext: (StageContext & { path: string })[],
 ): string[] {
   return [
     ...(context

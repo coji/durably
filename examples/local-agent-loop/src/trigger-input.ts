@@ -16,8 +16,10 @@ import {
   type StoredStageStep,
 } from './engine/failure-reasons.js'
 import { repoRoot } from './engine/git.js'
+import { fencedText } from './engine/markdown.js'
 import { parseProviderName } from './engine/providers/index.js'
 import type { VerificationOutcome } from './engine/verification.js'
+import { readInputFile } from './factory/input-file.js'
 import {
   assertSingleMode,
   baselineReuseSchema,
@@ -39,6 +41,7 @@ import {
   DEFAULT_COMMIT_SETTINGS,
   type CommitSettings,
   type FindingsRef,
+  checkContextText,
   type InputFileRef,
   MAX_CONTEXT_BYTES,
   type RepairParentConclusion,
@@ -290,72 +293,19 @@ async function resolveCodexPath(
   return abs
 }
 
-/** Input files are stored in the run and sent in every prompt, so keep them small. */
-const MAX_INPUT_FILE_BYTES = 256 * 1024
-
-/**
- * Read one input file once, here, before the run exists. The worker only ever
- * sees the content stored in the run input, so editing the file afterwards
- * changes nothing about the run. The content is not parsed. Its SHA-256 is
- * computed from the stored content when the report is built.
- */
-async function readInputFile(
-  flag: string,
-  path: string,
-  /** How errors name the file; `--<flag>` by default. */
-  name = `--${flag}`,
-  /** The directory a relative path is taken from; the current one by default. */
-  from?: string,
-  /** The largest file accepted, in bytes. */
-  maxBytes = MAX_INPUT_FILE_BYTES,
-): Promise<{ content: string; ref: InputFileRef }> {
-  const abs = from ? resolve(from, path) : resolve(path)
-  const limit = `the limit is ${maxBytes / 1024} KiB`
-  let size: number
-  try {
-    size = (await stat(abs)).size
-  } catch {
-    throw new Error(`${name} ${path}: cannot read file`)
-  }
-  // Check the size before reading, so a huge file is never loaded.
-  if (size > maxBytes)
-    throw new Error(`${name} ${path}: file is ${size} bytes; ${limit}`)
-  let bytes: Buffer
-  try {
-    bytes = await readFile(abs)
-  } catch {
-    throw new Error(`${name} ${path}: cannot read file`)
-  }
-  if (bytes.length > maxBytes)
-    throw new Error(`${name} ${path}: file is ${bytes.length} bytes; ${limit}`)
-  let content: string
-  try {
-    // Keep a byte order mark, so the stored text hashes like the file does.
-    content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
-      bytes,
-    )
-  } catch {
-    throw new Error(`${name} ${path}: not UTF-8 text`)
-  }
-  if (content.trim().length === 0)
-    throw new Error(`${name} ${path}: file is empty`)
-  return { content, ref: { path: abs } }
-}
-
 /**
  * Read `--context-file` once, before the run exists: an input file held to
- * 32 KiB, because it is trusted and goes into every code, repair and review
- * prompt. The run stores the content, so the owner's confirmed decisions
- * cannot change under it.
+ * the context's own limit, because it is trusted and goes into every code,
+ * repair and review prompt. The run stores the content, so the owner's
+ * confirmed decisions cannot change under it.
  */
-function readContextFile(path: string) {
-  return readInputFile(
-    'context-file',
-    path,
-    undefined,
-    undefined,
-    MAX_CONTEXT_BYTES,
-  )
+async function readContextFile(path: string) {
+  const file = await readInputFile(path, {
+    name: '--context-file',
+    maxBytes: MAX_CONTEXT_BYTES,
+  })
+  checkContextText(`--context-file ${path}`, file.content)
+  return file
 }
 
 function splitArgv(value: string): string[] {
@@ -503,12 +453,10 @@ async function readSpecStages(
   const read = async (key: 'template' | 'reviewTemplate') => {
     const path = spec?.[key]
     return path
-      ? readInputFile(
-          `spec.${key}`,
-          path,
-          `${loaded.path}: spec.${key}`,
-          dirname(loaded.path),
-        )
+      ? readInputFile(path, {
+          name: `${loaded.path}: spec.${key}`,
+          from: dirname(loaded.path),
+        })
       : null
   }
   // One after the other, so a config with two bad paths names the first.
@@ -656,13 +604,15 @@ export async function resolveTarget(a: Record<string, string>) {
       '--repo needs --issue <number>, --task "<text>" or --task-file <path>',
     )
   const taskFile = a['task-file']
-    ? await readInputFile('task-file', a['task-file'])
+    ? await readInputFile(a['task-file'], { name: '--task-file' })
     : null
   const specFile = a['spec-file']
-    ? await readInputFile('spec-file', a['spec-file'])
+    ? await readInputFile(a['spec-file'], { name: '--spec-file' })
     : null
   const dispositionsFile = a['dispositions-file']
-    ? await readInputFile('dispositions-file', a['dispositions-file'])
+    ? await readInputFile(a['dispositions-file'], {
+        name: '--dispositions-file',
+      })
     : null
   const contextFile = a['context-file']
     ? await readContextFile(a['context-file'])
@@ -886,7 +836,7 @@ export async function reloadTriggerInput(stored: StoredInput): Promise<{
  * file afterwards changes nothing.
  */
 export async function readNotesFile(path: string): Promise<string> {
-  return (await readInputFile('notes-file', path)).content
+  return (await readInputFile(path, { name: '--notes-file' })).content
 }
 
 /**
@@ -949,9 +899,11 @@ export async function readRepairFiles(
   const dispositions = a['dispositions-file']
   const context = a['context-file']
   return {
-    findings: findings ? await readInputFile('findings-file', findings) : null,
+    findings: findings
+      ? await readInputFile(findings, { name: '--findings-file' })
+      : null,
     dispositions: dispositions
-      ? await readInputFile('dispositions-file', dispositions)
+      ? await readInputFile(dispositions, { name: '--dispositions-file' })
       : null,
     context: context ? await readContextFile(context) : null,
     ...(maxIterations !== undefined ? { maxIterations } : {}),
@@ -1135,11 +1087,6 @@ export function checkFailureFindings(
     throw refuse('no failed check output is stored for its last candidate')
   const exitCode =
     typeof result.exitCode === 'number' ? String(result.exitCode) : 'none'
-  const longest = Math.max(
-    0,
-    ...(result.stdout.match(/`+/g) ?? []).map((run) => run.length),
-  )
-  const fence = '`'.repeat(Math.max(3, longest + 1))
   const content = [
     `# Check failure of factory run ${parent.id}`,
     '',
@@ -1150,9 +1097,7 @@ export function checkFailureFindings(
     '',
     '## Output tail (stdout and stderr)',
     '',
-    fence,
-    result.stdout.replace(/\n$/, ''),
-    fence,
+    ...fencedText(result.stdout),
     '',
   ].join('\n')
   return { content, ref: { parentRun: parent.id } }

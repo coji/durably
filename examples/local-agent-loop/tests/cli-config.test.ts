@@ -5216,8 +5216,15 @@ describe('--context-file', { timeout: 180000 }, () => {
       assert.ok(reportToJson(report).includes(sha256(CONTEXT)))
       const markdown = reportToMarkdown(report)
       assert.ok(!markdown.includes('DIFFERENT'))
+      // Its path and hash once, among the inputs; its content in a section
+      // of its own.
+      assert.ok(
+        markdown.includes(
+          `- context: ${sha256(CONTEXT)} (${join(realpathSync(box.root), 'context.md')})`,
+        ),
+      )
+      assert.equal(markdown.split(sha256(CONTEXT)).length, 2)
       const section = markdown.split('## Owner context (trusted, as stored)')[1]
-      assert.ok(section?.includes(`- sha256: ${sha256(CONTEXT)}`))
       // Five backticks: one more than the longest run in the content.
       assert.ok(
         section?.includes(`\n\`\`\`\`\`\n${CONTEXT.trimEnd()}\n\`\`\`\`\`\n`),
@@ -5254,10 +5261,48 @@ describe('--context-file', { timeout: 180000 }, () => {
       await durably.migrate()
       const report = await buildReport(durably, runId)
       assert.equal(report.inputs.context, null)
-      assert.match(
-        reportToMarkdown(report),
-        /## Owner context \(trusted, as stored\)\n\n- not given\n/,
+      const markdown = reportToMarkdown(report)
+      assert.match(markdown, /\n- context: not given\n/)
+      assert.ok(!markdown.includes('## Owner context'))
+    } finally {
+      await durably.db.destroy()
+    }
+  })
+
+  it('reports a context stored without the file it was read from', async () => {
+    const box = await sandbox({ check: CHECK })
+    const runId = await trigger(box, ['--repo', box.repo, '--task', 'Fix'])
+    const input = (await inputOf(box, runId)) as RunInput & {
+      target: { context?: unknown }
+    }
+    // As a run triggered through the API, not the CLI, may store it.
+    input.target.context = CONTEXT
+    delete input.target.inputFiles['context']
+    const db = new Database(dbPath(box.stateRoot))
+    try {
+      db.prepare('UPDATE durably_runs SET input = ? WHERE id = ?').run(
+        JSON.stringify(input),
+        runId,
       )
+    } finally {
+      db.close()
+    }
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    try {
+      await durably.migrate()
+      const report = await buildReport(durably, runId)
+      assert.deepEqual(report.inputs.context, {
+        path: null,
+        sha256: sha256(CONTEXT),
+        content: CONTEXT,
+      })
+      const markdown = reportToMarkdown(report)
+      assert.ok(
+        markdown.includes(
+          `- context: ${sha256(CONTEXT)} (stored without a file)`,
+        ),
+      )
+      assert.ok(markdown.includes('## Owner context (trusted, as stored)'))
     } finally {
       await durably.db.destroy()
     }
@@ -5335,7 +5380,12 @@ describe('--context-file', { timeout: 180000 }, () => {
       // than 32,768 bytes.
       await assert.rejects(
         durably.jobs.agentLoop.trigger(target('あ'.repeat(10923))),
-        /the context is limited to 32768 bytes/,
+        /the context is 32769 bytes; the limit is 32 KiB/,
+      )
+      // Nor a blank one, which `--context-file` refuses too.
+      await assert.rejects(
+        durably.jobs.agentLoop.trigger(target(' \n\t')),
+        /the context is empty/,
       )
       await durably.jobs.agentLoop.trigger(target('あ'.repeat(10922)))
     } finally {

@@ -824,6 +824,8 @@ export const RECORD = {
    */
   contextContent:
     '確定事項の内容（実装・修正・レビューに信頼できる情報として渡した内容）',
+  /** An input stored without the file it was read from. */
+  storedWithoutFile: 'ファイルからではなく本文で指定',
   notGiven: '指定なし',
   notes: '注記',
 } as const

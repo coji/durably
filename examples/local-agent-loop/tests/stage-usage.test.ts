@@ -614,7 +614,6 @@ function report(
       task: { path: '/tmp/task.md', sha256: 'a'.repeat(64) },
       spec: null,
       dispositions: null,
-      context: null,
       findings: null,
     },
     lineage: { parent: null, children: [] },

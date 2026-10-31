@@ -3432,7 +3432,7 @@ describe('configured reviewers', { timeout: 240000 }, () => {
         call.localInstructionsAtStart?.content ?? '',
         /independent correctness reviewer/,
       )
-      assert.doesNotMatch(call.localInstructionsAtStart?.content ?? '', /owner/)
+      assert.ok(!(call.localInstructionsAtStart?.content ?? '').includes(own))
 
       // Cancelled mid-call: nothing the review used is left.
       process.env.FAKE_REVIEW_SLOW_MS = '60000'
@@ -5078,7 +5078,11 @@ describe('owner context and stage context', { timeout: 240000 }, () => {
         content: CONTEXT,
       })
       assert.ok(reportToJson(report).includes(sha256))
-      assert.ok(reportToMarkdown(report).includes(`- sha256: ${sha256}`))
+      assert.ok(
+        reportToMarkdown(report).includes(
+          `- context: ${sha256} (/owner/context.md)`,
+        ),
+      )
     } finally {
       await durably.stop()
       await durably.db.destroy()
@@ -5207,8 +5211,12 @@ describe('owner context and stage context', { timeout: 240000 }, () => {
     const setup = await settle()
     assert.equal(setup.target.kind, 'repo')
     if (setup.target.kind !== 'repo') throw new Error('repo target expected')
-    const copy = setup.target.stageContext?.[0]?.path ?? ''
-    assert.equal(copy, join(runRoot, 'stage-context', 'tests.txt'))
+    // Only the content is stored; the copy is the factory's, in the run's
+    // own directory.
+    assert.deepEqual(setup.target.stageContext, [
+      { name: 'tests', content: STAGE },
+    ])
+    const copy = join(runRoot, 'stage-context', 'tests.txt')
     assert.ok(!copy.startsWith(worktree + sep))
     // The original changes, then goes: nothing the reviewers get does.
     await writeFile(produced, 'CHANGED\n')

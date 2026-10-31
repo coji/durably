@@ -938,20 +938,25 @@ function hashed<R extends object>(ref: R | null | undefined, content: unknown) {
  */
 function inputHashes(input: PersistedInput | null): ReportInputs {
   const target = input?.target
-  const entry = (name: 'task' | 'spec' | 'dispositions' | 'context') => {
+  const entry = (name: 'task' | 'spec' | 'dispositions') => {
     const path = target?.inputFiles?.[name]?.path
     return hashed(path ? { path } : null, target?.[name])
   }
-  // The context's content too: it is trusted and short, so the report
-  // shows exactly what every prompt was given.
-  const context = entry('context')
+  // From the stored content, with or without the file it was read from, and
+  // the content too: it is trusted and short, so the report shows exactly
+  // what the prompts were given.
+  const context = target?.context
   return {
     task: entry('task'),
     spec: entry('spec'),
     dispositions: entry('dispositions'),
     context:
-      context && typeof target?.context === 'string'
-        ? { ...context, content: target.context }
+      typeof context === 'string'
+        ? {
+            path: target?.inputFiles?.context?.path ?? null,
+            sha256: createHash('sha256').update(context).digest('hex'),
+            content: context,
+          }
         : null,
     findings: findingsHash(input),
   }

@@ -51,13 +51,7 @@ function baseReport(): LoopReport {
     },
     stageUsage: [],
     roleUsage: [],
-    inputs: {
-      task: null,
-      spec: null,
-      dispositions: null,
-      context: null,
-      findings: null,
-    },
+    inputs: { task: null, spec: null, dispositions: null, findings: null },
     lineage: { parent: null, children: [] },
     candidate: null,
     candidates: [],
@@ -435,7 +429,6 @@ describe('repair runs from outside findings', () => {
         task: null,
         spec: null,
         dispositions: null,
-        context: null,
         findings: { path: '/tmp/findings.md', sha256: 'f'.repeat(64) },
       },
     }
@@ -460,13 +453,7 @@ describe('repair runs from outside findings', () => {
     const findings = { parentRun: 'parent', sha256: 'e'.repeat(64) }
     const r = {
       ...run('child', 'parent', 1),
-      inputs: {
-        task: null,
-        spec: null,
-        dispositions: null,
-        context: null,
-        findings,
-      },
+      inputs: { task: null, spec: null, dispositions: null, findings },
     }
     assert.match(
       reportToMarkdown(r),

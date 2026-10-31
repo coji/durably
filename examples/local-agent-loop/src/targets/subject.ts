@@ -81,6 +81,10 @@ export class SubjectTarget implements Target {
     return []
   }
 
+  ownerContext(): string | null {
+    return null
+  }
+
   implementationRules(): string[] {
     return [
       'Keep the change minimal; only edit files under src/.',

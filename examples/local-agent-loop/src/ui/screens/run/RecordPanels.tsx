@@ -109,9 +109,10 @@ function DeliveryPanel({ report: r }: { report: LoopReport }) {
 
 /** The candidate, the delivery, the stored inputs and the report's notes. */
 export function RecordPanels({ report: r }: { report: LoopReport }) {
-  const inputs = r.inputs.findings
-    ? (['task', 'spec', 'dispositions', 'context', 'findings'] as const)
-    : (['task', 'spec', 'dispositions', 'context'] as const)
+  const inputs = [
+    ...(['task', 'spec', 'dispositions', 'context'] as const),
+    ...(r.inputs.findings ? (['findings'] as const) : []),
+  ]
   // Absent from a report built before the context existed.
   const context = r.inputs.context ?? null
   return (
@@ -131,7 +132,7 @@ export function RecordPanels({ report: r }: { report: LoopReport }) {
                 {!file ? (
                   RECORD.notGiven
                 ) : 'path' in file ? (
-                  file.path
+                  (file.path ?? RECORD.storedWithoutFile)
                 ) : (
                   <span className="inline-flex flex-wrap items-baseline gap-x-2">
                     <span className="font-ui">{RECORD.findingsFromParent}</span>

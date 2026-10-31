@@ -40,6 +40,7 @@ import {
   type VerificationOutcome,
 } from '../engine/verification.js'
 import { SpecEventSchema, type SpecEvent } from './events.js'
+import { readInputFile } from './input-file.js'
 import { agentLogsDirBeside } from './layout.js'
 import { specAction } from './policy.js'
 import {
@@ -64,6 +65,7 @@ import {
   type SpecState,
 } from './reducer.js'
 import {
+  checkContextText,
   MAX_CONTEXT_BYTES,
   type Delivery,
   type RepairParentConclusion,
@@ -210,10 +212,7 @@ export const codeStage: StageHandler = async ({
           untrusted: target.untrustedInputs('code'),
           // The owner's confirmed decisions, trusted and apart from the
           // data above; the stages' results are for the reviewers.
-          ownerContext:
-            state.setup.target.kind === 'repo'
-              ? (state.setup.target.context ?? null)
-              : null,
+          ownerContext: target.ownerContext(),
           // Told it starts a new session only when it does. A repair on the
           // code profile keeps the prompt it always had, unless it repairs a
           // stopped call's work in a new session.
@@ -541,17 +540,19 @@ async function reviewRoundOf(args: {
   snapshotOnly: boolean
 }) {
   const { step, state, key, target, candidate } = args
-  const trustedContext = await target.reviewContext(candidate)
+  // Every reviewer may read the factory's copy of each stage's result,
+  // written again from its stored content for each round.
+  const [trustedContext, stageCopies] = await Promise.all([
+    target.reviewContext(candidate),
+    target.prepareStageContext?.() ?? null,
+  ])
   const reviewCwd = target.reviewCwd(candidate)
   // Both reviewers read the same candidate's diff and changed-file list, and
   // may read those two files even though they sit outside the review cwd.
   const changes = candidate.changes ?? null
-  // So may every reviewer read the factory's copy of each stage's result,
-  // written again from its stored content for each round.
-  const stageFiles = (await target.prepareStageContext?.()) ?? []
   const readableFiles = [
     ...(changes ? [changes.diffPath, changes.changedFilesPath] : []),
-    ...stageFiles,
+    ...(stageCopies?.files ?? []),
   ]
   const setup = state.setup
   const baseCommit =
@@ -675,7 +676,7 @@ async function reviewRoundOf(args: {
                   trees.headDir,
                   // A command-mode reviewer reads by directory; the copies
                   // share one the factory keeps for nothing else.
-                  ...new Set(stageFiles.map((file) => dirname(file))),
+                  ...(stageCopies ? [stageCopies.dir] : []),
                 ]
               : [],
         }
@@ -1426,8 +1427,12 @@ export async function runCheckFromSpec(
 /** A stage context's name: it names the block and the factory's copy. */
 const STAGE_CONTEXT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
-/** A stage's result as its completed step output holds it. */
-export type SettledStageContext = Pick<StageContext, 'name' | 'content'>
+function checkStageContextName(name: string): void {
+  if (!STAGE_CONTEXT_NAME.test(name))
+    throw new Error(
+      `stage context ${name}: a name is lower-case letters, digits and dashes`,
+    )
+}
 
 /**
  * Read a file a stage produced, such as the result of a test it ran on the
@@ -1442,43 +1447,28 @@ export async function readStageContextFile(args: {
   file: string
   /** The candidate worktree, whose files are never trusted. */
   worktree: string
-}): Promise<SettledStageContext> {
+}): Promise<StageContext> {
   const { name, file } = args
-  if (!STAGE_CONTEXT_NAME.test(name))
-    throw new Error(
-      `stage context ${name}: a name is lower-case letters, digits and dashes`,
-    )
-  const refuse = (why: string) =>
-    new Error(`stage context ${name}: ${file}: ${why}`)
+  checkStageContextName(name)
+  const label = `stage context ${name}:`
   // Through links, so a link outside the worktree to a file inside it is
   // refused too.
   const [real, worktree] = await Promise.all([
     realpath(file).catch(() => {
-      throw refuse('cannot read file')
+      throw new Error(`${label} ${file}: cannot read file`)
     }),
     realpath(args.worktree),
   ])
   const from = relative(worktree, real)
   if (!(from === '..' || from.startsWith(`..${sep}`) || isAbsolute(from)))
-    throw refuse(
-      'inside the candidate worktree, which the implementer can change',
+    throw new Error(
+      `${label} ${file}: inside the candidate worktree, which the implementer can change`,
     )
-  const bytes = await readFile(real).catch(() => {
-    throw refuse('cannot read file')
+  const { content } = await readInputFile(real, {
+    name: label,
+    maxBytes: MAX_CONTEXT_BYTES,
   })
-  if (bytes.length > MAX_CONTEXT_BYTES)
-    throw refuse(
-      `file is ${bytes.length} bytes; the limit is ${MAX_CONTEXT_BYTES / 1024} KiB`,
-    )
-  let content: string
-  try {
-    content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
-      bytes,
-    )
-  } catch {
-    throw refuse('not UTF-8 text')
-  }
-  if (content.trim().length === 0) throw refuse('file is empty')
+  checkContextText(`stage context ${name}`, content)
   return { name, content }
 }
 
@@ -1493,31 +1483,14 @@ export async function readStageContextFile(args: {
  */
 export function withStageContext(
   setup: FactorySetup,
-  settled: SettledStageContext,
+  settled: StageContext,
 ): FactorySetup {
   const target = setup.target
   if (target.kind !== 'repo')
     throw new Error('stage context needs a repository target')
-  if (!STAGE_CONTEXT_NAME.test(settled.name))
-    throw new Error(
-      `stage context ${settled.name}: a name is lower-case letters, digits and dashes`,
-    )
-  if (
-    settled.content.trim().length === 0 ||
-    Buffer.byteLength(settled.content, 'utf8') > MAX_CONTEXT_BYTES
-  )
-    throw new Error(
-      `stage context ${settled.name}: the content must be non-empty and at most ${MAX_CONTEXT_BYTES / 1024} KiB`,
-    )
-  const entry: StageContext = {
-    ...settled,
-    path: join(
-      setup.checkpointsDir,
-      '..',
-      'stage-context',
-      `${settled.name}.txt`,
-    ),
-  }
+  checkStageContextName(settled.name)
+  checkContextText(`stage context ${settled.name}`, settled.content)
+  const entry: StageContext = { name: settled.name, content: settled.content }
   return {
     ...setup,
     target: {

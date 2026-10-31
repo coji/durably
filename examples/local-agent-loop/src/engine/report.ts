@@ -16,6 +16,7 @@ import type { StepAttempt } from '@coji/durably'
 import { INTERRUPTED_CHECK } from './failure-details.js'
 import { retryText, type FailureClassification } from './failure-reasons.js'
 import { formatters } from './format.js'
+import { fencedText } from './markdown.js'
 import { PRICE_BASIS } from './pricing.js'
 import {
   NOT_SENT,
@@ -144,9 +145,12 @@ export type ReportFindings =
 
 /**
  * The owner's confirmed context as the run stored it: where it was read
- * from, the content every prompt was given, and the SHA-256 of that content.
+ * from (null when it was not read from a file), the content the prompts
+ * were given, and the SHA-256 of that content.
  */
-export interface ReportContextFile extends ReportInputFile {
+export interface ReportContextFile {
+  path: string | null
+  sha256: string
   content: string
 }
 
@@ -154,8 +158,11 @@ export interface ReportInputs {
   task: ReportInputFile | null
   spec: ReportInputFile | null
   dispositions: ReportInputFile | null
-  /** Null on a run without one, and on a run stored before it existed. */
-  context: ReportContextFile | null
+  /**
+   * Null on a run without one, and on a run stored before it existed;
+   * absent from a report built before it existed.
+   */
+  context?: ReportContextFile | null
   /** A repair run's outside findings; null on every other run. */
   findings: ReportFindings | null
 }
@@ -1570,20 +1577,6 @@ function highlightLines(h: ReviewHighlights): string[] {
   ]
 }
 
-/**
- * Text the run was given as one fenced code block, its fence longer than
- * any run of backticks in it, so none of its lines reads as a heading of
- * the report or ends the block.
- */
-function fencedText(text: string): string[] {
-  const longest = Math.max(
-    0,
-    ...(text.match(/`+/g) ?? []).map((run) => run.length),
-  )
-  const fence = '`'.repeat(Math.max(3, longest + 1))
-  return [fence, text.replace(/\n$/, ''), fence]
-}
-
 export function reportToMarkdown(r: LoopReport): string {
   const lines: string[] = []
   lines.push(`# Agent loop report — ${r.runId}`)
@@ -1688,24 +1681,21 @@ export function reportToMarkdown(r: LoopReport): string {
     const source = !file
       ? null
       : 'path' in file
-        ? file.path
+        ? (file.path ?? 'stored without a file')
         : `built from the stored record of run ${file.parentRun}`
     lines.push(
       `- ${name}: ${file ? `${file.sha256} (${source})` : 'not given'}`,
     )
   }
   lines.push('')
-  lines.push('## Owner context (trusted, as stored)')
-  lines.push('')
+  // Its path and hash are among the inputs above; here, what the prompts
+  // were given.
   if (r.inputs.context) {
-    lines.push(`- path: ${r.inputs.context.path}`)
-    lines.push(`- sha256: ${r.inputs.context.sha256}`)
+    lines.push('## Owner context (trusted, as stored)')
     lines.push('')
     lines.push(...fencedText(r.inputs.context.content))
-  } else {
-    lines.push('- not given')
+    lines.push('')
   }
-  lines.push('')
   lines.push('## Repair runs (from outside findings)')
   lines.push('')
   const parent = r.lineage.parent

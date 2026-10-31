@@ -101,8 +101,9 @@ export interface RepoTargetConfig {
   /** Prior review dispositions, handed to the reviewers only. */
   dispositions: string | null
   /**
-   * Decisions the owner confirmed, fixed at trigger and handed to every
-   * role as trusted context. Absent on a run set up before it existed.
+   * Decisions the owner confirmed, fixed at trigger and handed to the
+   * implementer, the repairer and the reviewers as trusted context. Absent
+   * on a run set up before it existed.
    */
   context?: string | null
   /**
@@ -164,16 +165,33 @@ export type TargetConfig = SubjectTargetConfig | RepoTargetConfig
 export const MAX_CONTEXT_BYTES = 32 * 1024
 
 /**
+ * Why `text` cannot be an owner or stage context, or null when it can: it
+ * must not be blank, and must fit `MAX_CONTEXT_BYTES` in UTF-8.
+ */
+export function contextTextProblem(text: string): string | null {
+  if (text.trim().length === 0) return 'is empty'
+  const bytes = Buffer.byteLength(text, 'utf8')
+  return bytes > MAX_CONTEXT_BYTES
+    ? `is ${bytes} bytes; the limit is ${MAX_CONTEXT_BYTES / 1024} KiB`
+    : null
+}
+
+/** Throw, naming `name`, when `text` cannot be an owner or stage context. */
+export function checkContextText(name: string, text: string): void {
+  const problem = contextTextProblem(text)
+  if (problem) throw new Error(`${name} ${problem}`)
+}
+
+/**
  * One file a stage produced, as its settled step output holds it, for the
- * reviewers' trusted context. `path` is the factory's own copy outside the
- * candidate worktree, written again from `content` before each review
- * round, so what a reviewer reads never depends on the file the stage read.
+ * reviewers' trusted context. The factory's own copy, outside the candidate
+ * worktree, is written again from `content` before each review round, so
+ * what a reviewer reads never depends on the file the stage read.
  */
 export interface StageContext {
   /** Lower-case letters, digits and dashes; names the block and the copy. */
   name: string
   content: string
-  path: string
 }
 
 /** Where an input file was read from at trigger time. */
@@ -270,6 +288,11 @@ export interface Target {
    */
   untrustedInputs(role: ProfileRole): UntrustedInput[]
   /**
+   * The owner's confirmed context, which the implementer and the repairer
+   * get as trusted, apart from the untrusted data; null without one.
+   */
+  ownerContext(): string | null
+  /**
    * What each reviewer is asked to check. Reviewers see only the candidate
    * and the trusted context, so the questions have to come from whoever knows
    * what is being built.
@@ -293,10 +316,11 @@ export interface Target {
   reviewContext(candidate: CandidateRef): Promise<string>
   /**
    * Write the factory's copy of each registered stage context from its
-   * stored content and return their paths, which every reviewer may read.
-   * Only a target that has any implements it.
+   * stored content and return their paths, which every reviewer may read,
+   * and the one directory that holds them; null when none is registered.
+   * Only a target that can have any implements it.
    */
-  prepareStageContext?(): Promise<string[]>
+  prepareStageContext?(): Promise<{ dir: string; files: string[] } | null>
   /**
    * Extract the base commit's and the candidate's trees for a configured
    * reviewer, reusing what is already there: the base once per run, the

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
 
 import {
@@ -1529,7 +1529,7 @@ describe("the owner's confirmed context and the stages' results in a review", ()
       ]),
     )
     await rm(root, { recursive: true, force: true })
-    return { target, context, prompts }
+    return { target, context, prompts, root }
   }
 
   it('puts the context in the TRUSTED CONTEXT of both reviewers, before any untrusted data', async () => {
@@ -1572,15 +1572,18 @@ describe("the owner's confirmed context and the stages' results in a review", ()
   })
 
   it('shows each stage result in its own trusted block with the copy reviewers may read', async () => {
-    const path = '/state/runs/r1/stage-context/base-and-candidate-tests.txt'
-    const { context } = await reviewed({
-      stageContext: [
-        { name: 'base-and-candidate-tests', content: STAGE, path },
-      ],
+    const { context, root } = await reviewed({
+      stageContext: [{ name: 'base-and-candidate-tests', content: STAGE }],
     })
+    // Beside the worktree, in the run's own directory.
+    const path = join(
+      dirname(root),
+      'stage-context',
+      'base-and-candidate-tests.txt',
+    )
     assert.match(
       context,
-      /^TRUSTED CONTEXT \(produced by the factory, not by the implementer\):/,
+      /^TRUSTED CONTEXT \(produced by the factory or confirmed by the run's owner, not by the implementer\):/,
     )
     assert.ok(
       context.includes(

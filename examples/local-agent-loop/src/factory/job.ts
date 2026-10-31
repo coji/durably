@@ -98,8 +98,8 @@ import {
   stages,
 } from './stages.js'
 import {
+  contextTextProblem,
   DEFAULT_COMMIT_SETTINGS,
-  MAX_CONTEXT_BYTES,
   type RepairParentConclusion,
   type Target,
   type TargetConfig,
@@ -182,16 +182,14 @@ export const selfCheckSchema = z
 const inputFileSchema = z.object({ path: z.string().min(1) })
 
 /**
- * The owner's confirmed context, held to the limit `--context-file` reads
- * with, so a stored input cannot carry more than a trigger would.
+ * The owner's confirmed context, held to what `--context-file` accepts, so
+ * a stored input cannot carry more, or less, than a trigger would.
  */
-const contextSchema = z
-  .string()
-  .min(1)
-  .refine(
-    (text) => Buffer.byteLength(text, 'utf8') <= MAX_CONTEXT_BYTES,
-    `the context is limited to ${MAX_CONTEXT_BYTES} bytes`,
-  )
+const contextSchema = z.string().superRefine((text, ctx) => {
+  const problem = contextTextProblem(text)
+  if (problem)
+    ctx.addIssue({ code: 'custom', message: `the context ${problem}` })
+})
 
 const targetSchema = z
   .discriminatedUnion('kind', [
@@ -207,8 +205,9 @@ const targetSchema = z
       /** Handed to the reviewers only. */
       dispositions: z.string().min(1).nullable().default(null),
       /**
-       * Decisions the owner confirmed, handed to every role as trusted
-       * context. Absent on a run stored before it existed: none.
+       * Decisions the owner confirmed, handed to the implementer, the
+       * repairer and the reviewers as trusted context. Absent on a run
+       * stored before it existed: none.
        */
       context: contextSchema.nullable().optional(),
       /** Where each input came from, when it was read from a file. */
