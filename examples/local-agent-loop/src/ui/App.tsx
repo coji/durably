@@ -105,15 +105,15 @@ async function postItem(
   token: string,
   action: BulkRequest['action'],
   item: BulkItem,
-): Promise<{ archived: string[] } | { error: string }> {
+): Promise<{ archived: string[]; warnings: string[] } | { error: string }> {
   try {
     const answer = await post(token, item.runId, action, {})
     if (answer.errors && answer.errors.length > 0)
       return { error: answer.errors.join('\n') }
+    const runs = answer.archived ?? []
     return {
-      archived: (answer.archived ?? [])
-        .filter((r) => r.changed)
-        .map((r) => r.runId),
+      archived: runs.filter((r) => r.changed).map((r) => r.runId),
+      warnings: runs.flatMap((r) => r.warnings ?? []),
     }
   } catch (error) {
     return { error: (error as Error).message }
@@ -173,7 +173,7 @@ function useActions(token: string, page: string) {
       const failed: BulkOutcome['failed'] = []
       for (const { item, answer } of answers)
         if ('error' in answer) failed.push({ item, error: answer.error })
-        else done.push({ item, archived: answer.archived })
+        else done.push({ item, ...answer })
       setOutcome({
         kind: 'bulk',
         outcome: { action: request.action, done, failed },

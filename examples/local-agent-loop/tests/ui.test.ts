@@ -3491,12 +3491,20 @@ describe('numbers on the screens', () => {
     assert.ok(htmlText(html).includes(BULK.selectAll))
   })
 
-  it('brings back only the runs a bulk archive newly archived, and names one CLI line for the tasks', () => {
+  it('brings back only the runs a bulk archive newly archived, shows the worktrees git left, and names one CLI line for the tasks', () => {
     const outcome: BulkOutcome = {
       action: 'archive-series',
       done: [
-        { item: { runId: 'a', name: 'task a' }, archived: ['a', 'a2'] },
-        { item: { runId: 'b', name: 'task b' }, archived: [] },
+        {
+          item: { runId: 'a', name: 'task a' },
+          archived: ['a', 'a2'],
+          warnings: [],
+        },
+        {
+          item: { runId: 'b', name: 'task b' },
+          archived: [],
+          warnings: ['worktree /w/b: git worktree remove failed'],
+        },
       ],
       failed: [{ item: { runId: 'c', name: 'task c' }, error: 'no run c' }],
     }
@@ -3520,6 +3528,8 @@ describe('numbers on the screens', () => {
     assert.ok(text.includes(BULK.undo))
     assert.ok(text.includes(BULK.failed('1')))
     assert.ok(text.includes('no run c'))
+    assert.ok(text.includes(ACTION_DONE.worktreeLeft))
+    assert.ok(text.includes('worktree /w/b: git worktree remove failed'))
   })
 
   it('shows the newest stopped tasks and asks before showing the rest', () => {

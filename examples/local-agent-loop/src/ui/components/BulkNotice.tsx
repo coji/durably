@@ -23,14 +23,17 @@ export type BulkAct = (request: BulkRequest) => Promise<void>
 
 /** What one task's `archive-series` answered: its runs, and what failed. */
 export interface SeriesResult {
-  archived?: { runId: string; changed: boolean }[]
+  archived?: { runId: string; changed: boolean; warnings?: string[] }[]
   errors?: string[]
 }
 
 export interface BulkOutcome {
   action: BulkRequest['action']
-  /** The items done, each with the runs it newly archived. */
-  done: { item: BulkItem; archived: string[] }[]
+  /**
+   * The items done, each with the runs it newly archived and why git left
+   * a worktree or a branch behind, if it did.
+   */
+  done: { item: BulkItem; archived: string[]; warnings: string[] }[]
   /** The items refused, each with the CLI's own words. */
   failed: { item: BulkItem; error: string }[]
 }
@@ -47,7 +50,8 @@ export function undoItems(outcome: BulkOutcome): BulkItem[] {
 
 /**
  * What a bulk action came to: how many it did, the way back from an
- * archive, and each item it could not do with why.
+ * archive, each item whose cleanup git refused with why, and each item it
+ * could not do with why.
  */
 export function BulkNotice({
   outcome,
@@ -59,6 +63,7 @@ export function BulkNotice({
   onDismiss?: () => void
 }) {
   const { done, failed } = outcome
+  const left = done.filter((d) => d.warnings.length > 0)
   const back = outcome.action === 'archive-series' ? undoItems(outcome) : []
   const title =
     outcome.action === 'archive-series'
@@ -85,6 +90,23 @@ export function BulkNotice({
             {BULK.undo}
           </button>
         </div>
+      ) : null}
+      {left.length > 0 ? (
+        <>
+          <p>{ACTION_DONE.worktreeLeft}</p>
+          <ul className="flex flex-col gap-1">
+            {left.map(({ item, warnings }) => (
+              <li key={item.runId}>
+                <p>{item.name}</p>
+                {warnings.map((warning) => (
+                  <p key={warning} className="font-code break-all">
+                    {warning}
+                  </p>
+                ))}
+              </li>
+            ))}
+          </ul>
+        </>
       ) : null}
       {failed.length > 0 ? (
         <>
