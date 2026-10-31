@@ -603,7 +603,6 @@ export const LIST = {
   noDbAfter: 'に作られ、次の更新で表示されます。',
   retry: '再実行: ',
   currentStage: (stage: string) => `いまの工程: ${stage}`,
-  otherRunning: (role: string) => `${role}を実行中`,
   betweenStages: 'いまの工程: 工程の合間',
   stageElapsed: (d: string) => `この工程 ${d} 経過`,
   runElapsed: (d: string) => `全体 ${d} 経過`,

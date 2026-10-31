@@ -3498,21 +3498,32 @@ describe('numbers on the screens', () => {
     assert.ok(overview.includes('dot-live'))
   })
 
-  it('says on a stopped row that another repair of the task is running', () => {
+  for (const kind of ['running', 'pending', 'lease-expired', 'decided'])
+    it(`opens a stopped row whose retried repair is ${kind}`, () => {
+      const html = listOf(
+        [
+          asked,
+          as(older, 'stopped', '2026-09-30T11:10:00.000Z'),
+          as(newer, kind, '2026-09-30T11:20:00.000Z'),
+        ],
+        repairs,
+      )
+      const stopped = html.indexOf(`>${LIST.stopped}<`)
+      assert.ok(stopped >= 0)
+      const row = html.slice(stopped)
+      assert.match(row, /aria-expanded="true"/)
+      assert.doesNotMatch(row, /aria-expanded="false"/)
+      // Opened, the row lists the retried repair by its place in the task.
+      assert.ok(htmlText(row).includes(LIST.repairRun(2)))
+    })
+
+  it('keeps a stopped row closed when nothing else of its task is open', () => {
     const html = listOf(
-      [
-        asked,
-        as(older, 'running', '2026-09-30T11:10:00.000Z'),
-        as(newer, 'stopped', '2026-09-30T11:20:00.000Z'),
-      ],
+      [asked, as(older, 'stopped', '2026-09-30T11:10:00.000Z')],
       repairs,
     )
-    const closed = html.indexOf('aria-expanded="false"')
-    assert.ok(closed >= 0)
-    const visible = htmlText(
-      html.slice(closed, html.indexOf('hidden=""', closed)),
-    )
-    assert.ok(visible.includes(LIST.otherRunning(LIST.repairRun(1))))
+    const row = html.slice(html.indexOf(`>${LIST.stopped}<`))
+    assert.match(row, /aria-expanded="false"/)
   })
 
   it('shows the total on a stopped task that took more than one run, not on a single run', () => {
