@@ -594,7 +594,7 @@ describe('pipeline and trace', () => {
       ['baseline', 'stopped', 1],
       ['code', 'not-reached', 0],
     ])
-    assert.equal(stopped.label, '工程: 着手前のチェックで停止')
+    assert.equal(stopped.label, '工程: 事前検証で停止')
     const refused = derivePipeline({
       status: 'failed',
       diagnosisKind: 'stopped',

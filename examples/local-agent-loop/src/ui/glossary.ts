@@ -38,7 +38,7 @@ export const COMMON = {
 
 export const STAGE_NAME: Record<string, string> = {
   setup: '準備',
-  baseline: '着手前のチェック',
+  baseline: '事前検証',
   preflight: '事前確認',
   spec: '仕様',
   'spec-review': '仕様レビュー',
@@ -89,7 +89,7 @@ export const STEP_PART_NAME: Record<string, string> = {
 
 /** A stop reason in a few words, for a count such as a comparison's. */
 export const STOP_NAME: Record<FailureKind, string> = {
-  'baseline-check-failed': '着手前のチェック失敗',
+  'baseline-check-failed': '事前検証失敗',
   'spec-check-failed': '採点コマンドの決定に失敗',
   'preflight-failed': '事前確認で停止',
   'candidate-moved': '修正元の候補の変更',
@@ -143,7 +143,7 @@ export const KIND_NAME: Record<DiagnosisKind, string> = {
   stopped: '停止',
   running: '実行中',
   pending: '順番待ち',
-  'lease-expired': 'ワーカーとの連絡が切れた',
+  'lease-expired': 'リース切れ',
   decided: '判断済み・再開待ち',
   finished: '終了',
 }
@@ -172,7 +172,7 @@ export const TRACE_STATE_NAME: Record<TraceState, string> = {
   waiting: '人待ち',
   failed: '失敗',
   interrupted: '中断',
-  lost: 'ワーカーとの連絡が切れた',
+  lost: 'リース切れ',
   idle: '工程の合間',
 }
 
@@ -279,7 +279,7 @@ export const FAILURE_TEXT: Record<
   },
   'preflight-failed': {
     reason:
-      'ある役割のプロバイダー、モデル、推論の強さの組み合わせが使えません。実装を呼ぶ前に止めました。',
+      'ある役割のプロバイダー、モデル、推論量の組み合わせが使えません。実装を呼ぶ前に止めました。',
     check:
       'エラーに示した役割の設定か、使う実行ファイルの指定を factory.json で直し、設定を読み直す再実行を使う。ログインの問題なら、ログインし直してから通常の再実行を使う。',
   },
@@ -340,10 +340,10 @@ export const FAILURE_TEXT: Record<
 export const CHECK_TEXT = {
   /** Preflight, for a run with no factory.json to fix. */
   preflightWithoutConfig:
-    'エラーに示した役割のプロバイダー、モデル、推論の強さを直し、trigger からやり直す。ログインの問題なら、ログインし直してから通常の再実行を使う。',
+    'エラーに示した役割のプロバイダー、モデル、推論量を直し、trigger からやり直す。ログインの問題なら、ログインし直してから通常の再実行を使う。',
   /** A refused call, for a run with no factory.json to fix. */
   rejectedWithoutConfig:
-    '下の拒否の理由を読み、その役割のプロバイダー、モデル、推論の強さを直して trigger からやり直す。ログインや利用上限の問題なら、プロバイダー側で直してから通常の再実行を使う。',
+    '下の拒否の理由を読み、その役割のプロバイダー、モデル、推論量を直して trigger からやり直す。ログインや利用上限の問題なら、プロバイダー側で直してから通常の再実行を使う。',
   /** The baseline, for a repair run, which keeps its parent's settings. */
   baselineWithoutConfig:
     '下に示したログファイルでチェックの出力を全文読む。環境だけを直したときは通常の再実行を使う。修正の実行は修正元の採点コマンド、準備、ベースを引き継ぐので、それらを変えるときはリポジトリか factory.json を直し、trigger から通常の実行を始めるか、直したあとに承認された実行から修正をやり直す。',
@@ -356,7 +356,7 @@ export const CHECK_TEXT = {
 } as const
 
 export const RETRY_TEXT = {
-  retryable: 'できる。結果の分からないまま止まった呼び出しは、送り直さない',
+  retryable: 'できる。結果不明の呼び出しは再送しない',
   notRetryable: 'しない。先に人が確認する',
 } as const
 
@@ -512,7 +512,7 @@ export const ACTION = {
   proceed: '実行する',
   cancel: 'やめる',
   busy: '実行しています…',
-  sameCommand: 'CLI で同じことをするコマンド',
+  sameCommand: '同じ操作の CLI コマンド',
   approve: '承認',
   reject: '却下',
   specApprove: 'いまの仕様で承認',
@@ -631,7 +631,7 @@ export const COLUMN = {
   cost: '費用',
   stage: '工程',
   role: '役割',
-  roleProfile: 'プロバイダー / 指定モデル / 指定した推論の強さ',
+  roleProfile: 'プロバイダー / 指定モデル / 指定推論量',
   invocations: '呼び出し',
   input: '入力',
   cacheRead: 'キャッシュ読み',
@@ -650,8 +650,8 @@ export const COLUMN = {
 // ---------------------------------------------------------------- run detail
 
 export const DETAIL = {
-  conclusion: '結果と次にすること',
-  noNext: '人がすることはありません。',
+  conclusion: '状態と対応',
+  noNext: '必要な対応はありません。',
   stopRecord: '停止の記録を見る',
   deliveredTo: '納品したブランチ',
   worktreeRemoved: '作業ツリーは片付け済み',
@@ -835,7 +835,7 @@ export const TRACE = {
   totalTokens: '合計トークン',
   inputOutput: '入力 / 出力',
   cost: '費用',
-  leaseGeneration: '担当の回数',
+  leaseGeneration: 'リース世代',
   attempts: '試行',
   iteration: '回',
   start: '開始',
@@ -846,7 +846,7 @@ export const TRACE = {
   interruption: '中断の理由',
   provider: 'プロバイダー',
   model: 'モデル',
-  effort: '推論の強さ',
+  effort: '推論量',
   reportedModel: '報告されたモデル',
   checkpoint: 'チェックポイント',
   candidate: '候補',
@@ -920,7 +920,7 @@ export const COMPARE = {
   reviewCapReached: 'レビュー上限',
   repairsMedian: '修正回数 中央値',
   costMedian: '費用 中央値',
-  routineNeedingMore: '定型と見たのに修正か上限になった',
+  routineNeedingMore: '定型判定なのに修正か上限到達',
   stops: '停止の理由',
   calibrationNote:
     '見立ての判定別に、保存したタスクと仕様から測った値の中央値です。仕様がない実行や古い記録の値は不明に数えます。',
@@ -928,7 +928,7 @@ export const COMPARE = {
 
 export const TREND = {
   intro: (days: string, tasks: string) =>
-    `直近 ${days} 日に終わったタスク ${tasks} 件を、最初の実行のモデルと推論の強さごとに、最後の実行が終わった週で並べています。`,
+    `直近 ${days} 日に終わったタスク ${tasks} 件を、最初の実行のモデルと推論量ごとに、最後の実行が終わった週で並べています。`,
   fakeLeftOut: (n: string) => `模擬のタスク ${n} 件は除いています。`,
   note: '週は月曜から始まります。タスクの所要時間と費用は、修正の実行も含めたすべての実行の合計の中央値です。分からない値を含むタスクは 0 とせず、その中央値から除きます。',
   single: '1 件のみ',
