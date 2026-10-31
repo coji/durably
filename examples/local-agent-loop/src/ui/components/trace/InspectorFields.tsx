@@ -151,9 +151,6 @@ export function CandidateFields({
 }) {
   return (
     <>
-      <InlineField label={TRACE.candidate}>
-        <Num>{c.id}</Num>
-      </InlineField>
       {c.timedOut ? (
         <InlineField label={TRACE.candidateOrigin}>
           {TRACE.timedOutWork}
@@ -208,11 +205,6 @@ export function WaitFields({
           )}
         </Num>
       </InlineField>
-      {n.open ? null : (
-        <InlineField label={TRACE.slotWait}>
-          <Num>{formatDuration(w.executionSlotWaitMs)}</Num>
-        </InlineField>
-      )}
     </>
   )
 }

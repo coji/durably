@@ -784,7 +784,6 @@ export const SPEC = {
 export const RECORD = {
   candidate: '候補',
   candidateEmpty: 'まだ候補がありません。',
-  id: 'ID',
   branch: 'ブランチ',
   commit: 'コミット',
   changes: '変更の規模',
@@ -795,7 +794,6 @@ export const RECORD = {
   deliveryEmpty: '納品物はありません。',
   kind: '種類',
   location: '場所',
-  summary: '概要',
   squashedBranch: '1コミットにまとめたブランチ',
   inputs: '入力ファイル',
   inputsNote:
@@ -808,6 +806,13 @@ export const RECORD = {
   notGiven: '指定なし',
   notes: '注記',
 } as const
+
+/** How the factory delivered an approved candidate. */
+export const DELIVERY_KIND_NAME: Record<string, string> = {
+  snapshot: 'スナップショット',
+  patch: 'パッチ',
+  'pull-request': 'プルリクエスト',
+}
 
 export const INPUT_NAME = {
   task: 'タスク',
@@ -848,7 +853,6 @@ export const TRACE = {
   effort: '推論量',
   reportedModel: '報告されたモデル',
   checkpoint: 'チェックポイント',
-  candidate: '候補',
   candidateOrigin: '候補の元',
   timedOutWork: '時間の上限で止めた呼び出しの途中の作業',
   timedOut: '止めた上限',
@@ -863,7 +867,6 @@ export const TRACE = {
   waitTimeout: '期限切れ',
   waitSignal: '判断を受け取った',
   humanWait: '人の待ち時間',
-  slotWait: '再開までの待ち',
   log: 'ログ',
   exitCode: '終了コード',
   stdout: '標準出力',
