@@ -43,6 +43,9 @@ export const TEST_PROBE_FILES = '{files}'
 /** Each side's stdout and stderr are kept up to this many characters. */
 const OUTPUT_CHARS = 8000
 
+/** Each side's output tail is stored, and first shown, up to this many characters. */
+const TAIL_CHARS = 2000
+
 /** The longest reason a side that could not run records. */
 const REASON_CHARS = 1000
 
@@ -197,7 +200,9 @@ export type TestProbeOutcome =
   | 'failed-on-candidate'
   | 'could-not-run'
 
-export function testProbeOutcomeOf(file: TestProbeFile): TestProbeOutcome {
+export function testProbeOutcomeOf(
+  file: Pick<TestProbeFile, 'base' | 'candidate'>,
+): TestProbeOutcome {
   const { base, candidate } = file
   if (!base.ran || !candidate.ran) return 'could-not-run'
   if (candidate.exitCode !== 0) return 'failed-on-candidate'
@@ -230,9 +235,29 @@ function tailLines(name: string, output: string, chars: number): string[] {
   ]
 }
 
-interface ProbedFile extends TestProbeFile {
+/** A probed file with everything each side printed, before it is stored. */
+interface ProbedFile extends Omit<
+  TestProbeFile,
+  'baseOutputTail' | 'candidateOutputTail'
+> {
   baseOutput: string
   candidateOutput: string
+}
+
+/**
+ * What the probe step stores of a file: its results and each side's output
+ * tail, every file's, however much of them the result text could show.
+ */
+export function testProbeRecordFile({
+  baseOutput,
+  candidateOutput,
+  ...file
+}: ProbedFile): TestProbeFile {
+  return {
+    ...file,
+    baseOutputTail: baseOutput.trimEnd().slice(-TAIL_CHARS),
+    candidateOutputTail: candidateOutput.trimEnd().slice(-TAIL_CHARS),
+  }
 }
 
 /**
@@ -298,7 +323,7 @@ export function testProbeText(args: {
     ].join('\n')
   const fits = (text: string) =>
     Buffer.byteLength(text, 'utf8') <= MAX_CONTEXT_BYTES
-  for (const chars of [2000, 1000, 400, 0]) {
+  for (const chars of [TAIL_CHARS, 1000, 400, 0]) {
     const text = render(chars, files.length)
     if (fits(text)) return text
   }
@@ -412,12 +437,7 @@ export async function runTestProbe(args: {
   )
   return {
     candidateId: candidate.id,
-    files: files.map(({ path, command, base, candidate: side }) => ({
-      path,
-      command,
-      base,
-      candidate: side,
-    })),
+    files: files.map(testProbeRecordFile),
     elapsedMs,
     resultFile: file,
   }

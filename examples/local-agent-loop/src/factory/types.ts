@@ -447,12 +447,18 @@ export type TestProbeSide =
   | { ran: true; exitCode: number | null; elapsedMs: number }
   | { ran: false; reason: string; elapsedMs: number }
 
-/** One test file the probe ran on the base and on the candidate. */
+/**
+ * One test file the probe ran on the base and on the candidate, with the
+ * last characters each side printed (empty when it printed nothing or never
+ * started). The tails are kept here whatever the result text had room for.
+ */
 export interface TestProbeFile {
   path: string
   command: string[]
   base: TestProbeSide
   candidate: TestProbeSide
+  baseOutputTail: string
+  candidateOutputTail: string
 }
 
 /**

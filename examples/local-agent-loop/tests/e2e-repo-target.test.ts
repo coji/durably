@@ -79,6 +79,7 @@ import { DEFAULT_COMMIT_SETTINGS } from '../src/factory/target.js'
 import {
   probeTargets,
   runTestProbe,
+  testProbeRecordFile,
   testProbeText,
 } from '../src/factory/test-probe.js'
 import {
@@ -5501,6 +5502,9 @@ describe('the test probe', { timeout: 300000 }, () => {
       // The sequential review got the result its verify stage stored.
       const record = probeStep?.output as TestProbeRecord
       assert.equal(record.files[0]?.base.ran, true)
+      // Both sides' output tails are in the stored step.
+      assert.ok(record.files[0]?.baseOutputTail)
+      assert.ok(record.files[0]?.candidateOutputTail)
       assert.notEqual(
         (record.files[0]?.base as { exitCode: number } | undefined)?.exitCode,
         0,
@@ -5741,10 +5745,17 @@ describe('the test probe', { timeout: 300000 }, () => {
         new RegExp(`${n} test file\\(s\\), .*: ${n} failed on the base`),
       )
     }
-    assert.match(
-      testProbeText({ ...args, files: files.slice(0, 400) }),
-      /more file\(s\) ran but are not listed/,
-    )
+    const all = testProbeText({ ...args, files: files.slice(0, 400) })
+    assert.match(all, /more file\(s\) ran but are not listed/)
+    assert.ok(!all.includes('## test/t399.test.js'))
+    // The stored record keeps every file's tails, the unlisted ones too.
+    const stored = files.map(testProbeRecordFile)
+    assert.equal(stored.length, 400)
+    for (const file of stored) {
+      assert.equal(file.baseOutputTail, 'é'.repeat(2000), file.path)
+      assert.equal(file.candidateOutputTail, 'x'.repeat(2000), file.path)
+      assert.ok(!('baseOutput' in file) && !('candidateOutput' in file))
+    }
     assert.match(
       testProbeText({ ...args, files: [] }),
       /No added or modified file of this candidate matches a testProbe glob, so no test ran\./,
