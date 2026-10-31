@@ -68,6 +68,7 @@ import { archiveMarkerOf } from '../src/factory/layout.js'
 import { repairLabels } from '../src/factory/repair.js'
 import { ActionNotice } from '../src/ui/components/ActionNotice.js'
 import { ReviewFindingTitles } from '../src/ui/components/ReviewFindingTitles.js'
+import { openNow } from '../src/ui/components/TaskRow.js'
 import {
   ACTION,
   ACTION_DONE,
@@ -3498,6 +3499,13 @@ describe('numbers on the screens', () => {
     assert.ok(overview.includes('dot-live'))
   })
 
+  // The stopped section only, from its heading to the next section.
+  const stopSection = (html: string) => {
+    const at = html.indexOf('id="tasks-stop"')
+    assert.ok(at >= 0)
+    return html.slice(at, html.indexOf('id="tasks-done"', at))
+  }
+
   for (const kind of ['running', 'pending', 'lease-expired', 'decided'])
     it(`opens a stopped row whose retried repair is ${kind}`, () => {
       const html = listOf(
@@ -3508,13 +3516,11 @@ describe('numbers on the screens', () => {
         ],
         repairs,
       )
-      const stopped = html.indexOf(`>${LIST.stopped}<`)
-      assert.ok(stopped >= 0)
-      const row = html.slice(stopped)
-      assert.match(row, /aria-expanded="true"/)
-      assert.doesNotMatch(row, /aria-expanded="false"/)
-      // Opened, the row lists the retried repair by its place in the task.
-      assert.ok(htmlText(row).includes(LIST.repairRun(2)))
+      const rows = [...stopSection(html).matchAll(/aria-expanded="(\w+)"/g)]
+      assert.deepEqual(
+        rows.map((m) => m[1]),
+        ['true'],
+      )
     })
 
   it('keeps a stopped row closed when nothing else of its task is open', () => {
@@ -3522,8 +3528,20 @@ describe('numbers on the screens', () => {
       [asked, as(older, 'stopped', '2026-09-30T11:10:00.000Z')],
       repairs,
     )
-    const row = html.slice(html.indexOf(`>${LIST.stopped}<`))
-    assert.match(row, /aria-expanded="false"/)
+    const rows = [...stopSection(html).matchAll(/aria-expanded="(\w+)"/g)]
+    assert.deepEqual(
+      rows.map((m) => m[1]),
+      ['false'],
+    )
+  })
+
+  it('follows what the list wants until a person toggles the row', () => {
+    // A poll that gives a closed row's task another open run opens it.
+    assert.equal(openNow(null, false), false)
+    assert.equal(openNow(null, true), true)
+    // A row a person closed or opened stays as they set it.
+    assert.equal(openNow(false, true), false)
+    assert.equal(openNow(true, false), true)
   })
 
   it('shows the total on a stopped task that took more than one run, not on a single run', () => {

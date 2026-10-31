@@ -12,7 +12,8 @@ import { Tasks } from './list/Tasks'
  * ones a worker has, the ones that stopped, and the finished ones, in the
  * order the engine gave them. A first run and its repairs are one row.
  * Decisions and running tasks open, since they change and ask to be
- * watched; stopped ones stay closed, each with why on its row. Archived
+ * watched; stopped ones stay closed, each with why on its row, unless
+ * another run of the task is open. Archived
  * tasks are among the finished ones.
  */
 export function RunsScreen({ data, act }: { data: RunsResponse; act: Act }) {

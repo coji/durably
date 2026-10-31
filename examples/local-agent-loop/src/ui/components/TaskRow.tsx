@@ -40,6 +40,14 @@ export function runRole(run: Pick<TaskRun, 'repair'>): string {
 }
 
 /**
+ * Whether a row shows its body: as a person last set it, or else as the
+ * list wants it now.
+ */
+export function openNow(toggled: boolean | null, wanted: boolean): boolean {
+  return toggled ?? wanted
+}
+
+/**
  * One task in a list: its state, its name as a link to the run that shows
  * it, where it stands, and its facts in aligned columns. A summary line,
  * such as why it stopped, stays under the name while closed, cut to one
@@ -78,7 +86,11 @@ export function TaskRow({
   defaultOpen?: boolean
   children: ReactNode
 }) {
-  const [open, setOpen] = useState(defaultOpen ?? false)
+  // Only a person's own toggle is held; until then the row follows
+  // `defaultOpen` on every render, so a poll that gives the task another
+  // open run opens a row first drawn closed.
+  const [toggled, setToggled] = useState<boolean | null>(null)
+  const open = openNow(toggled, defaultOpen ?? false)
   const bodyId = useId()
   return (
     <li className="task-row py-2 pr-4 pl-2">
@@ -87,7 +99,7 @@ export function TaskRow({
         aria-expanded={open}
         aria-controls={bodyId}
         aria-label={toggleLabel}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => setToggled(!open)}
         className="hover:bg-sunken inline-flex size-8 shrink-0 items-center justify-center rounded-md"
       >
         <Chevron open={open} />
