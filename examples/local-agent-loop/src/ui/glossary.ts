@@ -143,7 +143,7 @@ export const KIND_NAME: Record<DiagnosisKind, string> = {
   stopped: '停止',
   running: '実行中',
   pending: '順番待ち',
-  'lease-expired': 'リース切れ',
+  'lease-expired': 'ワーカー停止中',
   decided: '判断済み・再開待ち',
   finished: '終了',
 }
@@ -172,12 +172,12 @@ export const TRACE_STATE_NAME: Record<TraceState, string> = {
   waiting: '人待ち',
   failed: '失敗',
   interrupted: '中断',
-  lost: 'リース切れ',
+  lost: 'ワーカー停止で中断',
   idle: '工程の合間',
 }
 
 export const INTERRUPTION_NAME: Record<string, string> = {
-  'lease-lost': 'ワーカーの担当期限が切れた',
+  'lease-lost': 'ワーカーが止まった',
   cancelled: '取り消された',
   unknown: UNKNOWN,
 }
@@ -650,8 +650,8 @@ export const COLUMN = {
 // ---------------------------------------------------------------- run detail
 
 export const DETAIL = {
-  conclusion: '状態と対応',
-  noNext: '必要な対応はありません。',
+  conclusion: 'いまの状況',
+  noNext: 'あなたの操作は要りません。',
   stopRecord: '停止の記録を見る',
   deliveredTo: '納品したブランチ',
   worktreeRemoved: '作業ツリーは片付け済み',
@@ -835,7 +835,7 @@ export const TRACE = {
   totalTokens: '合計トークン',
   inputOutput: '入力 / 出力',
   cost: '費用',
-  leaseGeneration: 'リース世代',
+  leaseGeneration: '何回目の担当か',
   attempts: '試行',
   iteration: '回',
   start: '開始',
