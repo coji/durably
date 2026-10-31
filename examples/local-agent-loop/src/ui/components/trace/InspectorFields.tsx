@@ -79,11 +79,7 @@ export function TimingFields({
 }) {
   const t = liveTimes(n, elapsed)
   const attempts =
-    n.kind === 'attempt' ? (
-      <InlineField label={TRACE.leaseGeneration}>
-        <Num>{n.leaseGeneration ?? UNKNOWN}</Num>
-      </InlineField>
-    ) : n.kind === 'run' || n.wait ? null : (
+    n.kind === 'attempt' || n.kind === 'run' || n.wait ? null : (
       <InlineField label={TRACE.attempts}>
         <Num>{n.attempts}</Num>
       </InlineField>

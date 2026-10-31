@@ -835,7 +835,6 @@ export const TRACE = {
   totalTokens: '合計トークン',
   inputOutput: '入力 / 出力',
   cost: '費用',
-  leaseGeneration: '何回目の担当か',
   attempts: '試行',
   iteration: '回',
   start: '開始',
