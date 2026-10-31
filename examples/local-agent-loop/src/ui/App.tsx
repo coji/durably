@@ -21,6 +21,14 @@ import {
   type ActionOutcome,
   type ActionResult,
 } from './components/ActionNotice'
+import {
+  BulkNotice,
+  type BulkAct,
+  type BulkItem,
+  type BulkOutcome,
+  type BulkRequest,
+  type SeriesResult,
+} from './components/BulkNotice'
 import { focusPageTitle } from './components/Layout'
 import { SHELL } from './glossary'
 import { parseRoute, routeKey, type Route } from './route'
@@ -67,57 +75,132 @@ function useFocusOnChange(key: string) {
 /** The header `server.ts` reads the page's token from. */
 const TOKEN_HEADER = 'x-loop-ui-token'
 
+/** One POST to an action's path; the server's answer, or its refusal. */
+async function post(
+  token: string,
+  runId: string,
+  action: string,
+  body: unknown,
+): Promise<ActionResult & SeriesResult> {
+  const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/${action}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      [TOKEN_HEADER]: token,
+    },
+    body: JSON.stringify(body ?? {}),
+  })
+  const answer = (await res.json()) as ActionResult &
+    SeriesResult & { error?: string }
+  if (!res.ok) throw new Error(answer.error ?? `HTTP ${res.status}`)
+  return answer
+}
+
+/**
+ * One item of a bulk action: the runs it newly archived, or why it failed.
+ * A task's `archive-series` that could not archive every stop counts as
+ * failed, with the CLI's own reasons.
+ */
+async function postItem(
+  token: string,
+  action: BulkRequest['action'],
+  item: BulkItem,
+): Promise<{ archived: string[] } | { error: string }> {
+  try {
+    const answer = await post(token, item.runId, action, {})
+    if (answer.errors && answer.errors.length > 0)
+      return { error: answer.errors.join('\n') }
+    return {
+      archived: (answer.archived ?? [])
+        .filter((r) => r.changed)
+        .map((r) => r.runId),
+    }
+  } catch (error) {
+    return { error: (error as Error).message }
+  }
+}
+
+type Outcome =
+  | { kind: 'one'; outcome: ActionOutcome }
+  | { kind: 'bulk'; outcome: BulkOutcome }
+
 /**
  * Send actions with the page's token, one POST each, and keep what the
- * last one came to until it is closed or the page changes.
+ * last one came to until it is closed or the page changes. A bulk action
+ * sends its items one after another, as the CLI does them.
  */
 function useActions(token: string, page: string) {
   // Kept with the page it was made on, so another page shows none.
-  const [last, setLast] = useState<{
-    page: string
-    outcome: ActionOutcome
-  } | null>(null)
+  const [last, setLast] = useState<{ page: string; outcome: Outcome } | null>(
+    null,
+  )
   const outcome = last?.page === page ? last.outcome : null
   const setOutcome = useCallback(
-    (next: ActionOutcome | null) =>
-      setLast(next ? { page, outcome: next } : null),
+    (next: Outcome | null) => setLast(next ? { page, outcome: next } : null),
     [page],
   )
   const act = useCallback<Act>(
     async (request) => {
       try {
-        const res = await fetch(
-          `/api/runs/${encodeURIComponent(request.runId)}/${request.action}`,
-          {
-            method: 'POST',
-            headers: {
-              'content-type': 'application/json',
-              [TOKEN_HEADER]: token,
-            },
-            body: JSON.stringify(request.body ?? {}),
-          },
+        const result = await post(
+          token,
+          request.runId,
+          request.action,
+          request.body,
         )
-        const body = (await res.json()) as ActionResult & { error?: string }
-        if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
-        setOutcome({ request, result: body })
+        setOutcome({ kind: 'one', outcome: { request, result } })
         return true
       } catch (error) {
-        setOutcome({ request, error: (error as Error).message })
+        setOutcome({
+          kind: 'one',
+          outcome: { request, error: (error as Error).message },
+        })
         return false
       }
     },
     [token, setOutcome],
   )
-  const notice = outcome ? (
-    <ActionNotice outcome={outcome} onDismiss={() => setOutcome(null)} />
-  ) : null
-  return { act, notice }
+  const actMany = useCallback<BulkAct>(
+    async (request) => {
+      // Sent together; the server takes its writes one at a time.
+      const answers = await Promise.all(
+        request.items.map(async (item) => ({
+          item,
+          answer: await postItem(token, request.action, item),
+        })),
+      )
+      const done: BulkOutcome['done'] = []
+      const failed: BulkOutcome['failed'] = []
+      for (const { item, answer } of answers)
+        if ('error' in answer) failed.push({ item, error: answer.error })
+        else done.push({ item, archived: answer.archived })
+      setOutcome({
+        kind: 'bulk',
+        outcome: { action: request.action, done, failed },
+      })
+    },
+    [token, setOutcome],
+  )
+  const notice =
+    outcome?.kind === 'one' ? (
+      <ActionNotice
+        outcome={outcome.outcome}
+        onDismiss={() => setOutcome(null)}
+      />
+    ) : outcome?.kind === 'bulk' ? (
+      <BulkNotice
+        outcome={outcome.outcome}
+        onUndo={(request) => void actMany(request)}
+        onDismiss={() => setOutcome(null)}
+      />
+    ) : null
+  return { act, actMany, notice }
 }
 
 export function App({ token }: { token: string }) {
   const route = useRoute()
   useFocusOnChange(routeKey(route))
-  const { act, notice } = useActions(token, routeKey(route))
+  const { act, actMany, notice } = useActions(token, routeKey(route))
   // The summary opens on the weekly trend when the page loads; the config
   // view is a second reading of the same runs, one press away. The choice
   // lives here, above the routes, so going to another page and back keeps
@@ -167,7 +250,7 @@ export function App({ token }: { token: string }) {
       url="/api/runs"
       notice={notice}
       heading={() => SHELL.runs}
-      render={(data) => <RunsScreen data={data} act={act} />}
+      render={(data) => <RunsScreen data={data} act={act} actMany={actMany} />}
     />
   )
 }

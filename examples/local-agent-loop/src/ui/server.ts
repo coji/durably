@@ -38,6 +38,7 @@ import type { Run } from '@coji/durably'
 import {
   archivedRunIds,
   archiveRun,
+  archiveSeries,
   decideRun,
   retriggerRun,
   reviseSpec,
@@ -1503,6 +1504,7 @@ const ACTIONS = [
   'spec-revise',
   'retrigger',
   'archive',
+  'archive-series',
   'unarchive',
 ] as const
 type Action = (typeof ACTIONS)[number]
@@ -1704,11 +1706,24 @@ function createUiApi() {
     )
   }
 
+  // Writes wait for the one before: several sent at once, such as a bulk
+  // archive, never ask git to change one repository twice at a time.
+  let writing: Promise<unknown> = Promise.resolve()
+  function act(
+    runId: string,
+    action: Action,
+    body: { waitId?: unknown; notes?: unknown },
+  ): Promise<unknown> {
+    const next = writing.then(() => write(runId, action, body))
+    writing = next.catch(() => undefined)
+    return next
+  }
+
   /**
    * One write, through the function its `demo` subcommand calls. The caller
    * has already checked the method, the Origin and the token.
    */
-  async function act(
+  async function write(
     runId: string,
     action: Action,
     body: { waitId?: unknown; notes?: unknown },
@@ -1737,6 +1752,8 @@ function createUiApi() {
           return await retriggerRun(db, runId)
         case 'archive':
           return await archiveRun(db, runId)
+        case 'archive-series':
+          return await archiveSeries(db, runId)
         case 'unarchive':
           return await unarchiveRun(db, runId)
       }

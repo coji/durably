@@ -11,6 +11,7 @@ import { existsSync } from 'node:fs'
 
 import type { AnyDurably, Run, StepAttempt } from '@coji/durably'
 
+import { DEMO } from './demo-command.js'
 import {
   DETAIL_PREFIX,
   INTERRUPTED_CHECK,
@@ -70,11 +71,8 @@ function setupUntrackedPaths(error: string | null): string[] | null {
   }
 }
 
-/**
- * The demo CLI as it runs from anywhere in this repository. Every printed
- * command starts with it, so it pastes and runs as is.
- */
-export const DEMO = 'pnpm --filter example-local-agent-loop demo'
+// The demo CLI as it runs from anywhere in this repository.
+export { DEMO }
 
 /**
  * Starts a new run with this run's stored input. A bare `demo trigger` would

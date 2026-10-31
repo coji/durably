@@ -1,4 +1,5 @@
 import type { Act } from '../components/ActionNotice'
+import type { BulkAct } from '../components/BulkNotice'
 import { EmptyState } from '../components/EmptyState'
 import { Section } from '../components/Layout'
 import { LIST } from '../glossary'
@@ -17,7 +18,16 @@ import { Tasks } from './list/Tasks'
  * another run of the task is still open or asks for a person. Archived
  * tasks are among the finished ones.
  */
-export function RunsScreen({ data, act }: { data: RunsResponse; act: Act }) {
+export function RunsScreen({
+  data,
+  act,
+  actMany,
+}: {
+  data: RunsResponse
+  act: Act
+  /** Archive several stopped tasks at once; without it, none are chosen. */
+  actMany?: BulkAct
+}) {
   if (!data.exists)
     return (
       <EmptyState>
@@ -71,7 +81,13 @@ export function RunsScreen({ data, act }: { data: RunsResponse; act: Act }) {
         />
       </Section>
       {stop.length > 0 ? (
-        <StopTasks tasks={stop} rows={rows} now={data.now} act={act} />
+        <StopTasks
+          tasks={stop}
+          rows={rows}
+          now={data.now}
+          act={act}
+          actMany={actMany}
+        />
       ) : null}
       <DoneTasks tasks={done} rows={rows} now={data.now} act={act} />
     </>

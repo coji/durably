@@ -9,7 +9,7 @@ import { runHref } from '../../components/RunLink'
 import { StageTrack } from '../../components/StageTrack'
 import { ArchivedMark, FakeMark } from '../../components/SupersededMark'
 import { runState, TaskList, TaskMeta, TaskRow } from '../../components/TaskRow'
-import { LIST } from '../../glossary'
+import { BULK, LIST } from '../../glossary'
 import { diagnosisText, retryLabel } from '../../labels'
 import type { RunRow } from '../../server'
 import { TaskRuns } from './TaskRuns'
@@ -115,12 +115,14 @@ function TaskItem({
   now,
   act,
   defaultOpen,
+  selection,
 }: {
   task: Task
   rows: Map<string, RunRow>
   now: string
   act: Act
   defaultOpen: boolean
+  selection?: Selection
 }) {
   const [asking, setAsking] = useState<string | null>(null)
   const rep = rows.get(task.representative)
@@ -144,6 +146,15 @@ function TaskItem({
       summary={finished ? null : <Summary rep={rep} />}
       toggleLabel={LIST.showRuns(name)}
       defaultOpen={defaultOpen || othersOpen(task)}
+      select={
+        selection
+          ? {
+              checked: selection.has(task.id),
+              label: BULK.select(name),
+              onChange: (on) => selection.set(task.id, on),
+            }
+          : undefined
+      }
     >
       <StageTrack pipeline={rep.pipeline} />
       {finished ? null : (
@@ -170,6 +181,12 @@ function TaskItem({
   )
 }
 
+/** Which tasks are chosen, by their first run's ID, and how to change it. */
+export interface Selection {
+  has: (taskId: string) => boolean
+  set: (taskId: string, on: boolean) => void
+}
+
 /** A task's name: its first run's, or the run that shows it. */
 export function taskName(
   task: Task,
@@ -190,6 +207,7 @@ export function Tasks({
   empty,
   act,
   open = false,
+  selection,
 }: {
   tasks: Task[]
   rows: Map<string, RunRow>
@@ -199,6 +217,8 @@ export function Tasks({
   act: Act
   /** Whether each row starts open. */
   open?: boolean
+  /** Give each row a checkbox, by the task's first run's ID. */
+  selection?: Selection
 }) {
   if (tasks.length === 0) return empty ? <EmptyState>{empty}</EmptyState> : null
   return (
@@ -211,6 +231,7 @@ export function Tasks({
           now={now}
           act={act}
           defaultOpen={open}
+          selection={selection}
         />
       ))}
     </TaskList>

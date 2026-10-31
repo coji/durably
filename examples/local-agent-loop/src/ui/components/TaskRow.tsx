@@ -63,6 +63,7 @@ export function TaskRow({
   summary,
   toggleLabel,
   defaultOpen,
+  select,
   children,
 }: {
   status: Status
@@ -78,6 +79,8 @@ export function TaskRow({
   /** What the chevron button says to a screen reader. */
   toggleLabel: string
   defaultOpen?: boolean
+  /** A checkbox before the row, for choosing it among others. */
+  select?: { checked: boolean; label: string; onChange: (on: boolean) => void }
   children: ReactNode
 }) {
   // Only a person's own toggle is held; until then the row follows
@@ -87,6 +90,17 @@ export function TaskRow({
   const bodyId = useId()
   return (
     <li className="task-row py-2 pr-4 pl-2">
+      {select ? (
+        <label className="task-pick inline-flex size-8 cursor-pointer items-center justify-center">
+          <input
+            type="checkbox"
+            checked={select.checked}
+            onChange={(e) => select.onChange(e.target.checked)}
+            aria-label={select.label}
+            className="accent-fg size-4 cursor-pointer"
+          />
+        </label>
+      ) : null}
       <button
         type="button"
         aria-expanded={open}
@@ -97,7 +111,7 @@ export function TaskRow({
       >
         <Chevron open={open} />
       </button>
-      <div className="flex min-h-8 min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+      <div className="task-line flex min-h-8 min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
         <StatusBadge label={status.label} tone={status.tone} />
         <span className="flex min-w-0 flex-1 basis-48 items-baseline gap-2">
           {href ? (
@@ -121,12 +135,12 @@ export function TaskRow({
         {meta}
       </div>
       {summary && open ? (
-        <div className="text-fg-2 col-start-2 min-w-0 text-sm">{summary}</div>
+        <div className="task-tail text-fg-2 min-w-0 text-sm">{summary}</div>
       ) : null}
       <div
         id={bodyId}
         hidden={!open}
-        className="col-start-2 flex min-w-0 flex-col gap-3 pt-2 pb-2"
+        className="task-tail flex min-w-0 flex-col gap-3 pt-2 pb-2"
       >
         {/* Drawn only when open: most rows of a long list stay closed. */}
         {open ? children : null}

@@ -67,11 +67,18 @@ import {
 import { archiveMarkerOf } from '../src/factory/layout.js'
 import { repairLabels } from '../src/factory/repair.js'
 import { ActionNotice } from '../src/ui/components/ActionNotice.js'
+import {
+  BulkNotice,
+  undoItems,
+  type BulkOutcome,
+  type SeriesResult,
+} from '../src/ui/components/BulkNotice.js'
 import { ReviewFindingTitles } from '../src/ui/components/ReviewFindingTitles.js'
 import { openNow } from '../src/ui/components/TaskRow.js'
 import {
   ACTION,
   ACTION_DONE,
+  BULK,
   COMPARE,
   COPY,
   DESIGN,
@@ -102,6 +109,7 @@ import {
   stageName,
   stopName,
 } from '../src/ui/labels.js'
+import { seriesCommand } from '../src/ui/screens/list/BulkBar.js'
 import { STOP_PAGE } from '../src/ui/screens/list/StopTasks.js'
 import { TaskRuns } from '../src/ui/screens/list/TaskRuns.js'
 import { RecordPanels } from '../src/ui/screens/run/RecordPanels.js'
@@ -3444,6 +3452,76 @@ describe('numbers on the screens', () => {
     assert.ok(!list.includes(LIST.doneEmpty))
   })
 
+  it('gives stopped rows a checkbox only when tasks can be archived together', () => {
+    const stops = [0, 1].map((i) =>
+      row({
+        id: `01K6D2Q7XB3M9RKT4WPICK0${i}`,
+        name: `pick ${i}`,
+        status: 'failed',
+        conclusion: null,
+        diagnosis: { kind: 'stopped', next: [], failure: null },
+      } as unknown as Partial<RunRow>),
+    )
+    const plain = listOf(stops)
+    assert.ok(!plain.includes('task-pick'))
+    assert.ok(!htmlText(plain).includes(BULK.selectAll))
+    const data = {
+      exists: true,
+      db: '/tmp/x.db',
+      now,
+      runs: stops,
+      tasks: groupTasks(
+        stops.map((r) => ({
+          id: r.id,
+          createdAt: r.createdAt,
+          parentId: null,
+          kind: r.diagnosis.kind,
+          approved: false,
+          leadTimeMs: r.leadTimeMs,
+          costUsd: r.costUsd,
+          archived: false,
+        })),
+      ),
+    } as unknown as RunsResponse
+    const html = renderToStaticMarkup(
+      createElement(RunsScreen, { data, act: noAct, actMany: async () => {} }),
+    )
+    assert.equal([...html.matchAll(/class="task-pick/g)].length, 2)
+    assert.ok(html.includes(`aria-label="${BULK.select('pick 0')}"`))
+    assert.ok(htmlText(html).includes(BULK.selectAll))
+  })
+
+  it('brings back only the runs a bulk archive newly archived, and names one CLI line for the tasks', () => {
+    const outcome: BulkOutcome = {
+      action: 'archive-series',
+      done: [
+        { item: { runId: 'a', name: 'task a' }, archived: ['a', 'a2'] },
+        { item: { runId: 'b', name: 'task b' }, archived: [] },
+      ],
+      failed: [{ item: { runId: 'c', name: 'task c' }, error: 'no run c' }],
+    }
+    assert.deepEqual(undoItems(outcome), [
+      { runId: 'a', name: 'task a' },
+      { runId: 'a2', name: 'task a' },
+    ])
+    assert.equal(
+      seriesCommand([
+        { runId: 'a', name: 'task a' },
+        { runId: 'b', name: 'task b' },
+      ]),
+      'pnpm --filter example-local-agent-loop demo archive --series a --series b',
+    )
+    const text = htmlText(
+      renderToStaticMarkup(
+        createElement(BulkNotice, { outcome, onUndo: () => {} }),
+      ),
+    )
+    assert.ok(text.includes(BULK.archived('2')))
+    assert.ok(text.includes(BULK.undo))
+    assert.ok(text.includes(BULK.failed('1')))
+    assert.ok(text.includes('no run c'))
+  })
+
   it('shows the newest stopped tasks and asks before showing the rest', () => {
     const stops = Array.from({ length: STOP_PAGE + 2 }, (_, i) =>
       row({
@@ -4422,6 +4500,17 @@ describe('web UI actions', { timeout: 300000 }, () => {
         list.runs.find((r) => r.id === cancelled)?.diagnosis,
         row?.diagnosis,
       )
+      // A task's stops, by archive-series, as `archive --series` does it.
+      const series = await post(`/api/runs/${cancelled}/archive-series`)
+      assert.equal(series.status, 200, series.body)
+      const answer = JSON.parse(series.body) as SeriesResult
+      assert.deepEqual(
+        answer.archived?.map((r) => [r.runId, r.changed]),
+        [[cancelled, true]],
+      )
+      assert.deepEqual(answer.errors, [])
+      assert.equal(archived(cancelled), true)
+      assert.equal((await post(`/api/runs/${cancelled}/unarchive`)).status, 200)
       // A run waiting on a decision is decided, not archived.
       const open = await post(`/api/runs/${toApprove}/archive`)
       assert.equal(open.status, 409)

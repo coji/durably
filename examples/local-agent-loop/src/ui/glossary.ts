@@ -555,6 +555,21 @@ export const ACTION_DONE = {
   unarchived: '状態に合った場所に戻ります。',
 } as const
 
+/** Several tasks chosen and acted on at once. */
+export const BULK = {
+  select: (name: string) => `${name}を選ぶ`,
+  selectAll: 'すべて選ぶ',
+  selected: (n: string) => `${n} 件を選択中`,
+  clear: '選択を解除',
+  archive: (n: string) => `${n} 件をアーカイブ`,
+  archiveNote:
+    'どのタスクも、止まった実行だけをアーカイブします。記録はそのまま残り、終わったタスクに移ります。',
+  archived: (n: string) => `${n} 件のタスクをアーカイブしました`,
+  unarchived: (n: string) => `${n} 件の実行をアーカイブから戻しました`,
+  undo: 'まとめて戻す',
+  failed: (n: string) => `${n} 件はできませんでした`,
+} as const
+
 // ---------------------------------------------------------------- shell
 
 export const SHELL = {

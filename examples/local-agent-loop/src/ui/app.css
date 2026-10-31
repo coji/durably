@@ -328,6 +328,18 @@ dd {
   grid-template-columns: var(--space-8) minmax(0, 1fr);
   column-gap: var(--space-3);
 }
+/* A row that can be chosen has its checkbox before the chevron. */
+.task-row:has(> .task-pick) {
+  grid-template-columns: var(--space-8) var(--space-8) minmax(0, 1fr);
+  column-gap: var(--space-1);
+}
+.task-row:has(> .task-pick) > .task-line {
+  margin-left: var(--space-2);
+}
+/* What is under the name lines up with the name, after every control. */
+.task-row > .task-tail {
+  grid-column: -2 / -1;
+}
 /*
  * A row's facts in fixed, right-aligned columns, so the time, cost and age
  * of every row in a list line up.
@@ -368,9 +380,17 @@ dd {
   select {
     min-height: var(--size-touch);
   }
-  .task-row > button {
+  .task-row > button,
+  .task-row > .task-pick {
     min-width: var(--size-touch);
   }
+  .task-row:has(> .task-pick) {
+    grid-template-columns: var(--size-touch) var(--size-touch) minmax(0, 1fr);
+  }
+}
+/* While the bulk bar is up, the page ends above it, not under it. */
+body:has(.bulk-bar) main {
+  padding-bottom: calc(var(--space-12) + var(--space-12));
 }
 /* A heading the design page's contents jump to clears the sticky header. */
 .scroll-target {
