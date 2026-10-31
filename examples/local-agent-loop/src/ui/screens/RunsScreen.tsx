@@ -5,6 +5,7 @@ import { LIST } from '../glossary'
 import type { RunsResponse } from '../server'
 import { DoneTasks } from './list/DoneTasks'
 import { Overview, SECTION_ID } from './list/Overview'
+import { StopTasks } from './list/StopTasks'
 import { Tasks } from './list/Tasks'
 
 /**
@@ -70,9 +71,7 @@ export function RunsScreen({ data, act }: { data: RunsResponse; act: Act }) {
         />
       </Section>
       {stop.length > 0 ? (
-        <Section id={SECTION_ID.stop} title={LIST.stopped} count={stop.length}>
-          <Tasks tasks={stop} rows={rows} now={data.now} act={act} />
-        </Section>
+        <StopTasks tasks={stop} rows={rows} now={data.now} act={act} />
       ) : null}
       <DoneTasks tasks={done} rows={rows} now={data.now} act={act} />
     </>

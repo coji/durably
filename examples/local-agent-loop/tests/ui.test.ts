@@ -102,6 +102,7 @@ import {
   stageName,
   stopName,
 } from '../src/ui/labels.js'
+import { STOP_PAGE } from '../src/ui/screens/list/StopTasks.js'
 import { TaskRuns } from '../src/ui/screens/list/TaskRuns.js'
 import { RecordPanels } from '../src/ui/screens/run/RecordPanels.js'
 import { SpecPanel } from '../src/ui/screens/run/SpecPanel.js'
@@ -3441,6 +3442,26 @@ describe('numbers on the screens', () => {
     )
     assert.ok(list.includes(LIST.onlyArchived))
     assert.ok(!list.includes(LIST.doneEmpty))
+  })
+
+  it('shows the newest stopped tasks and asks before showing the rest', () => {
+    const stops = Array.from({ length: STOP_PAGE + 2 }, (_, i) =>
+      row({
+        id: `01K6D2Q7XB3M9RKT4WST0P${String(i).padStart(2, '0')}`,
+        name: `stop ${i}`,
+        status: 'failed',
+        conclusion: null,
+        createdAt: `2026-09-${String(10 + i)}T10:00:00.000Z`,
+        diagnosis: { kind: 'stopped', next: [], failure: null },
+      } as unknown as Partial<RunRow>),
+    )
+    const list = htmlText(listOf(stops))
+    const shown = stops.filter((r) => list.includes(r.name)).length
+    assert.equal(shown, STOP_PAGE)
+    // The newest show; the section still counts every stopped task.
+    assert.ok(list.includes(`stop ${STOP_PAGE + 1}`))
+    assert.ok(!list.includes('stop 0'))
+    assert.ok(list.includes(LIST.showMore('2')))
   })
 
   it('opens a decision and keeps a stop to one line, its reason shown once opened', () => {
