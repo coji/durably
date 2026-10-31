@@ -1,7 +1,7 @@
 import type { Task } from '../../../engine/status'
 import type { Act, ActionName } from '../../components/ActionNotice'
 import { RunActions } from '../../components/RunActions'
-import { IdSuffix, runHref } from '../../components/RunLink'
+import { runHref } from '../../components/RunLink'
 import { StatusBadge } from '../../components/StatusBadge'
 import { ArchivedMark, SupersededMark } from '../../components/SupersededMark'
 import { runRole, runState, TaskMeta } from '../../components/TaskRow'
@@ -59,7 +59,6 @@ export function TaskRuns({
               >
                 {runRole(r)}
               </a>
-              <IdSuffix id={r.id} />
               {r.superseded ? <SupersededMark /> : null}
               {r.archived ? <ArchivedMark /> : null}
             </span>

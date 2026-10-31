@@ -6,7 +6,7 @@ import { EmptyState } from '../../components/EmptyState'
 import { LiveProgress } from '../../components/LiveProgress'
 import { RunActions } from '../../components/RunActions'
 import { runHref } from '../../components/RunLink'
-import { StageNow, StageTrack } from '../../components/StageTrack'
+import { StageTrack } from '../../components/StageTrack'
 import { ArchivedMark, FakeMark } from '../../components/SupersededMark'
 import { runState, TaskList, TaskMeta, TaskRow } from '../../components/TaskRow'
 import { LIST } from '../../glossary'
@@ -40,14 +40,16 @@ function Summary({ rep }: { rep: RunRow }) {
 }
 
 /**
- * Whether a run of the task other than the one that shows it is still open
- * or asks for a person, such as a retried repair under a stopped one that
- * runs or waits its turn. Such a row opens, so its runs show without a
- * click, whatever state they are in.
+ * Whether a run of the task other than the one that shows it is moving or
+ * waits on a decision, such as a retried repair under a stopped one that
+ * runs or waits its turn. Such a row opens, so that run shows without a
+ * click. An older stop alone does not: it is already the row's state.
  */
 function othersOpen(task: Task): boolean {
   return task.runs.some(
-    (r) => r.id !== task.representative && r.attention !== 'done',
+    (r) =>
+      r.id !== task.representative &&
+      (r.attention === 'active' || r.attention === 'decision'),
   )
 }
 
@@ -137,9 +139,7 @@ function TaskItem({
       status={runState({ ...rep, kind: rep.diagnosis.kind })}
       name={name}
       href={runHref(rep.id)}
-      id={rep.id}
       marks={<Marks task={task} rep={rep} />}
-      stage={finished ? null : <StageNow pipeline={rep.pipeline} />}
       meta={<Meta task={task} rep={rep} now={now} />}
       summary={finished ? null : <Summary rep={rep} />}
       toggleLabel={LIST.showRuns(name)}

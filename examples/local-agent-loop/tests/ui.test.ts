@@ -594,7 +594,7 @@ describe('pipeline and trace', () => {
       ['baseline', 'stopped', 1],
       ['code', 'not-reached', 0],
     ])
-    assert.equal(stopped.label, '工程: ベースの検証で停止')
+    assert.equal(stopped.label, '工程: 着手前のチェックで停止')
     const refused = derivePipeline({
       status: 'failed',
       diagnosisKind: 'stopped',
@@ -3443,7 +3443,7 @@ describe('numbers on the screens', () => {
     assert.ok(!list.includes(LIST.doneEmpty))
   })
 
-  it('opens a decision and closes a stop, which keeps its stage and reason on the row', () => {
+  it('opens a decision and keeps a stop to one line, its reason shown once opened', () => {
     const html = listOf([
       row({
         id: '01K6D2Q7XB3M9RKT4WAPPROV',
@@ -3472,11 +3472,8 @@ describe('numbers on the screens', () => {
     const visible = htmlText(
       html.slice(closed, html.indexOf('hidden=""', closed)),
     )
-    const suffix = PIPELINE_SUFFIX.stopped
-    assert.ok(suffix)
-    assert.ok(visible.includes(stageName('verify')))
-    assert.ok(visible.includes(suffix))
-    assert.ok(visible.includes(diagnosisText({ kind: 'stopped' }, false)))
+    // Closed, the badge says how it stopped; the reason waits for opening.
+    assert.ok(!visible.includes(diagnosisText({ kind: 'stopped' }, false)))
   })
 
   // A first run whose review asked for changes, and two repairs of it.
@@ -3514,13 +3511,7 @@ describe('numbers on the screens', () => {
     return html.slice(at, html.indexOf('id="tasks-done"', at))
   }
 
-  for (const kind of [
-    'running',
-    'pending',
-    'lease-expired',
-    'decided',
-    'stopped',
-  ])
+  for (const kind of ['running', 'pending', 'lease-expired', 'decided'])
     it(`opens a stopped row whose retried repair is ${kind}`, () => {
       const html = listOf(
         [
@@ -3541,9 +3532,14 @@ describe('numbers on the screens', () => {
       assert.ok(htmlText(section).includes(LIST.repairRun(2)))
     })
 
-  it('keeps a stopped row closed when nothing else of its task is open', () => {
+  it('keeps a stopped row closed when nothing else of its task moves or waits', () => {
+    // An older stop of the same task does not open it: it is the row's state.
     const html = listOf(
-      [asked, as(older, 'stopped', '2026-09-30T11:10:00.000Z')],
+      [
+        asked,
+        as(older, 'stopped', '2026-09-30T11:10:00.000Z'),
+        as(newer, 'stopped', '2026-09-30T11:20:00.000Z'),
+      ],
       repairs,
     )
     const rows = [...stopSection(html).matchAll(/aria-expanded="(\w+)"/g)]
@@ -4131,7 +4127,7 @@ describe('reviews beside verification on the page', () => {
     // why it is set aside, and that only newer runs hand it on.
     const discarded = REVIEW_STATUS['discarded']?.reason ?? ''
     assert.match(discarded, /^検証に落ちた候補へのレビューなので/)
-    assert.match(discarded, /新しいrunでは/)
+    assert.match(discarded, /新しい実行では/)
     assert.doesNotMatch(discarded, /[()（）]/)
     assert.ok(text.includes(REVIEW.noVerdict))
     assert.ok(text.includes(REVIEW.discardedCost))

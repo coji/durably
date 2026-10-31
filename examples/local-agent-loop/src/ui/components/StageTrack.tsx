@@ -44,14 +44,11 @@ function Next() {
   )
 }
 
-/**
- * One stage as the track shows it: its mark, name, count and state word.
- * `quiet` drops the state's fill, for a row whose badge already carries it.
- */
-function StageChip({ s, quiet }: { s: PipelineStage; quiet?: boolean }) {
+/** One stage as the track shows it: its mark, name, count and state word. */
+function StageChip({ s }: { s: PipelineStage }) {
   return (
     <span
-      className={`inline-flex items-center gap-1 whitespace-nowrap ${quiet ? 'text-fg-2' : STAGE_CLASS[s.state]}`}
+      className={`inline-flex items-center gap-1 whitespace-nowrap ${STAGE_CLASS[s.state]}`}
     >
       {s.state === 'running' ? (
         <span className="dot-live size-1.5 rounded-full bg-current" />
@@ -62,28 +59,6 @@ function StageChip({ s, quiet }: { s: PipelineStage; quiet?: boolean }) {
       {PIPELINE_SUFFIX[s.state] ? (
         <span className="font-normal">{PIPELINE_SUFFIX[s.state]}</span>
       ) : null}
-    </span>
-  )
-}
-
-/**
- * The stages a row names on its own line: where a queued run will start,
- * and where a stopped one stopped. A wait and a running stage are left
- * out: the badge names the wait, and the running run's summary its stage.
- */
-const NOW_STATES: readonly PipelineState[] = ['current', 'stopped']
-
-/**
- * The one stage the run stands at, for a row that has no room for the
- * whole track. It is set without color: the row's badge already says the
- * state. Nothing for a run past its stages.
- */
-export function StageNow({ pipeline }: { pipeline: Pipeline }) {
-  const s = pipeline.stages.find((x) => NOW_STATES.includes(x.state))
-  if (!s) return null
-  return (
-    <span className="text-xs leading-5">
-      <StageChip s={s} quiet />
     </span>
   )
 }

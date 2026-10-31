@@ -38,7 +38,7 @@ export const COMMON = {
 
 export const STAGE_NAME: Record<string, string> = {
   setup: '準備',
-  baseline: 'ベースの検証',
+  baseline: '着手前のチェック',
   preflight: '事前確認',
   spec: '仕様',
   'spec-review': '仕様レビュー',
@@ -89,7 +89,7 @@ export const STEP_PART_NAME: Record<string, string> = {
 
 /** A stop reason in a few words, for a count such as a comparison's. */
 export const STOP_NAME: Record<FailureKind, string> = {
-  'baseline-check-failed': 'ベースの検証失敗',
+  'baseline-check-failed': '着手前のチェック失敗',
   'spec-check-failed': '採点コマンドの決定に失敗',
   'preflight-failed': '事前確認で停止',
   'candidate-moved': '修正元の候補の変更',
@@ -124,7 +124,7 @@ export const REVIEW_STATUS: Record<string, { label: string; reason: string }> =
     discarded: {
       label: '不採用',
       reason:
-        '検証に落ちた候補へのレビューなので、承認にもレビュー回数にも使っていません。新しいrunでは、次の修正があれば参考として渡します。',
+        '検証に落ちた候補へのレビューなので、承認にもレビュー回数にも使っていません。新しい実行では、次の修正があれば参考として渡します。',
     },
     pending: {
       label: '検証待ち',
@@ -143,7 +143,7 @@ export const KIND_NAME: Record<DiagnosisKind, string> = {
   stopped: '停止',
   running: '実行中',
   pending: '順番待ち',
-  'lease-expired': '担当が途切れた',
+  'lease-expired': 'ワーカーとの連絡が切れた',
   decided: '判断済み・再開待ち',
   finished: '終了',
 }
@@ -172,7 +172,7 @@ export const TRACE_STATE_NAME: Record<TraceState, string> = {
   waiting: '人待ち',
   failed: '失敗',
   interrupted: '中断',
-  lost: '担当が途切れた',
+  lost: 'ワーカーとの連絡が切れた',
   idle: '工程の合間',
 }
 
@@ -297,7 +297,7 @@ export const FAILURE_TEXT: Record<
   },
   'agent-timeout': {
     reason:
-      'factory がエージェントの呼び出しを全体か無通信の時間の上限で止め、run を先へ進められませんでした。実装や修正なら候補にできる変更が残らず、ほかの役割なら途中の結果を使えません。止めたことを呼び出しの結果として記録したので、結果の分からない呼び出しは残っていません。',
+      'factory がエージェントの呼び出しを全体か無通信の時間の上限で止め、実行を先へ進められませんでした。実装や修正なら候補にできる変更が残らず、ほかの役割なら途中の結果を使えません。止めたことを呼び出しの結果として記録したので、結果の分からない呼び出しは残っていません。',
     check:
       'レポートで止めた上限とエージェントの出力を読む。時間が足りなかったなら factory.json の agentTimeoutMs か agentIdleTimeoutMs を延ばして設定を読み直す再実行を、そうでなければ通常の再実行を使う。',
   },
@@ -356,7 +356,7 @@ export const CHECK_TEXT = {
 } as const
 
 export const RETRY_TEXT = {
-  retryable: 'できる。結果の分からない呼び出しは重ねて送らない',
+  retryable: 'できる。結果の分からないまま止まった呼び出しは、送り直さない',
   notRetryable: 'しない。先に人が確認する',
 } as const
 
@@ -512,7 +512,7 @@ export const ACTION = {
   proceed: '実行する',
   cancel: 'やめる',
   busy: '実行しています…',
-  sameCommand: '同じ操作のコマンド',
+  sameCommand: 'CLI で同じことをするコマンド',
   approve: '承認',
   reject: '却下',
   specApprove: 'いまの仕様で承認',
@@ -583,7 +583,6 @@ export const LIST = {
   attentionEmpty: '人の手が要るものはありません',
   decision: '判断待ち',
   stopped: '止まったもの',
-  stoppedNote: '開くと工程、次の一手、実行の履歴が出ます。',
   active: '動いているもの',
   activeEmpty: '動いている実行も、順番を待つ実行もありません。',
   overview: '状況',
@@ -632,7 +631,7 @@ export const COLUMN = {
   cost: '費用',
   stage: '工程',
   role: '役割',
-  roleProfile: 'プロバイダー / 指定モデル / 指定推論量',
+  roleProfile: 'プロバイダー / 指定モデル / 指定した推論の強さ',
   invocations: '呼び出し',
   input: '入力',
   cacheRead: 'キャッシュ読み',
@@ -651,7 +650,7 @@ export const COLUMN = {
 // ---------------------------------------------------------------- run detail
 
 export const DETAIL = {
-  conclusion: '結論と次の手',
+  conclusion: '結果と次にすること',
   noNext: '人がすることはありません。',
   stopRecord: '停止の記録を見る',
   deliveredTo: '納品したブランチ',
@@ -699,8 +698,8 @@ export const DETAIL = {
     '仕様の作成、仕様レビュー、採点コマンドの決定を合わせた経過時間です。並んだレビューは一度だけ数え、人の判断を待った時間は含みません。',
   timeNote:
     '作業時間は工程ごとの呼び出しの時間の合計です。レビューのように並んで動いた工程は重ねて数えるので、合計が所要時間を超えることがあります。所要時間は登録から終わるまでの時計の時間です。',
-  evidence: '根拠',
-  evidenceNote: '記録の詳細です。開くと表示します。',
+  evidence: '記録の詳細',
+  evidenceNote: '開くと表示します。',
 } as const
 
 export const CALIBRATION_NAME = {
@@ -758,7 +757,7 @@ export const REVIEW = {
   roundOf: (n: number) => `${n}回目`,
   /** A verdict review that asked for changes a later round no longer asked for. */
   askedFor: (review: string) => `${review}が求めた修正`,
-  notesInEvidence: 'メモの本文は、下の根拠の「レビュー」で読めます。',
+  notesInEvidence: 'メモの本文は、下の記録の詳細の「レビュー」で読めます。',
   noVerdict: '判定なし',
   /** The review calls spent on candidates that failed verification. */
   discardedCost: '検証に落ちた候補へのレビュー',
@@ -836,7 +835,7 @@ export const TRACE = {
   totalTokens: '合計トークン',
   inputOutput: '入力 / 出力',
   cost: '費用',
-  leaseGeneration: '担当の世代',
+  leaseGeneration: '担当の回数',
   attempts: '試行',
   iteration: '回',
   start: '開始',
@@ -847,7 +846,7 @@ export const TRACE = {
   interruption: '中断の理由',
   provider: 'プロバイダー',
   model: 'モデル',
-  effort: '推論量',
+  effort: '推論の強さ',
   reportedModel: '報告されたモデル',
   checkpoint: 'チェックポイント',
   candidate: '候補',
@@ -921,7 +920,7 @@ export const COMPARE = {
   reviewCapReached: 'レビュー上限',
   repairsMedian: '修正回数 中央値',
   costMedian: '費用 中央値',
-  routineNeedingMore: '定型なのに修正か上限',
+  routineNeedingMore: '定型と見たのに修正か上限になった',
   stops: '停止の理由',
   calibrationNote:
     '見立ての判定別に、保存したタスクと仕様から測った値の中央値です。仕様がない実行や古い記録の値は不明に数えます。',
@@ -929,7 +928,7 @@ export const COMPARE = {
 
 export const TREND = {
   intro: (days: string, tasks: string) =>
-    `直近 ${days} 日に終わったタスク ${tasks} 件を、最初の実行のモデルと推論量ごとに、最後の実行が終わった週で並べています。`,
+    `直近 ${days} 日に終わったタスク ${tasks} 件を、最初の実行のモデルと推論の強さごとに、最後の実行が終わった週で並べています。`,
   fakeLeftOut: (n: string) => `模擬のタスク ${n} 件は除いています。`,
   note: '週は月曜から始まります。タスクの所要時間と費用は、修正の実行も含めたすべての実行の合計の中央値です。分からない値を含むタスクは 0 とせず、その中央値から除きます。',
   single: '1 件のみ',
@@ -994,7 +993,7 @@ export const DESIGN = {
     taskRow: {
       name: 'タスクの行',
       about:
-        '名前が主役で、ID は末尾だけを添えます。数値は列をそろえ、閉じていても止まった理由かいまの工程を1行で読めます。',
+        '名前が主役です。数値は列をそろえ、理由と工程は開いたときに出します。',
     },
     stageTrack: {
       name: '工程の並び',

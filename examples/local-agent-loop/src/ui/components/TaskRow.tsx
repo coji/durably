@@ -10,7 +10,6 @@ import type { DiagnosisKind, TaskRun } from '../../engine/status'
 import { TERMINAL_STATUSES } from '../../engine/terminal'
 import { COMMON, LIST } from '../glossary'
 import { Chevron } from './Layout'
-import { IdSuffix } from './RunLink'
 import { conclusionStatus, kindStatus, type Status } from './status'
 import { StatusBadge } from './StatusBadge'
 import { Ago } from './Time'
@@ -49,7 +48,7 @@ export function openNow(toggled: boolean | null, wanted: boolean): boolean {
 
 /**
  * One task in a list: its state, its name as a link to the run that shows
- * it, where it stands, and its facts in aligned columns. A summary line,
+ * it, and its facts in aligned columns. A summary line,
  * such as why it stopped, stays under the name while closed, cut to one
  * line, and shows whole when open. The chevron opens what is below: the
  * next step and every run the task took. The name leads; the ID is a quiet
@@ -59,9 +58,7 @@ export function TaskRow({
   status,
   name,
   href,
-  id,
   marks,
-  stage,
   meta,
   summary,
   toggleLabel,
@@ -72,11 +69,8 @@ export function TaskRow({
   name: string
   /** Where the name leads; the row is plain text without one. */
   href?: string
-  id: string
-  /** Quiet words beside the ID, such as アーカイブ済み. */
+  /** Quiet words beside the name, such as アーカイブ済み. */
   marks?: ReactNode
-  /** Where the run stands, from `StageNow`. */
-  stage?: ReactNode
   /** The facts at the end of the line, from `TaskMeta`. */
   meta?: ReactNode
   /** One line under the name: why it stopped, or where it is now. */
@@ -118,20 +112,16 @@ export function TaskRow({
               {name}
             </span>
           )}
-          <span className="inline-flex shrink-0 items-baseline gap-2 whitespace-nowrap">
-            <IdSuffix id={id} />
-            {marks}
-          </span>
+          {marks ? (
+            <span className="inline-flex shrink-0 items-baseline gap-2 whitespace-nowrap">
+              {marks}
+            </span>
+          ) : null}
         </span>
-        {stage}
         {meta}
       </div>
-      {summary ? (
-        <div
-          className={`text-fg-2 col-start-2 min-w-0 text-sm ${open ? '' : 'truncate'}`}
-        >
-          {summary}
-        </div>
+      {summary && open ? (
+        <div className="text-fg-2 col-start-2 min-w-0 text-sm">{summary}</div>
       ) : null}
       <div
         id={bodyId}

@@ -70,12 +70,7 @@ export function RunsScreen({ data, act }: { data: RunsResponse; act: Act }) {
         />
       </Section>
       {stop.length > 0 ? (
-        <Section
-          id={SECTION_ID.stop}
-          title={LIST.stopped}
-          count={stop.length}
-          note={LIST.stoppedNote}
-        >
+        <Section id={SECTION_ID.stop} title={LIST.stopped} count={stop.length}>
           <Tasks tasks={stop} rows={rows} now={data.now} act={act} />
         </Section>
       ) : null}
