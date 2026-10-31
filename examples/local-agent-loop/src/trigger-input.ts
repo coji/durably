@@ -40,6 +40,7 @@ import {
   type CommitSettings,
   type FindingsRef,
   type InputFileRef,
+  MAX_CONTEXT_BYTES,
   type RepairParentConclusion,
   type RepoTargetConfig,
 } from './factory/target.js'
@@ -305,8 +306,11 @@ async function readInputFile(
   name = `--${flag}`,
   /** The directory a relative path is taken from; the current one by default. */
   from?: string,
+  /** The largest file accepted, in bytes. */
+  maxBytes = MAX_INPUT_FILE_BYTES,
 ): Promise<{ content: string; ref: InputFileRef }> {
   const abs = from ? resolve(from, path) : resolve(path)
+  const limit = `the limit is ${maxBytes / 1024} KiB`
   let size: number
   try {
     size = (await stat(abs)).size
@@ -314,20 +318,16 @@ async function readInputFile(
     throw new Error(`${name} ${path}: cannot read file`)
   }
   // Check the size before reading, so a huge file is never loaded.
-  if (size > MAX_INPUT_FILE_BYTES)
-    throw new Error(
-      `${name} ${path}: file is ${size} bytes; the limit is 256 KiB`,
-    )
+  if (size > maxBytes)
+    throw new Error(`${name} ${path}: file is ${size} bytes; ${limit}`)
   let bytes: Buffer
   try {
     bytes = await readFile(abs)
   } catch {
     throw new Error(`${name} ${path}: cannot read file`)
   }
-  if (bytes.length > MAX_INPUT_FILE_BYTES)
-    throw new Error(
-      `${name} ${path}: file is ${bytes.length} bytes; the limit is 256 KiB`,
-    )
+  if (bytes.length > maxBytes)
+    throw new Error(`${name} ${path}: file is ${bytes.length} bytes; ${limit}`)
   let content: string
   try {
     // Keep a byte order mark, so the stored text hashes like the file does.
@@ -340,6 +340,22 @@ async function readInputFile(
   if (content.trim().length === 0)
     throw new Error(`${name} ${path}: file is empty`)
   return { content, ref: { path: abs } }
+}
+
+/**
+ * Read `--context-file` once, before the run exists: an input file held to
+ * 32 KiB, because it is trusted and goes into every code, repair and review
+ * prompt. The run stores the content, so the owner's confirmed decisions
+ * cannot change under it.
+ */
+function readContextFile(path: string) {
+  return readInputFile(
+    'context-file',
+    path,
+    undefined,
+    undefined,
+    MAX_CONTEXT_BYTES,
+  )
 }
 
 function splitArgv(value: string): string[] {
@@ -610,6 +626,7 @@ export async function resolveTarget(a: Record<string, string>) {
       'task-file',
       'spec-file',
       'dispositions-file',
+      'context-file',
       'config',
     ]) {
       if (a[flag]) throw new Error(`--${flag} needs --repo <path>`)
@@ -647,6 +664,9 @@ export async function resolveTarget(a: Record<string, string>) {
   const dispositionsFile = a['dispositions-file']
     ? await readInputFile('dispositions-file', a['dispositions-file'])
     : null
+  const contextFile = a['context-file']
+    ? await readContextFile(a['context-file'])
+    : null
   const issueNumber = a['issue']
   const issue = issueNumber
     ? await fetchIssue(repoPath, issueNumber.replace(/^#/, ''))
@@ -661,10 +681,12 @@ export async function resolveTarget(a: Record<string, string>) {
       task,
       spec: specFile?.content ?? null,
       dispositions: dispositionsFile?.content ?? null,
+      context: contextFile?.content ?? null,
       inputFiles: {
         task: taskFile?.ref ?? null,
         spec: specFile?.ref ?? null,
         dispositions: dispositionsFile?.ref ?? null,
+        context: contextFile?.ref ?? null,
       },
       issue: issue
         ? { number: issue.number, title: issue.title, url: issue.url }
@@ -785,7 +807,7 @@ interface StoredInput {
 
 /**
  * A new run input for `retrigger --reload-config`: the stored run's task,
- * spec, dispositions, issue and repository, with everything the config
+ * spec, dispositions, context, issue and repository, with everything the config
  * decides read again from the current config file and resolved and checked
  * as at trigger. The file is the one the run read with `--config`;
  * otherwise `factory.json` at the repository root, if there is one now.
@@ -867,10 +889,15 @@ export async function readNotesFile(path: string): Promise<string> {
   return (await readInputFile('notes-file', path)).content
 }
 
-/** The outside findings and optional dispositions a repair run is given. */
+/**
+ * The outside findings, and the optional dispositions and owner context, a
+ * repair run is given.
+ */
 export interface RepairFiles {
   findings: { content: string; ref: FindingsRef }
   dispositions: { content: string; ref: InputFileRef } | null
+  /** Absent or null: the parent's context is inherited. */
+  context?: { content: string; ref: InputFileRef } | null
 }
 
 /**
@@ -893,13 +920,14 @@ const REPAIR_FLAGS = [
   'run',
   'findings-file',
   'dispositions-file',
+  'context-file',
   'max-iterations',
 ]
 
 /**
  * Read `demo repair`'s input files once, with the same limits as trigger's:
- * at most 256 KiB, UTF-8, not blank, and `--max-iterations` as trigger
- * reads it. Any other flag is refused rather than ignored: a repair run
+ * at most 256 KiB (32 KiB for the context), UTF-8, not blank, and
+ * `--max-iterations` as trigger reads it. Any other flag is refused rather than ignored: a repair run
  * takes its parent's stored settings, and nothing else.
  */
 export async function readRepairFiles(
@@ -912,18 +940,20 @@ export async function readRepairFiles(
   const other = Object.keys(a).filter((flag) => !REPAIR_FLAGS.includes(flag))
   if (other.length > 0)
     throw new Error(
-      `repair takes only --run, --findings-file, --dispositions-file and --max-iterations; not accepted: ${other.map((f) => `--${f}`).join(', ')}. A repair run keeps the parent run's other stored settings; to run with other settings, start a normal run with trigger`,
+      `repair takes only --run, --findings-file, --dispositions-file, --context-file and --max-iterations; not accepted: ${other.map((f) => `--${f}`).join(', ')}. A repair run keeps the parent run's other stored settings; to run with other settings, start a normal run with trigger`,
     )
   const iterations = a['max-iterations']
   const maxIterations =
     iterations !== undefined ? parseMaxIterations(iterations) : undefined
   const findings = a['findings-file']
   const dispositions = a['dispositions-file']
+  const context = a['context-file']
   return {
     findings: findings ? await readInputFile('findings-file', findings) : null,
     dispositions: dispositions
       ? await readInputFile('dispositions-file', dispositions)
       : null,
+    context: context ? await readContextFile(context) : null,
     ...(maxIterations !== undefined ? { maxIterations } : {}),
   }
 }
@@ -953,6 +983,7 @@ interface StoredRepairInput {
       task?: InputFileRef | null
       spec?: InputFileRef | null
       dispositions?: InputFileRef | null
+      context?: InputFileRef | null
     }
     commit?: CommitSettings
     selfCheck?: string[][] | null
@@ -1219,13 +1250,15 @@ const sha256Of = (text: string) =>
  * comes from the current factory.json or this process's environment. A value
  * a parent's setup predates is taken from the parent's stored input.
  *
- * Dispositions replace the parent's when given and are inherited otherwise.
- * `maxIterations` replaces the parent's when given; it is the only setting a
- * repair may change. The idempotency key names the parent and the SHA-256 of
- * the findings and of the dispositions the child really gets, so the same
- * content from another path returns the same run. It names the repair budget
- * only when that differs from the parent's, so the same budget, given or
- * inherited, keeps the key a child got before the budget could change. The
+ * Dispositions and the owner context replace the parent's when given and
+ * are inherited otherwise. `maxIterations` replaces the parent's when given;
+ * it is the only setting a repair may change. The idempotency key names the
+ * parent and the SHA-256 of the findings, of the dispositions and of the
+ * context the child really gets, so the same content from another path
+ * returns the same run. It names the context only when there is one and the
+ * repair budget only when that differs from the parent's, so a child without
+ * a context, or with the same budget given or inherited, keeps the key it
+ * got before either could change. The
  * labels name the parent, so the parent's report finds the child; trigger
  * with both.
  */
@@ -1259,6 +1292,11 @@ export function buildRepairInput(
   const dispositionsRef = files.dispositions
     ? files.dispositions.ref
     : (storedFiles.dispositions ?? null)
+  // A parent set up before the context existed has none to pass on.
+  const context = files.context ? files.context.content : (t.context ?? null)
+  const contextRef = files.context
+    ? files.context.ref
+    : (storedFiles.context ?? null)
   // A value the parent's setup recorded is inherited as it is, null
   // included; only a setup from before the value existed falls back to the
   // parent's stored input.
@@ -1286,10 +1324,12 @@ export function buildRepairInput(
       task: t.task,
       spec: fixed.spec ?? t.spec,
       dispositions,
+      context,
       inputFiles: {
         task: storedFiles.task ?? null,
         spec: storedFiles.spec ?? null,
         dispositions: dispositionsRef,
+        context: contextRef,
       },
       issue: t.issue,
       checkCommand: fixed.check ?? t.checkCommand,
@@ -1361,6 +1401,7 @@ export function buildRepairInput(
     `repair-of-${parent.id}`,
     `findings-${sha256Of(files.findings.content)}`,
     `dispositions-${dispositions ? sha256Of(dispositions) : 'none'}`,
+    ...(context ? [`context-${sha256Of(context)}`] : []),
     ...(input.maxIterations !== stored.maxIterations
       ? [`max-iterations-${input.maxIterations}`]
       : []),
@@ -1432,7 +1473,7 @@ export async function startableRepair(
   const built = buildRepairInput(
     parent,
     setup,
-    { findings, dispositions: files.dispositions },
+    { findings, dispositions: files.dispositions, context: files.context },
     fakeScenario,
     fixed,
     files.maxIterations,

@@ -4151,6 +4151,37 @@ describe('numbers on the screens', () => {
     )
     assert.ok(derived.includes('修正元の実行の記録から作成'))
     assert.doesNotMatch(derived, /失敗したチェック/)
+    // A report built before the context existed has none to show.
+    assert.match(derived, /確定事項\s*指定なし/)
+
+    // The owner's context: where it was read from, and the stored content.
+    const context = htmlText(
+      renderToStaticMarkup(
+        createElement(RecordPanels, {
+          report: {
+            ...report,
+            candidate: null,
+            candidates: [],
+            delivery: null,
+            inputs: {
+              task: null,
+              spec: null,
+              dispositions: null,
+              context: {
+                path: '/owner/decisions.md',
+                sha256: 'c'.repeat(64),
+                content: '# Decisions\nmul() keeps its integer wiring.',
+              },
+              findings: null,
+            },
+            notes: [],
+          } as unknown as LoopReport,
+        }),
+      ),
+    )
+    assert.match(context, /確定事項\s*\/owner\/decisions\.md/)
+    assert.ok(context.includes('確定事項の内容'))
+    assert.ok(context.includes('mul() keeps its integer wiring.'))
   })
 
   it("shows a review-cap-reached run's repair command with its note in Japanese", () => {

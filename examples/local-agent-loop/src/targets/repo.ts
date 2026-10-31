@@ -77,7 +77,7 @@ import {
   specReviewWorkdirOf,
   worktreeRetiredMarkerOf,
 } from '../factory/layout.js'
-import { changedPathsLine } from '../factory/prompts.js'
+import { changedPathsLine, trustedContextLines } from '../factory/prompts.js'
 import {
   DEFAULT_COMMIT_SETTINGS,
   type CommitSettings,
@@ -642,7 +642,9 @@ export class RepoTarget implements Target {
     )
     const parent = this.config.repairOf
     return [
-      'TRUSTED CONTEXT (produced by the factory, not by the implementer):',
+      this.config.context
+        ? "TRUSTED CONTEXT (produced by the factory or confirmed by the run's owner, not by the implementer):"
+        : 'TRUSTED CONTEXT (produced by the factory, not by the implementer):',
       `Base commit: ${this.config.baseCommit}`,
       ...(parent
         ? [
@@ -653,9 +655,26 @@ export class RepoTarget implements Target {
         : []),
       `Candidate: ${candidate.id}`,
       changedPathsLine(changes, candidate.changes?.changedFilesPath),
+      ...trustedContextLines(
+        this.config.context ?? null,
+        this.config.stageContext ?? [],
+      ),
       '',
       'The task the implementer was given is in the untrusted TASK block below.',
     ].join('\n')
+  }
+
+  async prepareStageContext(): Promise<string[]> {
+    // From the stored content every time, so a copy removed or changed
+    // since the stage settled is put back as it was.
+    const entries = this.config.stageContext ?? []
+    await Promise.all(
+      entries.map(async (entry) => {
+        await mkdir(dirname(entry.path), { recursive: true })
+        await writeFile(entry.path, entry.content)
+      }),
+    )
+    return entries.map((entry) => entry.path)
   }
 
   async deliver(args: DeliverArgs): Promise<Delivery> {

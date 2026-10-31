@@ -142,10 +142,20 @@ export type ReportFindings =
   | ReportInputFile
   | { parentRun: string; sha256: string }
 
+/**
+ * The owner's confirmed context as the run stored it: where it was read
+ * from, the content every prompt was given, and the SHA-256 of that content.
+ */
+export interface ReportContextFile extends ReportInputFile {
+  content: string
+}
+
 export interface ReportInputs {
   task: ReportInputFile | null
   spec: ReportInputFile | null
   dispositions: ReportInputFile | null
+  /** Null on a run without one, and on a run stored before it existed. */
+  context: ReportContextFile | null
   /** A repair run's outside findings; null on every other run. */
   findings: ReportFindings | null
 }
@@ -1560,6 +1570,20 @@ function highlightLines(h: ReviewHighlights): string[] {
   ]
 }
 
+/**
+ * Text the run was given as one fenced code block, its fence longer than
+ * any run of backticks in it, so none of its lines reads as a heading of
+ * the report or ends the block.
+ */
+function fencedText(text: string): string[] {
+  const longest = Math.max(
+    0,
+    ...(text.match(/`+/g) ?? []).map((run) => run.length),
+  )
+  const fence = '`'.repeat(Math.max(3, longest + 1))
+  return [fence, text.replace(/\n$/, ''), fence]
+}
+
 export function reportToMarkdown(r: LoopReport): string {
   const lines: string[] = []
   lines.push(`# Agent loop report — ${r.runId}`)
@@ -1669,6 +1693,17 @@ export function reportToMarkdown(r: LoopReport): string {
     lines.push(
       `- ${name}: ${file ? `${file.sha256} (${source})` : 'not given'}`,
     )
+  }
+  lines.push('')
+  lines.push('## Owner context (trusted, as stored)')
+  lines.push('')
+  if (r.inputs.context) {
+    lines.push(`- path: ${r.inputs.context.path}`)
+    lines.push(`- sha256: ${r.inputs.context.sha256}`)
+    lines.push('')
+    lines.push(...fencedText(r.inputs.context.content))
+  } else {
+    lines.push('- not given')
   }
   lines.push('')
   lines.push('## Repair runs (from outside findings)')

@@ -100,6 +100,17 @@ export interface RepoTargetConfig {
   spec: string | null
   /** Prior review dispositions, handed to the reviewers only. */
   dispositions: string | null
+  /**
+   * Decisions the owner confirmed, fixed at trigger and handed to every
+   * role as trusted context. Absent on a run set up before it existed.
+   */
+  context?: string | null
+  /**
+   * Files the factory's own stages produced, registered with
+   * `withStageContext` and handed to the reviewers as trusted context.
+   * Absent: none.
+   */
+  stageContext?: StageContext[]
   /** Source issue, when the task came from one. */
   issue: { number: number; title: string; url: string } | null
   /** Where the delivered patch is written. */
@@ -145,6 +156,25 @@ export type RepairParentConclusion =
   | 'review-incomplete'
 
 export type TargetConfig = SubjectTargetConfig | RepoTargetConfig
+
+/**
+ * The largest owner context or stage context a run stores, in UTF-8 bytes:
+ * it is trusted and goes into every prompt that carries it.
+ */
+export const MAX_CONTEXT_BYTES = 32 * 1024
+
+/**
+ * One file a stage produced, as its settled step output holds it, for the
+ * reviewers' trusted context. `path` is the factory's own copy outside the
+ * candidate worktree, written again from `content` before each review
+ * round, so what a reviewer reads never depends on the file the stage read.
+ */
+export interface StageContext {
+  /** Lower-case letters, digits and dashes; names the block and the copy. */
+  name: string
+  content: string
+  path: string
+}
 
 /** Where an input file was read from at trigger time. */
 export interface InputFileRef {
@@ -261,6 +291,12 @@ export interface Target {
   reviewCwd(candidate: CandidateRef): string
   /** Trusted change summary and originals, for reviewers who see only the candidate. */
   reviewContext(candidate: CandidateRef): Promise<string>
+  /**
+   * Write the factory's copy of each registered stage context from its
+   * stored content and return their paths, which every reviewer may read.
+   * Only a target that has any implements it.
+   */
+  prepareStageContext?(): Promise<string[]>
   /**
    * Extract the base commit's and the candidate's trees for a configured
    * reviewer, reusing what is already there: the base once per run, the

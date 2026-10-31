@@ -92,6 +92,7 @@ interface PersistedInput {
     spec?: string | null
     checkFromSpec?: string[] | null
     dispositions?: string | null
+    context?: string | null
     inputFiles?: Record<string, { path?: string } | null>
   }
   repairOf?: {
@@ -937,14 +938,21 @@ function hashed<R extends object>(ref: R | null | undefined, content: unknown) {
  */
 function inputHashes(input: PersistedInput | null): ReportInputs {
   const target = input?.target
-  const entry = (name: 'task' | 'spec' | 'dispositions') => {
+  const entry = (name: 'task' | 'spec' | 'dispositions' | 'context') => {
     const path = target?.inputFiles?.[name]?.path
     return hashed(path ? { path } : null, target?.[name])
   }
+  // The context's content too: it is trusted and short, so the report
+  // shows exactly what every prompt was given.
+  const context = entry('context')
   return {
     task: entry('task'),
     spec: entry('spec'),
     dispositions: entry('dispositions'),
+    context:
+      context && typeof target?.context === 'string'
+        ? { ...context, content: target.context }
+        : null,
     findings: findingsHash(input),
   }
 }

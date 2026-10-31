@@ -4,6 +4,7 @@ import { describe, it } from 'node:test'
 import { READ_ONLY_ROLES } from '../src/engine/providers/types.js'
 import {
   codePrompt,
+  OWNER_CONTEXT_LABEL,
   parseReviewOutput,
   parseTriageOutput,
   TIMED_OUT_CANDIDATE_LINE,
@@ -187,5 +188,74 @@ describe('a repair of a candidate sealed from a stopped call', () => {
         ),
       )
     }
+  })
+})
+
+describe("the owner's confirmed context in the code and repair prompts", () => {
+  const CONTEXT = 'CONTEXT-BODY: keep the integer wiring of mul'
+  const untrusted = [
+    { label: 'TASK' as const, content: 'TASK-BODY' },
+    { label: 'FINDINGS' as const, content: 'FINDINGS-BODY' },
+  ]
+  const prompts = () => ({
+    implement: codePrompt({
+      role: 'implement',
+      iteration: 1,
+      repairNotes: [],
+      task: 'Fix add().',
+      rules: ['Keep it small.'],
+      untrusted,
+      ownerContext: CONTEXT,
+    }),
+    repair: codePrompt({
+      role: 'repair',
+      iteration: 1,
+      repairNotes: [],
+      task: 'Fix add().',
+      rules: ['Keep it small.'],
+      untrusted,
+      ownerContext: CONTEXT,
+      fromFindings: 'approved',
+    }),
+  })
+
+  it('is a trusted section of its own, apart from the TASK and FINDINGS data', () => {
+    for (const [role, prompt] of Object.entries(prompts())) {
+      const block = new RegExp(
+        `<<<TRUSTED ${OWNER_CONTEXT_LABEL} ([0-9a-f]{16})>>>\\n${CONTEXT}\\n<<<END TRUSTED ${OWNER_CONTEXT_LABEL} \\1>>>`,
+      )
+      assert.match(prompt, block, role)
+      const section = prompt.indexOf('OWNER CONTEXT (trusted):')
+      const data = prompt.indexOf('UNTRUSTED INPUT DATA:')
+      // Before the untrusted data, never inside it.
+      assert.ok(section > prompt.indexOf('RULES:'), role)
+      assert.ok(section < data, role)
+      assert.equal(prompt.split(CONTEXT).length, 2, role)
+      assert.ok(prompt.indexOf(CONTEXT) < data, role)
+      assert.doesNotMatch(prompt, /UNTRUSTED OWNER_CONTEXT/, role)
+    }
+  })
+
+  it('tells the agent to make no change against the decisions, and to say why under NOTES', () => {
+    for (const [role, prompt] of Object.entries(prompts()))
+      assert.match(
+        prompt,
+        /decisions the owner of this run has confirmed[^\n]*it is trusted: make no change that goes against these decisions[^\n]*If you judge that a change would go against them, do not make it; say why in your reply, under NOTES\./,
+        role,
+      )
+  })
+
+  it('leaves the prompt as it was without a context', () => {
+    const args = {
+      role: 'implement' as const,
+      iteration: 1,
+      repairNotes: [],
+      task: 'Fix add().',
+      rules: ['Keep it small.'],
+      untrusted,
+    }
+    const without = codePrompt(args)
+    assert.equal(codePrompt({ ...args, ownerContext: null }), without)
+    assert.doesNotMatch(without, /OWNER CONTEXT|TRUSTED OWNER_CONTEXT/)
   })
 })

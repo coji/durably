@@ -99,6 +99,7 @@ import {
 } from './stages.js'
 import {
   DEFAULT_COMMIT_SETTINGS,
+  MAX_CONTEXT_BYTES,
   type RepairParentConclusion,
   type Target,
   type TargetConfig,
@@ -180,6 +181,18 @@ export const selfCheckSchema = z
 /** Where an input came from. Its hash is taken from the stored content. */
 const inputFileSchema = z.object({ path: z.string().min(1) })
 
+/**
+ * The owner's confirmed context, held to the limit `--context-file` reads
+ * with, so a stored input cannot carry more than a trigger would.
+ */
+const contextSchema = z
+  .string()
+  .min(1)
+  .refine(
+    (text) => Buffer.byteLength(text, 'utf8') <= MAX_CONTEXT_BYTES,
+    `the context is limited to ${MAX_CONTEXT_BYTES} bytes`,
+  )
+
 const targetSchema = z
   .discriminatedUnion('kind', [
     z.object({ kind: z.literal('subject') }),
@@ -193,12 +206,19 @@ const targetSchema = z
       spec: z.string().min(1).nullable().default(null),
       /** Handed to the reviewers only. */
       dispositions: z.string().min(1).nullable().default(null),
+      /**
+       * Decisions the owner confirmed, handed to every role as trusted
+       * context. Absent on a run stored before it existed: none.
+       */
+      context: contextSchema.nullable().optional(),
       /** Where each input came from, when it was read from a file. */
       inputFiles: z
         .object({
           task: inputFileSchema.nullable().default(null),
           spec: inputFileSchema.nullable().default(null),
           dispositions: inputFileSchema.nullable().default(null),
+          /** Absent on a run stored before it existed. */
+          context: inputFileSchema.nullable().optional(),
         })
         .default({ task: null, spec: null, dispositions: null }),
       issue: issueSchema.nullable().default(null),
@@ -1480,6 +1500,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                   task: input.target.task,
                   spec: input.target.spec,
                   dispositions: input.target.dispositions,
+                  context: input.target.context ?? null,
                   issue: input.target.issue,
                   // With `checkFromSpec`, the script names the check later.
                   checkCommand: input.target.checkFromSpec

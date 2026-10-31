@@ -13,10 +13,11 @@ import {
   mkdir,
   readdir,
   readFile,
+  realpath,
   rm,
   writeFile,
 } from 'node:fs/promises'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 
 import type { JsonValue, StepAttemptContext, StepContext } from '@coji/durably'
 import { z } from 'zod'
@@ -62,11 +63,13 @@ import {
   specBlockers,
   type SpecState,
 } from './reducer.js'
-import type {
-  Delivery,
-  RepairParentConclusion,
-  Target,
-  UntrustedInput,
+import {
+  MAX_CONTEXT_BYTES,
+  type Delivery,
+  type RepairParentConclusion,
+  type StageContext,
+  type Target,
+  type UntrustedInput,
 } from './target.js'
 import {
   idleLimitOf,
@@ -205,6 +208,12 @@ export const codeStage: StageHandler = async ({
           task: target.taskBrief(),
           rules: target.implementationRules(),
           untrusted: target.untrustedInputs('code'),
+          // The owner's confirmed decisions, trusted and apart from the
+          // data above; the stages' results are for the reviewers.
+          ownerContext:
+            state.setup.target.kind === 'repo'
+              ? (state.setup.target.context ?? null)
+              : null,
           // Told it starts a new session only when it does. A repair on the
           // code profile keeps the prompt it always had, unless it repairs a
           // stopped call's work in a new session.
@@ -537,9 +546,13 @@ async function reviewRoundOf(args: {
   // Both reviewers read the same candidate's diff and changed-file list, and
   // may read those two files even though they sit outside the review cwd.
   const changes = candidate.changes ?? null
-  const readableFiles = changes
-    ? [changes.diffPath, changes.changedFilesPath]
-    : []
+  // So may every reviewer read the factory's copy of each stage's result,
+  // written again from its stored content for each round.
+  const stageFiles = (await target.prepareStageContext?.()) ?? []
+  const readableFiles = [
+    ...(changes ? [changes.diffPath, changes.changedFilesPath] : []),
+    ...stageFiles,
+  ]
   const setup = state.setup
   const baseCommit =
     setup.target.kind === 'repo' ? setup.target.baseCommit : null
@@ -660,6 +673,9 @@ async function reviewRoundOf(args: {
                   dirname(changes.diffPath),
                   trees.baseDir,
                   trees.headDir,
+                  // A command-mode reviewer reads by directory; the copies
+                  // share one the factory keeps for nothing else.
+                  ...new Set(stageFiles.map((file) => dirname(file))),
                 ]
               : [],
         }
@@ -1405,4 +1421,111 @@ export async function runCheckFromSpec(
     },
     { metadata: { stage: 'spec-check' } as unknown as JsonValue },
   )
+}
+
+/** A stage context's name: it names the block and the factory's copy. */
+const STAGE_CONTEXT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+/** A stage's result as its completed step output holds it. */
+export type SettledStageContext = Pick<StageContext, 'name' | 'content'>
+
+/**
+ * Read a file a stage produced, such as the result of a test it ran on the
+ * base and the candidate, for the reviewers' trusted context. Call it inside
+ * that stage's step and return what it gives, so the content is settled
+ * there: a replay reads it back from the step and never reads the file
+ * again. A file inside the candidate worktree is refused, the implementer
+ * can change it; so is one over 32 KiB, empty, or not UTF-8.
+ */
+export async function readStageContextFile(args: {
+  name: string
+  file: string
+  /** The candidate worktree, whose files are never trusted. */
+  worktree: string
+}): Promise<SettledStageContext> {
+  const { name, file } = args
+  if (!STAGE_CONTEXT_NAME.test(name))
+    throw new Error(
+      `stage context ${name}: a name is lower-case letters, digits and dashes`,
+    )
+  const refuse = (why: string) =>
+    new Error(`stage context ${name}: ${file}: ${why}`)
+  // Through links, so a link outside the worktree to a file inside it is
+  // refused too.
+  const [real, worktree] = await Promise.all([
+    realpath(file).catch(() => {
+      throw refuse('cannot read file')
+    }),
+    realpath(args.worktree),
+  ])
+  const from = relative(worktree, real)
+  if (!(from === '..' || from.startsWith(`..${sep}`) || isAbsolute(from)))
+    throw refuse(
+      'inside the candidate worktree, which the implementer can change',
+    )
+  const bytes = await readFile(real).catch(() => {
+    throw refuse('cannot read file')
+  })
+  if (bytes.length > MAX_CONTEXT_BYTES)
+    throw refuse(
+      `file is ${bytes.length} bytes; the limit is ${MAX_CONTEXT_BYTES / 1024} KiB`,
+    )
+  let content: string
+  try {
+    content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+      bytes,
+    )
+  } catch {
+    throw refuse('not UTF-8 text')
+  }
+  if (content.trim().length === 0) throw refuse('file is empty')
+  return { name, content }
+}
+
+/**
+ * The internal hook through which a stage hands the reviewers a result of
+ * its own as trusted context: `settled` is that stage's completed step
+ * output, from `readStageContextFile`. Only the content is registered,
+ * never the file the stage read, and the reviewers read the factory's own
+ * copy under the run directory, outside the candidate worktree. A result of
+ * the same name replaces the earlier one. Returns the setup to rebuild the
+ * target from, as the spec stages' advice and the check's notes are.
+ */
+export function withStageContext(
+  setup: FactorySetup,
+  settled: SettledStageContext,
+): FactorySetup {
+  const target = setup.target
+  if (target.kind !== 'repo')
+    throw new Error('stage context needs a repository target')
+  if (!STAGE_CONTEXT_NAME.test(settled.name))
+    throw new Error(
+      `stage context ${settled.name}: a name is lower-case letters, digits and dashes`,
+    )
+  if (
+    settled.content.trim().length === 0 ||
+    Buffer.byteLength(settled.content, 'utf8') > MAX_CONTEXT_BYTES
+  )
+    throw new Error(
+      `stage context ${settled.name}: the content must be non-empty and at most ${MAX_CONTEXT_BYTES / 1024} KiB`,
+    )
+  const entry: StageContext = {
+    ...settled,
+    path: join(
+      setup.checkpointsDir,
+      '..',
+      'stage-context',
+      `${settled.name}.txt`,
+    ),
+  }
+  return {
+    ...setup,
+    target: {
+      ...target,
+      stageContext: [
+        ...(target.stageContext ?? []).filter((e) => e.name !== entry.name),
+        entry,
+      ],
+    },
+  }
 }
