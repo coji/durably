@@ -1,13 +1,10 @@
-import { formatCost, formatDuration } from '../../../engine/format'
 import type { Task } from '../../../engine/status'
 import type { Act, ActionName } from '../../components/ActionNotice'
 import { RunActions } from '../../components/RunActions'
 import { IdSuffix, runHref } from '../../components/RunLink'
 import { StatusBadge } from '../../components/StatusBadge'
 import { ArchivedMark, SupersededMark } from '../../components/SupersededMark'
-import { runRole, runState } from '../../components/TaskRow'
-import { Ago } from '../../components/Time'
-import { COMMON } from '../../glossary'
+import { runRole, runState, TaskMeta } from '../../components/TaskRow'
 import type { RunRow } from '../../server'
 
 /**
@@ -52,7 +49,7 @@ export function TaskRuns({
         return (
           <li
             key={r.id}
-            className="border-line flex flex-wrap items-center gap-x-3 gap-y-1 border-b py-2 text-sm"
+            className="border-line flex flex-wrap items-center gap-x-3 gap-y-1 border-b py-2 text-sm last:border-b-0"
           >
             <StatusBadge label={state.label} tone={state.tone} />
             <span className="flex min-w-0 flex-1 basis-40 items-baseline gap-2">
@@ -66,15 +63,12 @@ export function TaskRuns({
               {r.superseded ? <SupersededMark /> : null}
               {r.archived ? <ArchivedMark /> : null}
             </span>
-            <span className="text-fg-2 flex gap-3 text-xs tabular-nums">
-              <span className="font-code">
-                {formatDuration(row.leadTimeMs)}
-              </span>
-              <span className="font-code" title={COMMON.costNote}>
-                {formatCost(row.costUsd)}
-              </span>
-              <Ago iso={row.createdAt} now={now} />
-            </span>
+            <TaskMeta
+              leadTimeMs={row.leadTimeMs}
+              costUsd={row.costUsd}
+              at={row.createdAt}
+              now={now}
+            />
             {back ? (
               <div className="basis-full">
                 <RunActions

@@ -8,6 +8,7 @@
 - 状態は4種類。色が付くのは3つだけで、待機（人待ち）＝琥珀、失敗＝赤、実行中＝青。4つ目の完了は中立のグレーで、順番待ちや取り消しのように注意の要らない状態もこれを使う。
 - 意味別のトークンは、ライトとダークの値を `light-dark()` で1つに持つ。ルートは `color-scheme: light dark` で OS の設定に従い、`color-scheme` を指定した箱（見本のライト・ダークの枠）はその配色になる。
 - ダークでは真っ黒は使わず、状態色は彩度を約1割落とす。
+- 3番目の文字色（`--text-tertiary`、不明の値やまだ通っていない工程）は、ダークでは2番目と同じ gray-400 にする。12px の文字が暗い面で 4.5:1 を割らないためで、ダークでは文字の濃さの区別より読めることを優先する。
 
 ## Typography
 
@@ -21,7 +22,7 @@
 
 ## Layout
 
-表と時系列の固定幅だけをトークンにする：`--size-trace-max`（動いている実行の時系列の高さの上限。終わった実行は全行を出す）、`--size-inspector`（詳細の列）、`--size-label`（横並びのキー）、`--size-stage-name` と `--size-stage-value`（工程ごとの時間と費用）、`--size-scroll-margin`（目次から飛んだ見出しを固定ヘッダーの下に出す余白）。時系列は自分の箱の幅で段組みを変える（コンテナクエリ）。
+表と時系列の固定幅だけをトークンにする：`--size-trace-max`（動いている実行の時系列の高さの上限。終わった実行は全行を出す）、`--size-inspector`（詳細の列）、`--size-label`（横並びのキー）、`--size-stage-name` と `--size-stage-value`（工程ごとの時間と費用）、`--size-scroll-margin`（目次や件数の並びから飛んだ見出しを固定ヘッダーの下に出す余白）、`--size-meta-runs`・`--size-meta-time`・`--size-meta-cost`・`--size-meta-ago`（一覧の行の末尾にそろえて並べる実行の件数、所要時間、費用、開始時刻の列。48rem 未満の画面では列幅を中身に合わせ、空の列は詰めるので、行どうしではそろわない）、`--size-filter`（一覧の絞り込み欄）。時系列は自分の箱の幅で段組みを変える（コンテナクエリ）。
 
 ## Radius
 
@@ -111,7 +112,12 @@
   --size-label: 6.5rem;
   --size-stage-name: 9rem;
   --size-stage-value: 5rem;
-  --size-scroll-margin: var(--space-12);
+  --size-meta-runs: 4.5rem;
+  --size-meta-time: 5.5rem;
+  --size-meta-cost: 3.5rem;
+  --size-meta-ago: 4.5rem;
+  --size-filter: 18rem;
+  --size-scroll-margin: calc(var(--space-12) + var(--space-6));
   --size-hatch: 4px;
 
   /* semantics */
@@ -120,7 +126,7 @@
   --surface-sunken: light-dark(var(--gray-100), var(--gray-1000));
   --text-primary: light-dark(var(--gray-900), var(--gray-50));
   --text-secondary: light-dark(var(--gray-600), var(--gray-400));
-  --text-tertiary: var(--gray-500);
+  --text-tertiary: light-dark(var(--gray-500), var(--gray-400));
   --text-inverse: light-dark(var(--white), var(--gray-950));
   --border-subtle: light-dark(oklch(0% 0 0 / 0.07), oklch(100% 0 0 / 0.07));
   --border-default: light-dark(oklch(0% 0 0 / 0.13), oklch(100% 0 0 / 0.13));

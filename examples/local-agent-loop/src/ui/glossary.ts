@@ -548,7 +548,8 @@ export const ACTION_DONE = {
   unarchiveAgain: 'アーカイブしていません',
   decided: 'ワーカーが実行を再開すると、一覧に反映されます。',
   queued: 'ワーカーが順に取りかかります。',
-  archived: '終わったタスクに移しました。そこから戻せます。',
+  archived:
+    '戻すときは実行の詳細を開くか、終わったタスクにあれば「アーカイブ済みも表示」にします。',
   worktreeLeft:
     '作業ツリーは片付けられず、残っています。git が返した理由は次のとおりです。',
   unarchived: '状態に合った場所に戻ります。',
@@ -579,10 +580,22 @@ export const REFRESH = {
 // ---------------------------------------------------------------- run list
 
 export const LIST = {
-  attention: '人の手が要るもの',
   attentionEmpty: '人の手が要るものはありません',
+  decision: '判断待ち',
+  stopped: '止まったもの',
+  stoppedNote: '開くと工程、次の一手、実行の履歴が出ます。',
   active: '動いているもの',
   activeEmpty: '動いている実行も、順番を待つ実行もありません。',
+  overview: '状況',
+  overviewDone: '終わった',
+  filter: 'タスク名で絞り込む',
+  onlyArchived:
+    'アーカイブ済みのタスクだけです。「アーカイブ済みも表示」にすると出ます。',
+  filterEmpty: (q: string) => `「${q}」を含むタスクはありません。`,
+  showArchived: 'アーカイブ済みも表示',
+  showMore: (n: string) => `さらに ${n} 件表示`,
+  shownOf: (shown: string, all: string) => `${all} 件中 ${shown} 件`,
+  archivedCount: (n: string) => `${n} 件`,
   done: '終わったタスク',
   doneEmpty: '終わったタスクはまだありません。',
   noDbBefore:
@@ -602,7 +615,7 @@ export const LIST = {
   fakeTitle:
     '最初の実行が模擬のプロバイダーで動いたタスクです。実際のモデルは呼んでいないので、週ごとの推移には数えません。',
   archivedTitle:
-    '止まった実行を人がアーカイブしたので、人の手が要るものには出しません。止まった理由はそのまま残っています。',
+    '止まった実行を人がアーカイブしたので、止まったものには出しません。止まった理由はそのまま残っています。',
   supersededTitle:
     '同じ修正元から後に始めた修正が承認されたので、この実行は判断が要りません',
   showRuns: (name: string) => `${name}の実行を表示`,
@@ -968,9 +981,20 @@ export const DESIGN = {
       name: '状態バッジ',
       about: '色が付くのは人待ち、失敗、実行中の三つだけです。',
     },
+    overview: {
+      name: '件数の並び',
+      about:
+        '一覧の先頭で、どこに何件あるかを見せます。0 件は色を付けず、押すとその節へ移ります。',
+    },
+    filters: {
+      name: '一覧の絞り込み',
+      about:
+        '終わったタスクを名前で絞り込み、アーカイブ済みを出し入れします。表示だけを変えます。',
+    },
     taskRow: {
       name: 'タスクの行',
-      about: '名前が主役で、ID は末尾だけを添えます。開くと詳細が出ます。',
+      about:
+        '名前が主役で、ID は末尾だけを添えます。数値は列をそろえ、閉じていても止まった理由かいまの工程を1行で読めます。',
     },
     stageTrack: {
       name: '工程の並び',
@@ -1046,6 +1070,8 @@ export const DESIGN = {
     },
   },
   state: {
+    attention: '人の手が要るとき',
+    calm: '何も待っていないとき',
     closed: '閉じた状態',
     open: '開いた状態',
     known: '分かっている値',

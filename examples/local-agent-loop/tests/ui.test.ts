@@ -68,6 +68,7 @@ import { archiveMarkerOf } from '../src/factory/layout.js'
 import { repairLabels } from '../src/factory/repair.js'
 import { ActionNotice } from '../src/ui/components/ActionNotice.js'
 import { ReviewFindingTitles } from '../src/ui/components/ReviewFindingTitles.js'
+import { openNow } from '../src/ui/components/TaskRow.js'
 import {
   ACTION,
   ACTION_DONE,
@@ -78,6 +79,7 @@ import {
   DIAGNOSIS_TEXT,
   KIND_NAME,
   LIST,
+  PIPELINE_SUFFIX,
   REVIEW,
   REVIEW_STATUS,
   TREND,
@@ -3380,6 +3382,178 @@ describe('numbers on the screens', () => {
       diagnosis: { kind: 'finished', next: [], failure: null },
       ...over,
     }) as unknown as RunRow
+
+  const listOf = (runs: RunRow[], parents: Record<string, string> = {}) => {
+    const data = {
+      exists: true,
+      db: '/tmp/x.db',
+      now,
+      runs,
+      tasks: groupTasks(
+        runs.map((r) => ({
+          id: r.id,
+          createdAt: r.createdAt,
+          parentId: parents[r.id] ?? null,
+          kind: r.diagnosis.kind,
+          approved: r.conclusion === 'approved',
+          leadTimeMs: r.leadTimeMs,
+          costUsd: r.costUsd,
+          archived: r.archived,
+        })),
+      ),
+    } as unknown as RunsResponse
+    return renderToStaticMarkup(createElement(RunsScreen, { data, act: noAct }))
+  }
+  const archivedStop = (over: Partial<RunRow>) =>
+    row({
+      status: 'failed',
+      conclusion: null,
+      archived: true,
+      diagnosis: { kind: 'stopped', next: [], failure: null },
+      ...over,
+    } as Partial<RunRow>)
+
+  it('hides archived finished tasks until asked, while every count includes them', () => {
+    const html = listOf([
+      row({ name: 'shown task' }),
+      archivedStop({ id: '01K6D2Q7XB3M9RKT4WARCHVD', name: 'archived task' }),
+    ])
+    const list = htmlText(html)
+    // The overview and the section count both finished tasks, as status does.
+    assert.match(list, new RegExp(`${LIST.overviewDone}\\n+2\\n`))
+    assert.ok(list.includes(LIST.shownOf('1', '2')))
+    assert.ok(list.includes(LIST.showArchived))
+    assert.ok(list.includes(LIST.archivedCount('1')))
+    assert.ok(list.includes('shown task'))
+    assert.ok(!list.includes('archived task'))
+  })
+
+  it('says the finished list is empty only because archived tasks are hidden', () => {
+    const list = htmlText(
+      listOf([archivedStop({ id: '01K6D2Q7XB3M9RKT4WARCHVD' })]),
+    )
+    assert.ok(list.includes(LIST.onlyArchived))
+    assert.ok(!list.includes(LIST.doneEmpty))
+  })
+
+  it('opens a decision and closes a stop, which keeps its stage and reason on the row', () => {
+    const html = listOf([
+      row({
+        id: '01K6D2Q7XB3M9RKT4WAPPROV',
+        status: 'waiting',
+        conclusion: null,
+        diagnosis: { kind: 'approval', next: [], failure: null },
+      } as unknown as Partial<RunRow>),
+      row({
+        id: '01K6D2Q7XB3M9RKT4WSTOPPD',
+        status: 'failed',
+        conclusion: null,
+        createdAt: '2026-09-30T10:00:00.000Z',
+        pipeline: {
+          stages: [{ stage: 'verify', state: 'stopped', count: 2 }],
+          label: '',
+        },
+        diagnosis: { kind: 'stopped', next: [], failure: null },
+      } as unknown as Partial<RunRow>),
+    ])
+    const expanded = [...html.matchAll(/aria-expanded="(true|false)"/g)].map(
+      (m) => m[1],
+    )
+    assert.deepEqual(expanded, ['true', 'false'])
+    // The stopped row up to its closed body: what shows without opening it.
+    const closed = html.indexOf('aria-expanded="false"')
+    const visible = htmlText(
+      html.slice(closed, html.indexOf('hidden=""', closed)),
+    )
+    const suffix = PIPELINE_SUFFIX.stopped
+    assert.ok(suffix)
+    assert.ok(visible.includes(stageName('verify')))
+    assert.ok(visible.includes(suffix))
+    assert.ok(visible.includes(diagnosisText({ kind: 'stopped' }, false)))
+  })
+
+  // A first run whose review asked for changes, and two repairs of it.
+  const root = '01K6D2Q7XB3M9RKT4WR00T00'
+  const older = '01K6D2Q7XB3M9RKT4WOLDER0'
+  const newer = '01K6D2Q7XB3M9RKT4WNEWER0'
+  const repairs = { [older]: root, [newer]: root }
+  const asked = row({ id: root, conclusion: 'changes_requested' })
+  const as = (id: string, kind: string, createdAt: string) =>
+    row({
+      id,
+      status: kind === 'stopped' ? 'failed' : 'leased',
+      conclusion: null,
+      createdAt,
+      diagnosis: { kind, next: [], failure: null },
+    } as unknown as Partial<RunRow>)
+
+  it('marks the running count when an older repair runs while a newer one waits', () => {
+    const html = listOf(
+      [
+        asked,
+        as(older, 'running', '2026-09-30T11:10:00.000Z'),
+        as(newer, 'pending', '2026-09-30T11:20:00.000Z'),
+      ],
+      repairs,
+    )
+    const overview = html.slice(html.indexOf('<nav'), html.indexOf('</nav>'))
+    assert.ok(overview.includes('dot-live'))
+  })
+
+  // The stopped section only, from its heading to the next section.
+  const stopSection = (html: string) => {
+    const at = html.indexOf('id="tasks-stop"')
+    assert.ok(at >= 0)
+    return html.slice(at, html.indexOf('id="tasks-done"', at))
+  }
+
+  for (const kind of [
+    'running',
+    'pending',
+    'lease-expired',
+    'decided',
+    'stopped',
+  ])
+    it(`opens a stopped row whose retried repair is ${kind}`, () => {
+      const html = listOf(
+        [
+          asked,
+          as(older, 'stopped', '2026-09-30T11:10:00.000Z'),
+          as(newer, kind, '2026-09-30T11:20:00.000Z'),
+        ],
+        repairs,
+      )
+      const section = stopSection(html)
+      const rows = [...section.matchAll(/aria-expanded="(\w+)"/g)]
+      assert.deepEqual(
+        rows.map((m) => m[1]),
+        ['true'],
+      )
+      // Open, the row hides nothing; its runs list the retried repair.
+      assert.ok(!section.includes('hidden=""'))
+      assert.ok(htmlText(section).includes(LIST.repairRun(2)))
+    })
+
+  it('keeps a stopped row closed when nothing else of its task is open', () => {
+    const html = listOf(
+      [asked, as(older, 'stopped', '2026-09-30T11:10:00.000Z')],
+      repairs,
+    )
+    const rows = [...stopSection(html).matchAll(/aria-expanded="(\w+)"/g)]
+    assert.deepEqual(
+      rows.map((m) => m[1]),
+      ['false'],
+    )
+  })
+
+  it('follows what the list wants until a person toggles the row', () => {
+    // A poll that gives a closed row's task another open run opens it.
+    assert.equal(openNow(null, false), false)
+    assert.equal(openNow(null, true), true)
+    // A row a person closed or opened stays as they set it.
+    assert.equal(openNow(false, true), false)
+    assert.equal(openNow(true, false), true)
+  })
 
   it('shows the total on a stopped task that took more than one run, not on a single run', () => {
     const stopped = {
