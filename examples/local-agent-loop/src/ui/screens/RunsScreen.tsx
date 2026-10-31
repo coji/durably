@@ -13,8 +13,8 @@ import { Tasks } from './list/Tasks'
  * order the engine gave them. A first run and its repairs are one row.
  * Decisions and running tasks open, since they change and ask to be
  * watched; stopped ones stay closed, each with why on its row, unless
- * another run of the task is open. Archived tasks are among the finished
- * ones.
+ * another run of the task is still open or asks for a person. Archived
+ * tasks are among the finished ones.
  */
 export function RunsScreen({ data, act }: { data: RunsResponse; act: Act }) {
   if (!data.exists)

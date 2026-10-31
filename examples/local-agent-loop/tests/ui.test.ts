@@ -3528,7 +3528,7 @@ describe('numbers on the screens', () => {
         rows.map((m) => m[1]),
         ['true'],
       )
-      // Open, nothing in the row is hidden, and it lists the retried repair.
+      // Open, the row hides nothing; its runs list the retried repair.
       assert.ok(!section.includes('hidden=""'))
       assert.ok(htmlText(section).includes(LIST.repairRun(2)))
     })
