@@ -7,9 +7,16 @@ import { LiveProgress } from '../../components/LiveProgress'
 import { RunActions } from '../../components/RunActions'
 import { runHref } from '../../components/RunLink'
 import { StageNow, StageTrack } from '../../components/StageTrack'
+import { TONE_TEXT } from '../../components/status'
 import { ArchivedMark, FakeMark } from '../../components/SupersededMark'
-import { runState, TaskList, TaskMeta, TaskRow } from '../../components/TaskRow'
-import { LIST } from '../../glossary'
+import {
+  runRole,
+  runState,
+  TaskList,
+  TaskMeta,
+  TaskRow,
+} from '../../components/TaskRow'
+import { COMMON, LIST } from '../../glossary'
 import { diagnosisText, retryLabel } from '../../labels'
 import type { RunRow } from '../../server'
 import { TaskRuns } from './TaskRuns'
@@ -32,11 +39,38 @@ function Meta({ task, rep, now }: { task: Task; rep: RunRow; now: string }) {
   )
 }
 
-/** The line under a task's name: a running run's stage, or why it waits. */
-function Summary({ rep }: { rep: RunRow }) {
+/**
+ * The line under a task's name: a running run's stage, or why it waits.
+ * When another run of the task is running, such as a retried repair under
+ * a stopped one, that run leads, by its place in the task, and the reason
+ * of the run that shows the task follows.
+ */
+function Summary({
+  task,
+  rep,
+  rows,
+}: {
+  task: Task
+  rep: RunRow
+  rows: Map<string, RunRow>
+}) {
   if (rep.diagnosis.kind === 'running')
     return <LiveProgress live={rep.live} inline />
-  return <>{diagnosisText(rep.diagnosis, rep.uncertainCall)}</>
+  const why = diagnosisText(rep.diagnosis, rep.uncertainCall)
+  const other = task.runs.find((r) => r.kind === 'running')
+  const live = other ? rows.get(other.id) : undefined
+  if (!other || !live) return <>{why}</>
+  return (
+    <>
+      <span className={`${TONE_TEXT.running} font-medium`}>
+        {LIST.otherRunning(runRole(other))}
+      </span>
+      {COMMON.separator}
+      <LiveProgress live={live.live} inline />
+      {COMMON.separator}
+      {why}
+    </>
+  )
 }
 
 /** Words beside the ID: archived, and a finished rehearsal on the fake. */
@@ -129,7 +163,7 @@ function TaskItem({
       marks={<Marks task={task} rep={rep} />}
       stage={finished ? null : <StageNow pipeline={rep.pipeline} />}
       meta={<Meta task={task} rep={rep} now={now} />}
-      summary={finished ? null : <Summary rep={rep} />}
+      summary={finished ? null : <Summary task={task} rep={rep} rows={rows} />}
       toggleLabel={LIST.showRuns(name)}
       defaultOpen={defaultOpen}
     >

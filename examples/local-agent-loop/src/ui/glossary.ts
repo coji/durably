@@ -549,7 +549,7 @@ export const ACTION_DONE = {
   decided: 'ワーカーが実行を再開すると、一覧に反映されます。',
   queued: 'ワーカーが順に取りかかります。',
   archived:
-    'アーカイブしました。戻すときは実行の詳細を開くか、終わったタスクにあれば「アーカイブ済みも表示」にします。',
+    '戻すときは実行の詳細を開くか、終わったタスクにあれば「アーカイブ済みも表示」にします。',
   worktreeLeft:
     '作業ツリーは片付けられず、残っています。git が返した理由は次のとおりです。',
   unarchived: '状態に合った場所に戻ります。',
@@ -603,6 +603,7 @@ export const LIST = {
   noDbAfter: 'に作られ、次の更新で表示されます。',
   retry: '再実行: ',
   currentStage: (stage: string) => `いまの工程: ${stage}`,
+  otherRunning: (role: string) => `${role}を実行中`,
   betweenStages: 'いまの工程: 工程の合間',
   stageElapsed: (d: string) => `この工程 ${d} 経過`,
   runElapsed: (d: string) => `全体 ${d} 経過`,

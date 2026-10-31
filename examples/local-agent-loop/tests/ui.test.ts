@@ -3381,7 +3381,7 @@ describe('numbers on the screens', () => {
       ...over,
     }) as unknown as RunRow
 
-  const listOf = (runs: RunRow[]) => {
+  const listOf = (runs: RunRow[], parents: Record<string, string> = {}) => {
     const data = {
       exists: true,
       db: '/tmp/x.db',
@@ -3391,7 +3391,7 @@ describe('numbers on the screens', () => {
         runs.map((r) => ({
           id: r.id,
           createdAt: r.createdAt,
-          parentId: null,
+          parentId: parents[r.id] ?? null,
           kind: r.diagnosis.kind,
           approved: r.conclusion === 'approved',
           leadTimeMs: r.leadTimeMs,
@@ -3468,6 +3468,51 @@ describe('numbers on the screens', () => {
     assert.ok(visible.includes(stageName('verify')))
     assert.ok(visible.includes(suffix))
     assert.ok(visible.includes(diagnosisText({ kind: 'stopped' }, false)))
+  })
+
+  // A first run whose review asked for changes, and two repairs of it.
+  const root = '01K6D2Q7XB3M9RKT4WR00T00'
+  const older = '01K6D2Q7XB3M9RKT4WOLDER0'
+  const newer = '01K6D2Q7XB3M9RKT4WNEWER0'
+  const repairs = { [older]: root, [newer]: root }
+  const asked = row({ id: root, conclusion: 'changes_requested' })
+  const as = (id: string, kind: string, createdAt: string) =>
+    row({
+      id,
+      status: kind === 'stopped' ? 'failed' : 'leased',
+      conclusion: null,
+      createdAt,
+      diagnosis: { kind, next: [], failure: null },
+    } as unknown as Partial<RunRow>)
+
+  it('marks the running count when an older repair runs while a newer one waits', () => {
+    const html = listOf(
+      [
+        asked,
+        as(older, 'running', '2026-09-30T11:10:00.000Z'),
+        as(newer, 'pending', '2026-09-30T11:20:00.000Z'),
+      ],
+      repairs,
+    )
+    const overview = html.slice(html.indexOf('<nav'), html.indexOf('</nav>'))
+    assert.ok(overview.includes('dot-live'))
+  })
+
+  it('says on a stopped row that another repair of the task is running', () => {
+    const html = listOf(
+      [
+        asked,
+        as(older, 'running', '2026-09-30T11:10:00.000Z'),
+        as(newer, 'stopped', '2026-09-30T11:20:00.000Z'),
+      ],
+      repairs,
+    )
+    const closed = html.indexOf('aria-expanded="false"')
+    assert.ok(closed >= 0)
+    const visible = htmlText(
+      html.slice(closed, html.indexOf('hidden=""', closed)),
+    )
+    assert.ok(visible.includes(LIST.otherRunning(LIST.repairRun(1))))
   })
 
   it('shows the total on a stopped task that took more than one run, not on a single run', () => {
