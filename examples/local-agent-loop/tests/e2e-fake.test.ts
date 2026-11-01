@@ -4232,6 +4232,7 @@ describe('the review blocker threshold', { timeout: 300000 }, () => {
       threshold?: number
       verdict?: boolean
       reviewOutputs?: string[]
+      checkCommand?: string[]
     }) =>
       (
         await durably.jobs.agentLoop.trigger({
@@ -4246,7 +4247,11 @@ describe('the review blocker threshold', { timeout: 300000 }, () => {
             dispositions: null,
             inputFiles: { task: null, spec: null, dispositions: null },
             issue: null,
-            checkCommand: ['node', '-e', 'process.exit(0)'],
+            checkCommand: args.checkCommand ?? [
+              'node',
+              '-e',
+              'process.exit(0)',
+            ],
             setupCommand: null,
             publish: false,
             ...(args.threshold !== undefined
@@ -4324,6 +4329,11 @@ describe('the review blocker threshold', { timeout: 300000 }, () => {
       // Stored before the threshold existed: no rule, as before.
       ids['legacy'] = await start({ reviewOutputs: [reply([]), reply([])] })
       ids['verdict'] = await start({ threshold: 5, verdict: true })
+      // findings-json reviews the run never reached: its check always fails.
+      ids['unreviewed'] = await start({
+        threshold: 5,
+        checkCommand: ['node', '-e', 'process.exit(1)'],
+      })
       await durably.init()
       for (const [name, id] of Object.entries(ids))
         await waitFor(
@@ -4367,6 +4377,7 @@ describe('the review blocker threshold', { timeout: 300000 }, () => {
         contextsOf('low').some((c) => c.startsWith('/review ')),
         'the command comes first',
       )
+      assert.equal(contextsOf('unreviewed').length, 0)
       for (const name of ['off', 'legacy', 'verdict']) {
         const contexts = contextsOf(name)
         assert.equal(contexts.length, 2, name)
@@ -4409,15 +4420,21 @@ describe('the review blocker threshold', { timeout: 300000 }, () => {
       ])
       assert.match(
         markdown,
-        /- review blocker threshold: 5 \(the correctness and edge-cases reviews are told that .* unless the task, the spec or the confirmed context explicitly asks for what it finds missing\)$/m,
+        /- review blocker threshold: 5 \(the correctness and edge-cases reviews were told that .* unless the task, the spec or the confirmed context explicitly asks for what it finds missing\)$/m,
       )
-      // A threshold no review was told reads as such.
-      const verdict = await buildReport(durably, ids['verdict'] ?? '')
-      assert.deepEqual(verdict.reviewBlockerRuleLenses, [])
-      assert.match(
-        reportToMarkdown(verdict),
-        /- review blocker threshold: 5 \(no review is told it: every code review is a verdict review\)$/m,
-      )
+      // A threshold no review was told reads as such: every review a
+      // verdict review, or findings-json reviews the run never reached.
+      for (const name of ['verdict', 'unreviewed']) {
+        const report = await buildReport(durably, ids[name] ?? '')
+        assert.deepEqual(report.reviewBlockerRuleLenses, [], name)
+        const md = reportToMarkdown(report)
+        assert.match(
+          md,
+          /- review blocker threshold: 5 \(reached no review: no findings-json code review is recorded\)$/m,
+          name,
+        )
+        assert.doesNotMatch(md, /were told that|was told that/, name)
+      }
       assert.match(markdown, /- LOW-PRODUCT \(likelihood 1, impact 4\)$/m)
       assert.match(markdown, /- UNSCORED$/m)
       const tests = await buildReport(durably, ids['tests'] ?? '')

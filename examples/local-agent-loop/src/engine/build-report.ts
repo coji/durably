@@ -1339,14 +1339,6 @@ export async function buildReport(
     (setupOutput
       ? setupOutput.reviewBlockerThreshold
       : input?.target?.reviewBlockerThreshold) ?? null
-  // The rule is told only to a findings-json code review (ADR-0040).
-  const reviewInvocations = setupOutput ? setupOutput.review : input?.review
-  const reviewBlockerRuleLenses =
-    reviewBlockerThreshold != null && reviewBlockerThreshold > 0
-      ? REVIEW_LENSES.filter(
-          (lens) => reviewInvocations?.[lens]?.output === 'findings-json',
-        )
-      : []
   const setupTarget = setupOutput?.target
   const candidates = sealedCandidates(steps)
   const candidate = lastCandidate(output, candidates)
@@ -1360,6 +1352,20 @@ export async function buildReport(
   const countedRounds = reviewRounds.filter((r) => r.status === 'completed')
   const discardedReviews = discardedReviewsOf(rows, reviewRounds)
   const reviews = lastReviews(run.output, waits, countedRounds)
+  // The rule is told only to a findings-json code review (ADR-0040), and
+  // reached it only once one of its reviews is recorded.
+  const reviewInvocations = setupOutput ? setupOutput.review : input?.review
+  const reviewed = new Set(
+    [...reviewRounds.flatMap((r) => r.reviews), ...reviews].map((r) => r.lens),
+  )
+  const reviewBlockerRuleLenses =
+    reviewBlockerThreshold != null && reviewBlockerThreshold > 0
+      ? REVIEW_LENSES.filter(
+          (lens) =>
+            reviewInvocations?.[lens]?.output === 'findings-json' &&
+            reviewed.has(lens),
+        )
+      : []
   const preflight = preflightOf(steps, rows)
   // Minimal preflight calls get a role row of their own, never folded into
   // the roles whose settings they checked.

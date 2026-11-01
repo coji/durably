@@ -548,11 +548,11 @@ describe('the review blocker threshold in the Markdown header', () => {
   it('names the rule and its exclusion only for the reviews it reached', () => {
     assert.equal(
       header(5, ['correctness', 'edge-cases']),
-      '- review blocker threshold: 5 (the correctness and edge-cases reviews are told that a product-behavior finding whose likelihood × impact is below it is a non-blocker, unless the task, the spec or the confirmed context explicitly asks for what it finds missing)',
+      '- review blocker threshold: 5 (the correctness and edge-cases reviews were told that a product-behavior finding whose likelihood × impact is below it is a non-blocker, unless the task, the spec or the confirmed context explicitly asks for what it finds missing)',
     )
     assert.match(
       header(5, ['edge-cases']) ?? '',
-      /\(the edge-cases review is told that /,
+      /\(the edge-cases review was told that /,
     )
   })
 
@@ -562,7 +562,7 @@ describe('the review blocker threshold in the Markdown header', () => {
     for (const lenses of [[], undefined])
       assert.equal(
         header(5, lenses),
-        '- review blocker threshold: 5 (no review is told it: every code review is a verdict review)',
+        '- review blocker threshold: 5 (reached no review: no findings-json code review is recorded)',
       )
     assert.equal(
       header(0, []),

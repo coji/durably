@@ -2406,7 +2406,7 @@ describe('review.blockerThreshold', { timeout: 240000 }, () => {
       const markdown = reportToMarkdown(report)
       assert.match(
         markdown,
-        /- review blocker threshold: 9 \(no review is told it: every code review is a verdict review\)$/m,
+        /- review blocker threshold: 9 \(reached no review: no findings-json code review is recorded\)$/m,
       )
       assert.doesNotMatch(markdown, /is below it is a non-blocker/)
       assert.match(reportToJson(report), /"reviewBlockerThreshold": 9/)

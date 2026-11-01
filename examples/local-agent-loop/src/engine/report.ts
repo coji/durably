@@ -933,9 +933,10 @@ export interface LoopReport {
    */
   reviewBlockerThreshold?: number | null
   /**
-   * The code reviewers told the threshold's rule: those whose output is
-   * findings-json, when the threshold is 1 or more. Empty when no review
-   * gets it; absent on a report built before it existed.
+   * The code reviewers the threshold's rule reached: those whose output is
+   * findings-json and that have a recorded review, when the threshold is 1
+   * or more. Empty when it reached none; absent on a report built before it
+   * existed.
    */
   reviewBlockerRuleLenses?: string[]
   summary: RunSummary
@@ -1678,8 +1679,8 @@ export function reportToMarkdown(r: LoopReport): string {
       r.reviewBlockerThreshold === 0
         ? 'no likelihood × impact rule'
         : told.length === 0
-          ? 'no review is told it: every code review is a verdict review'
-          : `the ${told.join(' and ')} review${told.length === 1 ? ' is' : 's are'} told that a product-behavior finding whose likelihood × impact is below it is a non-blocker, unless the task, the spec or the confirmed context explicitly asks for what it finds missing`
+          ? 'reached no review: no findings-json code review is recorded'
+          : `the ${told.join(' and ')} review${told.length === 1 ? ' was' : 's were'} told that a product-behavior finding whose likelihood × impact is below it is a non-blocker, unless the task, the spec or the confirmed context explicitly asks for what it finds missing`
     lines.push(
       `- review blocker threshold: ${r.reviewBlockerThreshold} (${rule})`,
     )
