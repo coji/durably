@@ -358,7 +358,8 @@ function replyShape(output: ReviewOutput): string[] {
 /**
  * The blocker rule of a findings-json code review with a threshold of 1 or
  * more (ADR-0040): the reviewer scores each product-behavior finding and
- * classifies it by the product; findings of any other kind keep the usual
+ * classifies it by the product; findings of any other kind, and a missed
+ * requirement the task, spec or owner context states, keep the usual
  * judgement. Nothing for a threshold of 0 or a verdict review.
  */
 function blockerThresholdRules(
@@ -369,6 +370,7 @@ function blockerThresholdRules(
   return [
     `- For each finding about how the product behaves, score how likely it is to actually happen in real use (likelihood) and how severe it is when it does (impact), each as an integer from 1 to 10, and add both to the finding as "likelihood" and "impact". If likelihood × impact is below ${threshold}, the finding is a non-blocker. If it is ${threshold} or more, decide blocker or non-blocker as you otherwise would.`,
     '- Findings that are not about how the product behaves, such as whether the tests are sufficient, a change outside the scope of the task, steering, or a secret in the change, are judged as you otherwise would: the likelihood × impact rule does not apply to them, whatever their scores.',
+    "- A finding that the change does not do something the task, the spec or the owner's confirmed context explicitly asks for is also judged as you otherwise would, however rarely the case it asks about happens.",
   ]
 }
 

@@ -1632,6 +1632,11 @@ describe('the blocker threshold of a findings-json code review', () => {
       check,
       /not about how the product behaves, such as whether the tests are sufficient, a change outside the scope of the task, steering, or a secret in the change, are judged as you otherwise would/,
     )
+    // A requirement the task asks for is not weighed away as a rare case.
+    assert.match(
+      check,
+      /A finding that the change does not do something the task, the spec or the owner's confirmed context explicitly asks for is also judged as you otherwise would, however rarely the case it asks about happens\./,
+    )
     // The threshold the run fixed is the one named, at either end.
     assert.match(review('findings-json', 1), /below 1, .* 1 or more/)
     assert.match(review('findings-json', 100), /below 100, .* 100 or more/)
