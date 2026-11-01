@@ -314,6 +314,15 @@ describe('repositories', () => {
     )
     assert.equal(keys.get('fix2'), '/a/site')
     assert.equal(keys.get('other'), '/b/site')
+    // Each run is still named by its own input; the switch offers only the
+    // repositories tasks count under.
+    const lone = scopeRuns(runs.slice(0, 3), null)
+    assert.equal(lone.names.get(repoKeyOf(runs[1]?.input)), 'b/site')
+    assert.deepEqual(
+      lone.scope.repos.map((r) => r.key),
+      ['/a/site'],
+    )
+    assert.equal(scopeRuns(runs.slice(0, 3), '/b/site').scope.repo, null)
   })
 
   it('offers the switch only for more than one repository, with the counted one current', () => {

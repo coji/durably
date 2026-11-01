@@ -360,8 +360,9 @@ export function repoNames(keys: Iterable<string>): Map<string, string> {
  * The repositories of `all`, by name with the sample and an unknown one
  * last, and the runs of the one `wanted` names: every run when it names
  * none of them. A run counts under its task's first run's repository, so
- * a repair is never split from the run it repairs. `keys` holds each run's
- * key by its ID.
+ * a repair is never split from the run it repairs. `keys` holds the key
+ * each run counts under, by its ID, and `names` the name of every key,
+ * each run's own included.
  */
 export function scopeRuns<
   R extends Pick<Run, 'id' | 'input'> & { labels?: Record<string, string> },
@@ -386,16 +387,21 @@ export function scopeRuns<
     return run
   }
   const keys = new Map(all.map((r) => [r.id, repoKeyOf(rootOf(r).input)]))
-  const names = repoNames(keys.values())
+  // A run is named by its own input; only the switch and the filter go by
+  // its task's first run.
+  const names = repoNames([
+    ...keys.values(),
+    ...all.map((r) => repoKeyOf(r.input)),
+  ])
   const last = (key: string) => key === SUBJECT_REPO || key === UNKNOWN_REPO
-  const repos = [...names]
-    .map(([key, name]) => ({ key, name }))
+  const repos = [...new Set(keys.values())]
+    .map((key) => ({ key, name: names.get(key) ?? key }))
     .sort(
       (x, y) =>
         Number(last(x.key)) - Number(last(y.key)) ||
         x.name.localeCompare(y.name),
     )
-  const repo = wanted !== null && names.has(wanted) ? wanted : null
+  const repo = repos.some((r) => r.key === wanted) ? wanted : null
   return {
     scope: { repos, repo },
     keys,
@@ -1693,7 +1699,7 @@ function createUiApi() {
     if (!db) return { ...base, ...NO_SCOPE, exists: false, runs: [], tasks: [] }
     const all = await orEmpty(allRuns(db), [])
     reports.keep(all)
-    const { scope, keys, names, runs: picked } = scopeRuns(all, wanted)
+    const { scope, names, runs: picked } = scopeRuns(all, wanted)
     const src = readOnce(db, picked)
     const archived = archivedRunIds(stateRoot)
     const built = await listedReports(reports, src, picked, all)
@@ -1702,7 +1708,7 @@ function createUiApi() {
         runRow(
           run,
           await inspect(src, run, now, report, fresh, archived),
-          names.get(keys.get(run.id) ?? '') ?? REPO.unknown,
+          names.get(repoKeyOf(run.input)) ?? REPO.unknown,
         ),
       ),
     )
@@ -1732,8 +1738,8 @@ function createUiApi() {
       reports.get(src, found),
       orEmpty(allRuns(db), [found]),
     ])
-    const { keys, names } = scopeRuns(all, null)
-    const key = keys.get(id) ?? repoKeyOf(found.input)
+    const { names } = scopeRuns(all, null)
+    const key = repoKeyOf(found.input)
     const [seen, steps, baselineSource, lineage] = await Promise.all([
       inspect(src, found, now, report, fresh, archived),
       src.storage.getSteps(id),

@@ -85,8 +85,6 @@ export function RunsScreen({
       </Section>
       {stop.length > 0 ? (
         <StopTasks
-          // Another repository's choice is never carried over.
-          key={data.repo ?? ''}
           tasks={stop}
           rows={rows}
           now={data.now}
