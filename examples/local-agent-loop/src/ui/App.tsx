@@ -29,6 +29,7 @@ import {
   type BulkAct,
   type BulkItem,
   type BulkOutcome,
+  type ItemAnswer,
   type BulkRequest,
   type SeriesResult,
 } from './components/BulkNotice'
@@ -109,7 +110,7 @@ async function postItem(
   token: string,
   action: BulkRequest['action'],
   item: BulkItem,
-): Promise<ReturnType<typeof seriesOutcome>> {
+): Promise<ItemAnswer> {
   try {
     return seriesOutcome(await post(token, item.runId, action, {}))
   } catch (error) {

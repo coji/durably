@@ -49,14 +49,15 @@ export interface BulkOutcome {
   failed: (BulkItemResult & { error: string })[]
 }
 
+/** One item's answer: what it came to, and why it failed, if it did. */
+export type ItemAnswer = Omit<BulkItemResult, 'item'> & { error?: string }
+
 /**
  * One item's answer as the notice reads it: the runs a task's
  * `archive-series` newly archived, every warning its runs carry, and its
  * errors as one, if any.
  */
-export function seriesOutcome(
-  answer: SeriesResult,
-): Omit<BulkItemResult, 'item'> & { error?: string } {
+export function seriesOutcome(answer: SeriesResult): ItemAnswer {
   const runs = answer.archived ?? []
   const errors = answer.errors ?? []
   return {
@@ -73,7 +74,7 @@ export function seriesOutcome(
  */
 export async function sendEach(
   request: BulkRequest,
-  send: (item: BulkItem) => Promise<ReturnType<typeof seriesOutcome>>,
+  send: (item: BulkItem) => Promise<ItemAnswer>,
   onProgress: (done: number) => void,
 ): Promise<BulkOutcome> {
   const outcome: BulkOutcome = {
