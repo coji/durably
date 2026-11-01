@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { asReportReview, asSpecReview } from '../src/engine/build-report.js'
+import {
+  asReportReview,
+  asSpecReview,
+  reviewBlockerRuleLensesOf,
+} from '../src/engine/build-report.js'
 import { PRICE_BASIS } from '../src/engine/pricing.js'
 import {
   reportToJson,
@@ -569,6 +573,91 @@ describe('the review blocker threshold in the Markdown header', () => {
       '- review blocker threshold: 0 (no likelihood × impact rule)',
     )
     assert.equal(header(null), undefined)
+  })
+})
+
+describe('the reviews the blocker threshold reached', () => {
+  const FINDINGS_JSON = {
+    correctness: { output: 'verdict' },
+    'edge-cases': { output: 'findings-json' },
+  }
+  /** A review call of `lens`, sent or not, settled as `result`. */
+  const call = (lens: string, result: string, sent: boolean): AttemptRow => {
+    const r = row(`stage:1:review:${lens}`, `${lens}-${result}`, 10)
+    return {
+      ...r,
+      measurement: {
+        ...(r.measurement as NonNullable<AttemptRow['measurement']>),
+        stage: `review:${lens}`,
+        result,
+        ...(sent ? { invocationStartedAt: 't' } : {}),
+      },
+    }
+  }
+  const cancelled = (lens: string): ReportReview => ({
+    lens,
+    decision: '',
+    notes: '',
+    findings: null,
+    status: 'cancelled',
+  })
+  const lenses = (
+    attempts: AttemptRow[],
+    reviews: ReportReview[] = [],
+    threshold: number | null = 5,
+    invocations: Partial<Record<string, { output?: string }>> = FINDINGS_JSON,
+  ) => reviewBlockerRuleLensesOf({ threshold, invocations, reviews, attempts })
+
+  it('counts a review cancelled after its call was sent', () => {
+    assert.deepEqual(
+      lenses(
+        [call('edge-cases', 'cancelled', true)],
+        [cancelled('edge-cases')],
+      ),
+      ['edge-cases'],
+    )
+    // A recorded review counts with no attempt row, as before.
+    assert.deepEqual(
+      lenses(
+        [],
+        [{ lens: 'edge-cases', decision: 'pass', notes: '', findings: null }],
+      ),
+      ['edge-cases'],
+    )
+  })
+
+  it('does not count a call never sent, or a lens that is not findings-json', () => {
+    assert.deepEqual(
+      lenses(
+        [call('edge-cases', 'not-sent', false)],
+        [cancelled('edge-cases')],
+      ),
+      [],
+    )
+    // Without the start on record, nothing shows the call was sent.
+    assert.deepEqual(lenses([call('edge-cases', 'cancelled', false)]), [])
+    assert.deepEqual(lenses([call('edge-cases', 'not-sent', true)]), [])
+    assert.deepEqual(lenses([call('correctness', 'cancelled', true)]), [])
+    // A spec review call is not a code review.
+    assert.deepEqual(
+      lenses([
+        {
+          ...call('edge-cases', 'cancelled', true),
+          measurement: {
+            ...(call('edge-cases', 'cancelled', true)
+              .measurement as NonNullable<AttemptRow['measurement']>),
+            stage: 'spec-review:edge-cases',
+          },
+        },
+      ]),
+      [],
+    )
+  })
+
+  it('reaches none at a threshold of 0 or without one', () => {
+    const sent = [call('edge-cases', 'cancelled', true)]
+    assert.deepEqual(lenses(sent, [], 0), [])
+    assert.deepEqual(lenses(sent, [], null), [])
   })
 })
 

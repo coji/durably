@@ -369,6 +369,29 @@ describe("the code and repair reply's NOTES section", () => {
     )
   })
 
+  it('reads from a capital NOTES heading before a NOTES: line in its body', () => {
+    for (const heading of ['## NOTES', '**NOTES:**', '__NOTES:__']) {
+      assert.equal(
+        parseImplementerNotes(
+          `Changed a.ts.\n\n${heading}\n- left a.ts\nNOTES:\n- left b.ts`,
+        ),
+        '- left a.ts\nNOTES:\n- left b.ts',
+        heading,
+      )
+    }
+    // A capital heading earlier than a lower-case NOTES: line opens too.
+    assert.equal(
+      parseImplementerNotes('## NOTES\n- left a.ts\nnotes:\n- left b.ts'),
+      '- left a.ts\nnotes:\n- left b.ts',
+    )
+    // A generic Notes heading still gives way to the NOTES: line, the shape
+    // a title-case real section cannot be told from.
+    assert.equal(
+      parseImplementerNotes('## Notes\n- left a.ts\nNOTES:\n- left b.ts'),
+      '- left b.ts',
+    )
+  })
+
   it('does not read a list item, single emphasis or a qualified NOTES as a heading', () => {
     for (const heading of [
       '- NOTES:',
@@ -405,6 +428,12 @@ describe("the code and repair reply's NOTES section", () => {
       '_None_',
       '*none*',
       '**None**',
+      // The period may stand outside the emphasis too.
+      '_None_.',
+      '**なし**。',
+      '- **None**.',
+      '*none*。',
+      '**なし。**',
     ]) {
       assert.equal(
         parseImplementerNotes(`Changed a.ts.\nNOTES: ${none}`),
