@@ -582,13 +582,18 @@ describe('the reviews the blocker threshold reached', () => {
     'edge-cases': { output: 'findings-json' },
   }
   /** A review call of `lens`, sent or not, settled as `result`. */
-  const call = (lens: string, result: string, sent: boolean): AttemptRow => {
+  const call = (
+    lens: string,
+    result: string,
+    sent: boolean,
+    stage = `review:${lens}`,
+  ): AttemptRow => {
     const r = row(`stage:1:review:${lens}`, `${lens}-${result}`, 10)
     return {
       ...r,
       measurement: {
         ...(r.measurement as NonNullable<AttemptRow['measurement']>),
-        stage: `review:${lens}`,
+        stage,
         result,
         ...(sent ? { invocationStartedAt: 't' } : {}),
       },
@@ -640,16 +645,7 @@ describe('the reviews the blocker threshold reached', () => {
     assert.deepEqual(lenses([call('correctness', 'cancelled', true)]), [])
     // A spec review call is not a code review.
     assert.deepEqual(
-      lenses([
-        {
-          ...call('edge-cases', 'cancelled', true),
-          measurement: {
-            ...(call('edge-cases', 'cancelled', true)
-              .measurement as NonNullable<AttemptRow['measurement']>),
-            stage: 'spec-review:edge-cases',
-          },
-        },
-      ]),
+      lenses([call('edge-cases', 'cancelled', true, 'spec-review:edge-cases')]),
       [],
     )
   })
