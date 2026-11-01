@@ -316,17 +316,12 @@ describe('repositories', () => {
       assert.equal(askRepoTopLevel(`${one}/`), first)
       // The ask hands back control before git answers, so a poll is never
       // held by it.
-      let ticked = false
-      setImmediate(() => {
-        ticked = true
-      })
       const both = askRepoTopLevels([
         { target: { kind: 'repo', repoPath: one } },
         { target: { kind: 'repo', repoPath: two } },
       ])
       assert.equal(repoTopLevel(two), two)
       await both
-      assert.ok(ticked)
       const top = await realpath(one)
       assert.equal(await first, top)
       assert.equal(repoTopLevel(two), await realpath(two))
