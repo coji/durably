@@ -4142,3 +4142,274 @@ describe('the test probe', { timeout: 300000 }, () => {
     }
   })
 })
+
+describe('the review blocker threshold', { timeout: 300000 }, () => {
+  const fake = {
+    provider: 'fake' as const,
+    requestedModel: null,
+    requestedEffort: null,
+  }
+  const RULE =
+    /If likelihood × impact is below (\d+), the finding is a non-blocker/
+
+  /** A one-file repository whose check always passes. */
+  async function plainRepo(root: string): Promise<string> {
+    const repo = join(root, 'repo')
+    await mkdir(repo, { recursive: true })
+    await writeFile(join(repo, 'README.md'), 'base\n')
+    for (const args of [
+      ['init', '--initial-branch=main'],
+      ['config', 'user.email', 'test@localhost'],
+      ['config', 'user.name', 'test'],
+      ['add', '-A'],
+      ['commit', '-m', 'base'],
+    ]) {
+      const res = await runChild('git', args, { cwd: repo, timeoutMs: 30000 })
+      if (res.code !== 0)
+        throw new Error(`git ${args.join(' ')}: ${res.stderr}`)
+    }
+    return repo
+  }
+
+  /** A findings-json reply carrying exactly these findings. */
+  const reply = (findings: object[]) =>
+    [
+      'PLAN: p',
+      'COUNTEREXAMPLE: none',
+      '```json',
+      JSON.stringify(findings),
+      '```',
+      'REVIEW_STATUS: COMPLETE',
+    ].join('\n')
+
+  it('passes a round whose low-scored product findings came back as non-blockers, keeps every other blocker, and reports the scores and the threshold', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'e2e-blocker-threshold-'))
+    const dir = join(home, '.local', 'state', 'local-agent-loop')
+    const repo = await plainRepo(home)
+    delete process.env.FAKE_FAIL_FIRST
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    delete process.env.FAKE_REVIEW_SLOW_MS
+    const durably = createAgentDurably({ stateRoot: dir })
+    await durably.migrate()
+    // One reviewer runs a command, its context after it in the input; the
+    // other reads its context from CLAUDE.local.md.
+    const findingsReviews = {
+      correctness: {
+        command: '/review {head}',
+        context: 'prompt' as const,
+        output: 'findings-json' as const,
+      },
+      'edge-cases': {
+        command: null,
+        context: 'local-instructions' as const,
+        output: 'findings-json' as const,
+      },
+    }
+    const verdictReviews = {
+      correctness: {
+        command: '/review {head}',
+        context: 'prompt' as const,
+        output: 'verdict' as const,
+      },
+      'edge-cases': {
+        command: null,
+        context: 'local-instructions' as const,
+        output: 'verdict' as const,
+      },
+    }
+    const start = async (args: {
+      threshold?: number
+      verdict?: boolean
+      reviewOutputs?: string[]
+    }) =>
+      (
+        await durably.jobs.agentLoop.trigger({
+          provider: 'fake',
+          profiles: { code: fake, correctness: fake, 'edge-cases': fake },
+          target: {
+            kind: 'repo' as const,
+            repoPath: repo,
+            baseRef: 'HEAD',
+            task: 'Note the change in a file.',
+            spec: null,
+            dispositions: null,
+            inputFiles: { task: null, spec: null, dispositions: null },
+            issue: null,
+            checkCommand: ['node', '-e', 'process.exit(0)'],
+            setupCommand: null,
+            publish: false,
+            ...(args.threshold !== undefined
+              ? { reviewBlockerThreshold: args.threshold }
+              : {}),
+          },
+          maxIterations: 1,
+          context: 'reuse',
+          review: args.verdict ? verdictReviews : findingsReviews,
+          fakeScenario: {
+            failIterations: 0,
+            changes: { 'NOTE.md': 'changed\n' },
+            ...(args.reviewOutputs
+              ? { reviewOutputs: args.reviewOutputs }
+              : {}),
+          },
+        })
+      ).id
+    const productAdvice = {
+      severity: 'non-blocker',
+      title: 'LOW-PRODUCT',
+      body: 'a race only under a clock jump',
+      likelihood: 1,
+      impact: 4,
+    }
+    const recording = recordFakeReviewCalls()
+    const ids: Record<string, string> = {}
+    try {
+      // The reviewers scored a product finding below 5 and returned it as
+      // advice: the round passes.
+      ids['low'] = await start({
+        threshold: 5,
+        reviewOutputs: [
+          reply([productAdvice]),
+          reply([{ severity: 'non-blocker', title: 'UNSCORED', body: 'b' }]),
+        ],
+      })
+      // A product finding scored 5 or more, returned as a blocker.
+      ids['high'] = await start({
+        threshold: 5,
+        reviewOutputs: [
+          reply([
+            {
+              severity: 'blocker',
+              title: 'HIGH-PRODUCT',
+              body: 'every refund is dropped',
+              likelihood: 5,
+              impact: 1,
+            },
+          ]),
+          reply([]),
+        ],
+      })
+      // A finding that is not about the product's behavior stays a blocker
+      // whatever its scores.
+      ids['tests'] = await start({
+        threshold: 5,
+        reviewOutputs: [
+          reply([]),
+          reply([
+            {
+              severity: 'blocker',
+              title: 'NO-TEST',
+              body: 'no test covers the change',
+              likelihood: 1,
+              impact: 1,
+            },
+          ]),
+        ],
+      })
+      ids['off'] = await start({
+        threshold: 0,
+        reviewOutputs: [reply([]), reply([])],
+      })
+      // Stored before the threshold existed: no rule, as before.
+      ids['legacy'] = await start({ reviewOutputs: [reply([]), reply([])] })
+      ids['verdict'] = await start({ threshold: 5, verdict: true })
+      await durably.init()
+      for (const [name, id] of Object.entries(ids))
+        await waitFor(
+          async () =>
+            ['completed', 'failed'].includes(
+              (await durably.getRun(id))?.status ?? '',
+            ),
+          240000,
+          `run ${name} settles`,
+        )
+      const conclusion = async (name: string) => {
+        const run = await durably.getRun(ids[name] ?? '')
+        assert.equal(run?.status, 'completed', run?.error ?? '')
+        return (run?.output as { conclusion?: string } | null)?.conclusion
+      }
+      assert.equal(await conclusion('low'), 'approved')
+      assert.equal(await conclusion('high'), 'review-cap-reached')
+      assert.equal(await conclusion('tests'), 'review-cap-reached')
+      assert.equal(await conclusion('off'), 'approved')
+      assert.equal(await conclusion('legacy'), 'approved')
+      assert.equal(await conclusion('verdict'), 'approved')
+
+      // The rule reaches the input after a command and CLAUDE.local.md.
+      const contextsOf = (name: string) =>
+        recording.calls
+          .filter((c) => c.workdir.includes(ids[name] ?? ''))
+          .map((c) =>
+            c.role === 'review-a'
+              ? (c.input ?? '')
+              : (c.localInstructionsAtStart?.content ?? ''),
+          )
+      for (const name of ['low', 'high', 'tests']) {
+        const contexts = contextsOf(name)
+        assert.equal(contexts.length, 2, name)
+        for (const context of contexts)
+          assert.equal(RULE.exec(context)?.[1], '5')
+      }
+      assert.ok(
+        contextsOf('low').some((c) => c.startsWith('/review ')),
+        'the command comes first',
+      )
+      for (const name of ['off', 'legacy', 'verdict']) {
+        const contexts = contextsOf(name)
+        assert.equal(contexts.length, 2, name)
+        for (const context of contexts) {
+          assert.ok(context.includes('You are an independent'), name)
+          assert.doesNotMatch(context, /likelihood/, name)
+        }
+      }
+
+      // The report keeps the scores a finding had and adds none, and names
+      // the threshold.
+      const low = await buildReport(durably, ids['low'] ?? '')
+      assert.equal(low.reviewBlockerThreshold, 5)
+      const byLens = Object.fromEntries(
+        low.reviews.map((r) => [r.lens, r.findings]),
+      )
+      assert.deepEqual(byLens['correctness']?.nonBlocker, [productAdvice])
+      assert.deepEqual(byLens['edge-cases']?.nonBlocker, [
+        { severity: 'non-blocker', title: 'UNSCORED', body: 'b' },
+      ])
+      const json = JSON.parse(reportToJson(low)) as {
+        reviewBlockerThreshold: number
+        reviewRounds: { reviews: { findings: { nonBlocker: object[] } }[] }[]
+      }
+      assert.equal(json.reviewBlockerThreshold, 5)
+      assert.deepEqual(
+        json.reviewRounds[0]?.reviews.flatMap((r) => r.findings.nonBlocker),
+        [
+          productAdvice,
+          { severity: 'non-blocker', title: 'UNSCORED', body: 'b' },
+        ],
+      )
+      const markdown = reportToMarkdown(low)
+      assert.match(markdown, /- review blocker threshold: 5 /)
+      assert.match(markdown, /- LOW-PRODUCT \(likelihood 1, impact 4\)$/m)
+      assert.match(markdown, /- UNSCORED$/m)
+      const tests = await buildReport(durably, ids['tests'] ?? '')
+      const blockers = tests.reviews.flatMap((r) => r.findings?.blocker ?? [])
+      assert.deepEqual(
+        blockers.map((f) => [f.title, f.likelihood, f.impact]),
+        [['NO-TEST', 1, 1]],
+      )
+      assert.equal(
+        (await buildReport(durably, ids['off'] ?? '')).reviewBlockerThreshold,
+        0,
+      )
+      assert.equal(
+        (await buildReport(durably, ids['legacy'] ?? ''))
+          .reviewBlockerThreshold,
+        null,
+      )
+    } finally {
+      recording.stop()
+      await durably.stop()
+      await durably.db.destroy()
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+})

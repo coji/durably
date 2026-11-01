@@ -96,6 +96,7 @@ interface PersistedInput {
     dispositions?: string | null
     context?: string | null
     inputFiles?: Record<string, { path?: string } | null>
+    reviewBlockerThreshold?: number | null
   }
   repairOf?: {
     runId?: string
@@ -226,6 +227,8 @@ function asFinding(value: unknown): ReportFinding | null {
     body: f.body,
     ...(typeof f.file === 'string' ? { file: f.file } : {}),
     ...(typeof f.line === 'number' ? { line: f.line } : {}),
+    ...(typeof f.likelihood === 'number' ? { likelihood: f.likelihood } : {}),
+    ...(typeof f.impact === 'number' ? { impact: f.impact } : {}),
   }
 }
 
@@ -1274,6 +1277,7 @@ export async function buildReport(
   )?.output as {
     target?: { kind?: string; workdir?: string }
     parallelReview?: unknown
+    reviewBlockerThreshold?: number | null
     agentTimeoutMs?: number
     agentIdleTimeoutMs?: number
   } | null
@@ -1289,6 +1293,11 @@ export async function buildReport(
               ? setupOutput.agentIdleTimeoutMs
               : input?.agentIdleTimeoutMs) ?? null,
         }
+  // As setup fixed it, else as the trigger stored it.
+  const reviewBlockerThreshold =
+    (setupOutput
+      ? setupOutput.reviewBlockerThreshold
+      : input?.target?.reviewBlockerThreshold) ?? null
   const setupTarget = setupOutput?.target
   const candidates = sealedCandidates(steps)
   const candidate = lastCandidate(output, candidates)
@@ -1333,6 +1342,7 @@ export async function buildReport(
     fake: isFake,
     configVersion,
     agentTimeouts,
+    reviewBlockerThreshold,
     summary: summarizeRun({
       status: run.status,
       output: run.output,

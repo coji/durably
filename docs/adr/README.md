@@ -80,6 +80,7 @@ What we considered and why we didn't do it.
 | [0037](0037-local-agent-loop-on-demand-worker.md)               | local-agent-loop on-demand worker             | accepted |
 | [0038](0038-local-agent-loop-trusted-context.md)                | local-agent-loop trusted context              | accepted |
 | [0039](0039-local-agent-loop-test-probe.md)                     | local-agent-loop test probe                   | accepted |
+| [0040](0040-local-agent-loop-review-blocker-threshold.md)       | local-agent-loop review blocker threshold     | accepted |
 
 ## Prior Art
 

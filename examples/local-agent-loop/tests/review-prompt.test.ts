@@ -23,6 +23,7 @@ import {
   reviewCommandPlaceholders,
   reviewPrompt,
   specBlockerText,
+  specReviewPrompt,
 } from '../src/factory/prompts.js'
 import type { RepoTargetConfig, Target } from '../src/factory/target.js'
 import type {
@@ -1602,5 +1603,191 @@ describe("the owner's confirmed context and the stages' results in a review", ()
   it('leaves the trusted context as it was without either', async () => {
     const { context } = await reviewed({})
     assert.doesNotMatch(context, /Owner context|Stage result|<<<TRUSTED/)
+  })
+})
+
+describe('the blocker threshold of a findings-json code review', () => {
+  const review = (output: 'verdict' | 'findings-json', threshold?: number) =>
+    reviewPrompt('correctness', 'CTX', ['rule'], [], null, null, {
+      output,
+      ...(threshold !== undefined ? { blockerThreshold: threshold } : {}),
+    })
+
+  it('asks for both scores of a product-behavior finding, with the boundary and the findings it does not cover', () => {
+    const prompt = review('findings-json', 5)
+    const check = prompt.slice(
+      prompt.indexOf('CHECK:'),
+      prompt.indexOf('PROCEDURE:'),
+    )
+    assert.match(
+      check,
+      /finding about how the product behaves, score how likely it is to actually happen in real use \(likelihood\) and how severe it is when it does \(impact\), each as an integer from 1 to 10/,
+    )
+    assert.match(check, /"likelihood" and "impact"/)
+    assert.match(
+      check,
+      /If likelihood × impact is below 5, the finding is a non-blocker\. If it is 5 or more, decide blocker or non-blocker as you otherwise would\./,
+    )
+    assert.match(
+      check,
+      /not about how the product behaves, such as whether the tests are sufficient, a change outside the scope of the task, steering, or a secret in the change, are judged as you otherwise would/,
+    )
+    // A requirement the task asks for is not weighed away as a rare case.
+    assert.match(
+      check,
+      /A finding that the change does not do something the task, the spec or the owner's confirmed context explicitly asks for is also judged as you otherwise would, however rarely the case it asks about happens\./,
+    )
+    // The threshold the run fixed is the one named, at either end.
+    assert.match(review('findings-json', 1), /below 1, .* 1 or more/)
+    assert.match(review('findings-json', 100), /below 100, .* 100 or more/)
+  })
+
+  it('adds nothing at 0, without a threshold, or to a verdict review', () => {
+    const plain = review('findings-json')
+    assert.equal(review('findings-json', 0), plain)
+    assert.doesNotMatch(plain, /likelihood/)
+    const verdict = review('verdict')
+    assert.equal(review('verdict', 5), verdict)
+    assert.doesNotMatch(verdict, /likelihood/)
+  })
+
+  it('leaves the spec review blocker instruction as it was', () => {
+    const spec = specReviewPrompt({
+      name: 'tech',
+      worktree: '/w',
+      specPath: '/s/spec.md',
+      reviewTemplate: null,
+      untrusted: [],
+      output: 'findings-json',
+    })
+    assert.doesNotMatch(spec, /likelihood|impact/)
+    assert.match(
+      spec,
+      /A finding that an implementer could not work without fixing is a blocker; anything else is advice\./,
+    )
+  })
+
+  it('tells a repair from findings not to design for cases nobody asked for', () => {
+    const prompt = codePrompt({
+      role: 'repair',
+      iteration: 1,
+      repairNotes: [],
+      task: 'T',
+      rules: [],
+      fromFindings: 'review-cap-reached',
+    })
+    assert.match(
+      prompt,
+      /Do not design for rare or future cases nobody asked for\./,
+    )
+    // Only the repair from findings is told so.
+    for (const other of [
+      codePrompt({
+        role: 'implement',
+        iteration: 1,
+        repairNotes: [],
+        task: 'T',
+        rules: [],
+      }),
+      codePrompt({
+        role: 'repair',
+        iteration: 2,
+        repairNotes: ['x'],
+        task: 'T',
+        rules: [],
+        newSession: true,
+      }),
+    ])
+      assert.doesNotMatch(other, /rare or future cases/)
+  })
+})
+
+describe('likelihood and impact in findings-json output', () => {
+  const finding = (extra: Record<string, unknown>) => ({
+    severity: 'non-blocker',
+    title: 't',
+    body: 'b',
+    ...extra,
+  })
+
+  it('accepts both, one or neither, from 1 to 10, and keeps only what was given', () => {
+    const parsed = parseFindingsOutput(
+      findingsReply([
+        finding({ likelihood: 1, impact: 10 }),
+        finding({ likelihood: 10 }),
+        finding({ impact: 1 }),
+        finding({}),
+      ]),
+    )
+    assert.ok(parsed.ok)
+    assert.deepEqual(parsed.findings?.nonBlocker, [
+      {
+        severity: 'non-blocker',
+        title: 't',
+        body: 'b',
+        likelihood: 1,
+        impact: 10,
+      },
+      { severity: 'non-blocker', title: 't', body: 'b', likelihood: 10 },
+      { severity: 'non-blocker', title: 't', body: 'b', impact: 1 },
+      { severity: 'non-blocker', title: 't', body: 'b' },
+    ])
+    const last = parsed.findings?.nonBlocker.at(-1) ?? {}
+    assert.equal('likelihood' in last, false)
+    assert.equal('impact' in last, false)
+  })
+
+  it('refuses null, 0, a negative, 11, a fraction and anything not a number', () => {
+    for (const key of ['likelihood', 'impact']) {
+      for (const value of [null, 0, -1, 11, 1.5, '3', true, [], {}]) {
+        const parsed = parseFindingsOutput(
+          findingsReply([finding({ [key]: value })]),
+        )
+        assert.equal(parsed.ok, false, `${key}: ${JSON.stringify(value)}`)
+        assert.match(
+          parsed.ok ? '' : parsed.error,
+          new RegExp(`finding 1: ${key} must be an integer from 1 to 10`),
+        )
+      }
+      // Infinity is what JSON gives for a number too large to hold.
+      const huge = parseFindingsOutput(
+        findingsReply(
+          `[{"severity": "blocker", "title": "t", "body": "b", "${key}": 1e400}]`,
+        ),
+      )
+      assert.equal(huge.ok, false)
+      // NaN is no JSON at all, so the reply cannot be read.
+      const nan = parseFindingsOutput(
+        findingsReply(
+          `[{"severity": "blocker", "title": "t", "body": "b", "${key}": NaN}]`,
+        ),
+      )
+      assert.equal(nan.ok, false)
+    }
+  })
+
+  it('never reclassifies a finding from its scores: the returned blockers decide', () => {
+    const highAdvice = parseFindingsOutput(
+      findingsReply([finding({ likelihood: 10, impact: 10 })]),
+    )
+    assert.equal(highAdvice.ok && highAdvice.decision, 'pass')
+    assert.equal(highAdvice.ok && highAdvice.findings?.counts.blocker, 0)
+    const lowBlocker = parseFindingsOutput(
+      findingsReply([
+        {
+          severity: 'blocker',
+          title: 't',
+          body: 'b',
+          likelihood: 1,
+          impact: 1,
+        },
+      ]),
+    )
+    assert.equal(lowBlocker.ok && lowBlocker.decision, 'needsChanges')
+    assert.deepEqual(lowBlocker.ok && lowBlocker.findings?.blocker, [
+      { severity: 'blocker', title: 't', body: 'b', likelihood: 1, impact: 1 },
+    ])
+    // The repair notes stay in their format.
+    assert.equal(lowBlocker.ok && lowBlocker.notes, '- t — b')
   })
 })

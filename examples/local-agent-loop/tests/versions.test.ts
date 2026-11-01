@@ -836,6 +836,50 @@ describe('reviewer invocations in the config version', () => {
   })
 })
 
+describe('the review blocker threshold in the config version', () => {
+  const profile: ResolvedProfile = {
+    id: 'fake:fake-model:provider-default:code',
+    provider: 'fake',
+    requestedModel: null,
+    requestedEffort: null,
+    effectiveModel: 'fake-model',
+    effectiveEffort: null,
+  }
+  const base = {
+    contextMode: 'reuse',
+    instructionsVersion: 'local-factory.v3',
+    maxIterations: 2,
+    target: 'repo:node --test',
+    agentTimeoutMs: 1800000,
+    agentIdleTimeoutMs: 900000,
+    checkTimeoutMs: 900000,
+    code: profile,
+    correctness: profile,
+    edgeCases: profile,
+  }
+  // The same run's version from before the threshold existed.
+  const PRIOR = '4d32349a6f799c04'
+
+  it('keeps the prior version for a run that fixed none', () => {
+    assert.equal(
+      configVersionOf({ ...base, reviewBlockerThreshold: null }),
+      PRIOR,
+    )
+    assert.equal(
+      configVersionOf({ ...base, reviewBlockerThreshold: undefined }),
+      PRIOR,
+    )
+  })
+
+  it('differs for each threshold a run fixed, 0 included', () => {
+    const versions = [0, 1, 5, 6, 100].map((reviewBlockerThreshold) =>
+      configVersionOf({ ...base, reviewBlockerThreshold }),
+    )
+    for (const version of versions) assert.notEqual(version, PRIOR)
+    assert.equal(new Set(versions).size, versions.length)
+  })
+})
+
 describe('spec stages in the config version', () => {
   const profile: ResolvedProfile = {
     id: 'fake:fake-model:provider-default:code',

@@ -23,6 +23,7 @@ import { readInputFile } from './factory/input-file.js'
 import {
   assertSingleMode,
   baselineReuseSchema,
+  DEFAULT_REVIEW_BLOCKER_THRESHOLD,
   DEFAULT_SPEC_MAX_ROUNDS,
   fixProfile,
   fixReviewInvocation,
@@ -30,6 +31,7 @@ import {
   type AgentLoopInput,
   nonBlank,
   resolveTimeouts,
+  reviewBlockerThresholdSchema,
   selfCheckSchema,
   specMaxRoundsSchema,
   specReviewerNameSchema,
@@ -178,6 +180,15 @@ const factoryConfigSchema = z
      * candidate, for the reviewers (ADR-0039); none when absent.
      */
     testProbe: testProbeSchema.optional(),
+    /**
+     * How the code reviews decide a blocker: a product-behavior finding of
+     * a findings-json review whose likelihood × impact is below
+     * `blockerThreshold` is a non-blocker; 0 adds no such rule (ADR-0040).
+     */
+    review: z
+      .object({ blockerThreshold: reviewBlockerThresholdSchema.optional() })
+      .strict()
+      .optional(),
     setup: z.array(z.string().min(1)).min(1).optional(),
     base: z.string().min(1).optional(),
     profiles: z
@@ -535,6 +546,8 @@ async function repoSettings(
         setupCommand && setupCommand.length > 0 ? setupCommand : null,
       selfCheck: config?.selfCheck ?? null,
       testProbe: config?.testProbe ?? null,
+      reviewBlockerThreshold:
+        config?.review?.blockerThreshold ?? DEFAULT_REVIEW_BLOCKER_THRESHOLD,
       baselineCheck: config?.baselineCheck ?? false,
       baselineReuse: config?.baselineReuse ?? null,
       parallelReview: config?.parallelReview ?? false,
@@ -948,6 +961,7 @@ interface StoredRepairInput {
     commit?: CommitSettings
     selfCheck?: string[][] | null
     testProbe?: TestProbeRule[] | null
+    reviewBlockerThreshold?: number | null
     baselineCheck?: boolean
     baselineReuse?: BaselineReuse | null
     parallelReview?: boolean
@@ -1297,6 +1311,12 @@ export function buildRepairInput(
         t,
         'testProbe',
         () => parentInput.target?.testProbe ?? null,
+      ),
+      // Never the default: a parent stored without one keeps no rule.
+      reviewBlockerThreshold: recorded(
+        stored,
+        'reviewBlockerThreshold',
+        () => parentInput.target?.reviewBlockerThreshold ?? null,
       ),
       publish: t.publish,
       commit: recorded(

@@ -64,6 +64,8 @@ const reviewFindingSchema = z.object({
   body: z.string(),
   file: z.string().optional(),
   line: z.number().optional(),
+  likelihood: z.number().optional(),
+  impact: z.number().optional(),
 })
 
 const reviewFindingsSchema = z.object({

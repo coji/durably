@@ -213,6 +213,13 @@ export interface ConfigVersionInput {
     >
   > | null
   /**
+   * The code reviews' blocker threshold fixed at trigger (ADR-0040), 0
+   * included: a run that pinned one is not the population of a run with
+   * another. Left out when null or absent, so a run stored before it
+   * existed keeps its version.
+   */
+  reviewBlockerThreshold?: number | null
+  /**
    * The spec stages: the author's, fix's and each named reviewer's profile
    * and invocation, the round limit, and the contents of the templates read
    * at trigger. Left out entirely on a run without them, so such a run keeps
@@ -255,7 +262,8 @@ function canonicalProfile(p: ConfigVersionProfile): ConfigVersionProfile {
  * one), the path and version of every real CLI launched, the commit
  * author and message template (when set), the self-check commands (when
  * set), each configured reviewer's
- * command, context and output, and the spec stages with their templates
+ * command, context and output, the code reviews' blocker threshold (when
+ * fixed), and the spec stages with their templates
  * (when configured) are identical —
  * the unit of a fair comparison. Stored on every LLM attempt as
  * `configVersion`.
@@ -308,6 +316,9 @@ export function configVersionOf(input: ConfigVersionInput): string {
       ? { selfCheck: input.selfCheck }
       : {}),
     ...(review.length > 0 ? { review: Object.fromEntries(review) } : {}),
+    ...(input.reviewBlockerThreshold != null
+      ? { reviewBlockerThreshold: input.reviewBlockerThreshold }
+      : {}),
     ...(input.spec
       ? {
           spec: {
