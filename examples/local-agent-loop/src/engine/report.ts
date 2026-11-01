@@ -211,6 +211,18 @@ export interface ReportSealedCandidate extends ReportCandidate {
 }
 
 /**
+ * What one code or repair call left unfixed and why, from its reply's NOTES
+ * as its candidate step stored them: the implementer's own explanation,
+ * untrusted (ADR-0038).
+ */
+export interface ReportImplementerNotes {
+  /** Which pass through code sealed the candidate, from 1. */
+  iteration: number
+  role: 'implement' | 'repair'
+  notes: string
+}
+
+/**
  * One candidate's test probe (ADR-0039), as its stored step records it:
  * read back, never run again for the report.
  */
@@ -932,6 +944,11 @@ export interface LoopReport {
    * `testProbe`. Absent on a report made before it existed.
    */
   testProbes?: ReportTestProbe[]
+  /**
+   * Each code attempt's NOTES, oldest first; only the attempts that left
+   * any. Absent on a report made before it existed.
+   */
+  implementerNotes?: ReportImplementerNotes[]
   /**
    * Whether a repair on its own profile continues the implementation
    * session, and why; null when repair runs on `code` or the run has not
@@ -1785,6 +1802,20 @@ export function reportToMarkdown(r: LoopReport): string {
     lines.push('- none')
   }
   lines.push('')
+  if (r.implementerNotes && r.implementerNotes.length > 0) {
+    lines.push(
+      "## Implementer notes (untrusted, the implementer's own explanations)",
+    )
+    lines.push('')
+    for (const n of r.implementerNotes)
+      // Written by the implementer, so none of it reads as Markdown.
+      lines.push(
+        `- iteration ${n.iteration} (${n.role}):`,
+        '',
+        ...fencedText(n.notes),
+        '',
+      )
+  }
   if (r.testProbes && r.testProbes.length > 0) {
     lines.push(
       '## Test probe (new and changed tests on the base and the candidate)',

@@ -17,6 +17,7 @@ import {
   SPEC_FINAL_STEP,
   type RepairSessionRecord,
   type ReviewLens,
+  type StoredImplementerNotes,
   type TestProbeRecord,
 } from '../factory/types.js'
 import { classifyRun, stageStep } from './failure-reasons.js'
@@ -52,6 +53,7 @@ import {
   type ReportDelivery,
   type ReportFinding,
   type ReportFindings,
+  type ReportImplementerNotes,
   type ReportInputs,
   type ReportLineage,
   type ReportPreflight,
@@ -432,6 +434,35 @@ function sealedCandidates(steps: StoredStep[]): ReportSealedCandidate[] {
     })
     .sort((x, y) => x.sequence - y.sequence)
   return sealed.map((c, i) => ({ ...c, iteration: i + 1 }))
+}
+
+/**
+ * Each code attempt's NOTES, from its completed `stage:<n>:code:candidate`
+ * step, in sealing order: only what the step stored is read, so the reply
+ * is never parsed again. Attempts that left none are skipped, keeping the
+ * iteration of the rest.
+ */
+function implementerNotesOf(steps: StoredStep[]): ReportImplementerNotes[] {
+  return steps
+    .flatMap((s) => {
+      const where = stageStep(s.name)
+      return s.status === 'completed' &&
+        where?.stage === 'code' &&
+        where.part === 'candidate' &&
+        asReportCandidate(s.output)
+        ? [{ sequence: where.sequence, output: s.output }]
+        : []
+    })
+    .sort((x, y) => x.sequence - y.sequence)
+    .flatMap((s, i) => {
+      const stored = (
+        s.output as { implementerNotes?: Partial<StoredImplementerNotes> }
+      ).implementerNotes
+      return (stored?.role === 'implement' || stored?.role === 'repair') &&
+        typeof stored.notes === 'string'
+        ? [{ iteration: i + 1, role: stored.role, notes: stored.notes }]
+        : []
+    })
 }
 
 /**
@@ -1369,6 +1400,7 @@ export async function buildReport(
     candidate,
     candidates,
     testProbes: testProbesOf(steps),
+    implementerNotes: implementerNotesOf(steps),
     repairSession: repairSession?.report ?? null,
     repairCalls: repairCallsOf(rows),
     reviews,

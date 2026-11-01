@@ -388,10 +388,22 @@ export interface Target {
   /**
    * Write the factory's copy of each registered stage context from its
    * stored content and return their paths, which every reviewer may read,
-   * and the one directory that holds them; null when none is registered.
-   * Only a target that can have any implements it.
+   * and the one directory that holds them; null when there is nothing to
+   * copy. Only a target that can have any implements it.
+   *
+   * `implementerNotes`, the current candidate's notes from its code or
+   * repair reply, get a copy of their own in the same directory, apart from
+   * the stage results: the implementer wrote them, so they keep that
+   * provenance and are never trusted context. Without notes, an earlier
+   * candidate's copy is removed.
    */
-  prepareStageContext?(): Promise<{ dir: string; files: string[] } | null>
+  prepareStageContext?(implementerNotes?: string | null): Promise<{
+    dir: string
+    /** The stage results' copies: trusted. */
+    files: string[]
+    /** The implementer notes' copy: untrusted; null without notes. */
+    implementerNotes: string | null
+  } | null>
   /**
    * Extract the base commit's and the candidate's trees for a configured
    * reviewer, reusing what is already there: the base once per run, the

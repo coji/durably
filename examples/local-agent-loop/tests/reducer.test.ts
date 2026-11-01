@@ -274,3 +274,70 @@ describe('factory reducer and policy', () => {
     ])
   })
 })
+
+describe("the implementer's notes in the state", () => {
+  const code = (
+    role: 'implement' | 'repair',
+    id: string,
+    implementerNotes?: string,
+  ) =>
+    FactoryEventSchema.parse({
+      type: 'code.completed',
+      role,
+      candidate: { ...candidate, id },
+      session: null,
+      ...(implementerNotes !== undefined ? { implementerNotes } : {}),
+    })
+
+  it("keep the current candidate's notes and replace them on the next code attempt, even with none", () => {
+    let state = initialState(setup)
+    assert.equal(state.implementerNotes, null)
+    state = reduce(state, code('implement', 'candidate-1', 'left mul'))
+    assert.equal(state.implementerNotes, 'left mul')
+    state = reduce(state, {
+      type: 'verify.completed',
+      targetId: 'candidate-1',
+      passed: true,
+      stdout: 'ok',
+      exitCode: 0,
+    })
+    // Kept through the candidate's verification, for its reviewers.
+    assert.equal(state.implementerNotes, 'left mul')
+    state = reduce(state, code('repair', 'candidate-2', 'left the docs'))
+    assert.equal(state.implementerNotes, 'left the docs')
+    state = reduce(state, code('repair', 'candidate-3'))
+    assert.equal(state.implementerNotes, null)
+  })
+
+  it('reduce the same stored events to the same notes, once, on every replay', () => {
+    const events = [
+      code('implement', 'candidate-1', 'left mul'),
+      code('repair', 'candidate-2', 'left the docs'),
+    ]
+    const replay = () => events.reduce(reduce, initialState(setup))
+    assert.deepEqual(replay(), replay())
+    assert.equal(replay().implementerNotes, 'left the docs')
+  })
+
+  it('reduce an event stored before the field existed to no notes', () => {
+    const state = reduce(
+      reduce(initialState(setup), code('implement', 'candidate-1', 'left mul')),
+      FactoryEventSchema.parse({
+        type: 'code.completed',
+        role: 'repair',
+        candidate,
+        session: null,
+      }),
+    )
+    assert.equal(state.implementerNotes, null)
+  })
+
+  it('refuse stored notes that are empty or over 4 KiB', () => {
+    assert.throws(() => code('implement', 'candidate-1', ''))
+    assert.throws(() => code('implement', 'candidate-1', 'あ'.repeat(1366)))
+    assert.equal(
+      code('implement', 'candidate-1', 'a'.repeat(4096)).type,
+      'code.completed',
+    )
+  })
+})

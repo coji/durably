@@ -530,8 +530,24 @@ export interface FactoryState {
    * untrusted findings. Never counted, and never part of `reviews`.
    */
   failedCheckReviews: ReviewStepResult[]
+  /**
+   * What the implementer or repairer of the current candidate left unfixed
+   * and why, from its reply's NOTES: handed to that candidate's reviewers
+   * as untrusted. Null when its reply had none.
+   */
+  implementerNotes: string | null
   approval: 'approved' | 'rejected' | null
   outcome: FactoryOutcome | null
+}
+
+/**
+ * The NOTES a code or repair reply left, as its candidate step stores them
+ * beside the candidate: read once from the settled reply, and read back by
+ * replays and the report. Absent from a step whose reply had none.
+ */
+export interface StoredImplementerNotes {
+  role: CodeRole
+  notes: string
 }
 
 /**
@@ -562,6 +578,7 @@ export function initialState(
     implementationSession: null,
     repairNotes: [],
     failedCheckReviews: [],
+    implementerNotes: null,
     approval: null,
     outcome: null,
   }

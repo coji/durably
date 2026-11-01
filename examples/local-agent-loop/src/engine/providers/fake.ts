@@ -157,6 +157,13 @@ export interface FakeScenario {
   usage?: 'none' | 'realistic'
   /** Summary the implementer returns when it makes the change. */
   summary?: string
+  /**
+   * The whole reply of the code or repair call of each iteration, entry
+   * `n - 1` for iteration n, such as a summary with a NOTES section. It
+   * takes the place of `summary` and of the miss's fixed reply; the call
+   * changes the workdir as it otherwise would.
+   */
+  codeReplies?: string[]
   /** Files written into the workdir, relative paths, on a successful implement. */
   changes?: Record<string, string>
   /** Stand in for a Claude Code that keeps the cache across an effort change. */
@@ -713,9 +720,11 @@ export class FakeProvider implements AgentProvider {
       const iter = options.prompt.match(/iteration (\d+)/)?.[1] ?? '1'
       const failIterations =
         scenario.failIterations ?? (process.env.FAKE_FAIL_FIRST !== '0' ? 1 : 0)
+      const scripted = scenario.codeReplies?.[Number(iter) - 1]
       if (Number(iter) <= failIterations) {
         return result(
-          'fake: left the bug in place (simulated first-iteration miss)',
+          scripted ??
+            'fake: left the bug in place (simulated first-iteration miss)',
           options.sessionId ?? undefined,
         )
       }
@@ -737,7 +746,7 @@ export class FakeProvider implements AgentProvider {
       }
       await writeChanges(options.workdir, scenario.changes ?? {})
       return result(
-        scenario.summary ?? 'fake: fixed add() to return a + b',
+        scripted ?? scenario.summary ?? 'fake: fixed add() to return a + b',
         options.sessionId ?? undefined,
       )
     }

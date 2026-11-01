@@ -828,6 +828,16 @@ export const RECORD = {
   storedWithoutFile: 'ファイルからではなく本文で指定',
   notGiven: '指定なし',
   notes: '注記',
+  /**
+   * What each code or repair call left unfixed and why, from its reply's
+   * NOTES: the implementer's own account, handed to that candidate's
+   * reviewers as untrusted.
+   */
+  implementerNotes: '直さなかった理由（実装担当の説明）',
+  implementerNotesNote:
+    '実装担当が返答の NOTES に書いた説明です。その候補のレビューに、信頼しない情報として渡しました。',
+  implementerNotesOf: (iteration: number, role: string) =>
+    `${iteration}回目の${role === 'repair' ? '修正' : '実装'}`,
 } as const
 
 /** How the factory delivered an approved candidate. */

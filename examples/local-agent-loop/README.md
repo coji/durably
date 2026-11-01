@@ -846,6 +846,17 @@ pnpm --filter example-local-agent-loop demo trigger \
   返答のNOTESで理由を述べる」と指示します。両レビューには、factoryが作る
   TRUSTED CONTEXTの中に入ります。`--dispositions-file` はこれまでどおり
   レビューだけに渡る信頼しないデータで、contextに格上げはしません。
+- 実装と修正の返答は、変更したファイルの短い要約に続けて、わざと直さなかった
+  指摘や変更があるときだけ `NOTES:` の節で、どれをなぜ直さなかったかを書きます。
+  節が無い返答も、空の節も、これまでどおり有効です。factoryは決着した返答から
+  一度だけ読み取り（UTF-8で4 KiBまで）、候補のstepに保存します。replayは保存した
+  ものを読み、返答を読み直しません。その候補の両レビューには、TRUSTED CONTEXTの
+  後ろに「信頼しないデータ」の `REPAIR_NOTES` 区画として渡し、理由を候補、タスク、
+  仕様、確定事項と照らして判断すること、理由が書いてあるだけでは指摘は片付かない
+  ことを指示します。factoryのコピーもstageの結果と同じ場所に置き、読めるファイルと
+  command形式の `CLAUDE.local.md` に載せます。TRUSTED CONTEXTにも
+  DISPOSITIONSにも入れません。次の実装か修正が終わると、その返答の分に置き換わります。
+  reportの `implementerNotes[]`、Markdownのreport、run詳細に、回と役割ごとに出ます。
 - `check` は**エージェントが走り出す前に固定される採点コマンド**です。argvとして
   そのまま実行するのでshellではありません。configにもフラグにも無ければ起動しません。
   何を直せば通るのかが決まっていない依頼は、そもそもファクトリーに向きません。
@@ -1556,8 +1567,9 @@ effortに加えて、呼び出し方と返答の読み方を役割ごとに書�
   `prompt` でも、`command` があれば（コマンドモード）作業ディレクトリに短い
   `CLAUDE.local.md` を置きます。入力が届くのは親のセッションだけで、作業ディレクトリ
   にはコードが無いからです。このファイルはcandidateのworktree、差分、変更ファイル一覧、
-  baseとheadのtreeの場所を示し、サブエージェントも含めて、コードをそこから絶対パスで
-  読むよう伝えます。
+  baseとheadのtreeの場所と、あればstageの結果のコピー（信頼できる情報）と実装担当の
+  NOTESのコピー（信頼しない情報）の場所を示し、サブエージェントも含めて、コードを
+  そこから絶対パスで読むよう伝えます。
 - `output` は返答の読み方です。`verdict`（既定）は従来の `DECISION`／`NOTES` です。
   `findings-json` は、返答の最後の ` ```json ` ブロックにある配列を読みます。
   各指摘は `{"severity": "blocker" | "non-blocker", "title": "...", "body": "...",

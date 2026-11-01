@@ -49,6 +49,7 @@ import {
   LOCAL_INSTRUCTIONS_INPUT,
   localInstructions,
   parseFindingsOutput,
+  parseImplementerNotes,
   parseReviewOutput,
   reviewLocations,
   reviewPrompt,
@@ -65,7 +66,6 @@ import {
   type SpecState,
 } from './reducer.js'
 import {
-  checkContextText,
   checkStageContextName,
   MAX_CONTEXT_BYTES,
   type Delivery,
@@ -108,6 +108,7 @@ import {
   type SpecVersion,
   type StageArgs,
   type StageHandler,
+  type StoredImplementerNotes,
   TEST_PROBE_CONTEXT,
   type TestProbeRecord,
   testProbeStepOf,
@@ -274,9 +275,15 @@ export const codeStage: StageHandler = async ({
   const timedOut = call.timedOut
   if (timedOut && !(await target.hasChanges(state.candidate)))
     throw new AgentTimeoutError(timedOut, { role })
-  const candidate: SealedCandidate = await step.run(
-    `${key}:candidate`,
-    async (signal, attempt) => ({
+  // The reply's NOTES are read here, once, and kept in this step beside the
+  // candidate they explain, so a replay and the report read them back and
+  // never parse the reply again. A stopped call settled no reply, so it
+  // leaves none.
+  const sealed: SealedCandidate & {
+    implementerNotes?: StoredImplementerNotes
+  } = await step.run(`${key}:candidate`, async (signal, attempt) => {
+    const notes = timedOut ? null : parseImplementerNotes(call.text)
+    return {
       ...(await target.seal({
         iteration,
         runId: step.runId,
@@ -284,8 +291,10 @@ export const codeStage: StageHandler = async ({
         signal,
       })),
       ...(timedOut ? { timedOut } : {}),
-    }),
-  )
+      ...(notes ? { implementerNotes: { role, notes } } : {}),
+    }
+  })
+  const { implementerNotes, ...candidate } = sealed
   // A separate repair session is not the implementation session: the one on
   // record stays, and the next repair starts new again. A repair that may
   // continue across an effort change records the session it returned, as
@@ -309,7 +318,13 @@ export const codeStage: StageHandler = async ({
             instructionsVersion: state.setup.instructionsVersion,
           }
         : null
-  return { type: 'code.completed', role, candidate, session }
+  return {
+    type: 'code.completed',
+    role,
+    candidate,
+    session,
+    ...(implementerNotes ? { implementerNotes: implementerNotes.notes } : {}),
+  }
 }
 
 export const verifyStage: StageHandler = async (args) => {
@@ -621,10 +636,18 @@ async function reviewRoundOf(args: {
   const { step, state, key, target, candidate } = args
   // Every reviewer may read the factory's copy of each stage's result,
   // written again from its stored content for each round.
+  // The implementer's notes on this candidate get a copy of their own, as
+  // untrusted, never in the trusted context.
   const [trustedContext, stageCopies] = await Promise.all([
     target.reviewContext(candidate),
-    target.prepareStageContext?.() ?? null,
+    target.prepareStageContext?.(state.implementerNotes) ?? null,
   ])
+  const implementerNotes = state.implementerNotes
+    ? {
+        content: state.implementerNotes,
+        path: stageCopies?.implementerNotes ?? null,
+      }
+    : null
   const reviewCwd = target.reviewCwd(candidate)
   // Both reviewers read the same candidate's diff and changed-file list, and
   // may read those two files even though they sit outside the review cwd.
@@ -632,6 +655,7 @@ async function reviewRoundOf(args: {
   const readableFiles = [
     ...(changes ? [changes.diffPath, changes.changedFilesPath] : []),
     ...(stageCopies?.files ?? []),
+    ...(implementerNotes?.path ? [implementerNotes.path] : []),
   ]
   const setup = state.setup
   const baseCommit =
@@ -707,6 +731,8 @@ async function reviewRoundOf(args: {
         // In the context itself, so the prompt, the input after a command
         // and the local instructions all carry it (ADR-0040).
         blockerThreshold: setup.reviewBlockerThreshold ?? 0,
+        // In the context too, so every review form gets the same notes.
+        implementerNotes,
       },
     )
     // `{base}` and `{head}` are the run's base commit and this candidate's.
@@ -737,6 +763,8 @@ async function reviewRoundOf(args: {
                   worktree: snapshotOnly ? null : reviewCwd,
                   changes,
                   snapshots: own.trees,
+                  stageFiles: stageCopies?.files ?? [],
+                  implementerNotesFile: implementerNotes?.path ?? null,
                 }),
           )
         : trees
@@ -1529,17 +1557,19 @@ export async function readStageContextFile(args: {
     realpath(file).catch(() => {
       throw new Error(`${label} ${file}: cannot read file`)
     }),
-    realpath(args.worktree),
+    realpath(args.worktree).catch(() => {
+      throw new Error(`${label} ${args.worktree}: cannot read the worktree`)
+    }),
   ])
   const from = relative(worktree, real)
   if (!(from === '..' || from.startsWith(`..${sep}`) || isAbsolute(from)))
     throw new Error(
       `${label} ${file}: inside the candidate worktree, which the implementer can change`,
     )
+  // Not blank and within the limit, as `checkContextText` would check.
   const { content } = await readInputFile(real, {
     name: label,
     maxBytes: MAX_CONTEXT_BYTES,
   })
-  checkContextText(`stage context ${name}`, content)
   return { name, content }
 }

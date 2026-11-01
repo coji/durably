@@ -4,7 +4,9 @@ import { describe, it } from 'node:test'
 import { READ_ONLY_ROLES } from '../src/engine/providers/types.js'
 import {
   codePrompt,
+  IMPLEMENTER_NOTES_MAX_BYTES,
   OWNER_CONTEXT_LABEL,
+  parseImplementerNotes,
   parseReviewOutput,
   parseTriageOutput,
   TIMED_OUT_CANDIDATE_LINE,
@@ -257,5 +259,74 @@ describe("the owner's confirmed context in the code and repair prompts", () => {
     const without = codePrompt(args)
     assert.equal(codePrompt({ ...args, ownerContext: null }), without)
     assert.doesNotMatch(without, /OWNER CONTEXT|TRUSTED OWNER_CONTEXT/)
+  })
+})
+
+describe("the code and repair reply's NOTES section", () => {
+  const prompt = (role: 'implement' | 'repair') =>
+    codePrompt({
+      role,
+      iteration: 1,
+      repairNotes: [],
+      task: 'Fix add().',
+      rules: [],
+      ownerContext: 'CONTEXT-BODY',
+    })
+
+  it('is asked for in both prompts, as an optional section the owner-context instruction names', () => {
+    for (const role of ['implement', 'repair'] as const) {
+      const p = prompt(role)
+      assert.match(p, /Reply with a short summary of files changed\./, role)
+      assert.match(
+        p,
+        /If you left a finding, a piece of feedback or a requested change unfixed on purpose, such as one that would go against the owner context, end your reply with a section that starts with a line of its own, NOTES:, and under it name each one you left and why\. Leave the section out when you left nothing unfixed\./,
+        role,
+      )
+      // The owner-context instruction sends the agent to that section.
+      assert.match(p, /say why in your reply, under NOTES\./, role)
+    }
+  })
+
+  it('reads everything after the first line that starts with NOTES:', () => {
+    assert.equal(
+      parseImplementerNotes(
+        'Changed src/calc.js.\n\nNOTES:\n- left mul as is: the owner context keeps it\n- left the docs\n',
+      ),
+      '- left mul as is: the owner context keeps it\n- left the docs',
+    )
+    assert.equal(
+      parseImplementerNotes('Changed a.ts.\r\nnotes: left b.ts on purpose'),
+      'left b.ts on purpose',
+    )
+    // Only a line that starts with it opens the section.
+    assert.equal(
+      parseImplementerNotes('Changed a.ts; see the NOTES: none.'),
+      null,
+    )
+  })
+
+  it('is optional: a reply without it, or with an empty one, has no notes', () => {
+    assert.equal(parseImplementerNotes('Changed src/calc.js.'), null)
+    assert.equal(parseImplementerNotes(''), null)
+    assert.equal(parseImplementerNotes('Changed a.ts.\nNOTES:\n  \n'), null)
+  })
+
+  it('is cut to 4 KiB of UTF-8 at a character', () => {
+    const notes = parseImplementerNotes(`NOTES: ${'あ'.repeat(3000)}`)
+    assert.ok(notes)
+    const bytes = Buffer.from(notes, 'utf8')
+    assert.ok(bytes.length <= IMPLEMENTER_NOTES_MAX_BYTES)
+    assert.ok(bytes.length > IMPLEMENTER_NOTES_MAX_BYTES - 6)
+    // Decodes back to the same text: no character was split.
+    assert.equal(new TextDecoder('utf-8', { fatal: true }).decode(bytes), notes)
+    assert.ok(notes.endsWith('あ…'))
+    const emoji = parseImplementerNotes(`NOTES: ${'😀'.repeat(2000)}`) ?? ''
+    assert.ok(Buffer.byteLength(emoji, 'utf8') <= IMPLEMENTER_NOTES_MAX_BYTES)
+    assert.ok(emoji.endsWith('😀…'))
+    const fits = `NOTES: ${'a'.repeat(IMPLEMENTER_NOTES_MAX_BYTES)}`
+    assert.equal(
+      parseImplementerNotes(fits),
+      'a'.repeat(IMPLEMENTER_NOTES_MAX_BYTES),
+    )
   })
 })

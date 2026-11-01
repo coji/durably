@@ -107,7 +107,10 @@ function DeliveryPanel({ report: r }: { report: LoopReport }) {
   )
 }
 
-/** The candidate, the delivery, the stored inputs and the report's notes. */
+/**
+ * The candidate, the delivery, the stored inputs, the implementer's notes
+ * and the report's notes.
+ */
 export function RecordPanels({ report: r }: { report: LoopReport }) {
   const inputs = [
     ...(['task', 'spec', 'dispositions', 'context'] as const),
@@ -115,6 +118,8 @@ export function RecordPanels({ report: r }: { report: LoopReport }) {
   ]
   // Absent from a report built before the context existed.
   const context = r.inputs.context ?? null
+  // Absent from a report built before the notes were kept.
+  const implementerNotes = r.implementerNotes ?? []
   return (
     <>
       <div className="grid gap-6 md:grid-cols-2">
@@ -152,6 +157,26 @@ export function RecordPanels({ report: r }: { report: LoopReport }) {
           </div>
         ) : null}
       </Panel>
+
+      {implementerNotes.length > 0 ? (
+        <Panel title={RECORD.implementerNotes}>
+          <p className="text-fg-2 mb-3 text-xs">
+            {RECORD.implementerNotesNote}
+          </p>
+          <ol className="flex flex-col gap-3">
+            {implementerNotes.map((n) => (
+              <li key={n.iteration}>
+                <p className="text-sm">
+                  {RECORD.implementerNotesOf(n.iteration, n.role)}
+                </p>
+                <pre className="bg-sunken font-code mt-2 max-h-96 overflow-auto rounded-md px-3 py-2 text-xs whitespace-pre-wrap">
+                  {n.notes}
+                </pre>
+              </li>
+            ))}
+          </ol>
+        </Panel>
+      ) : null}
 
       {r.notes.length > 0 ? (
         <Panel title={RECORD.notes}>
