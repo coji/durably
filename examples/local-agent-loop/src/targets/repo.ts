@@ -338,6 +338,9 @@ export class RepoTarget implements Target {
       this.commitMessage(args.iteration, args.runId),
       { signal: args.signal, author: commitAuthorOf(this.commitSettings) },
     )
+    // The earlier candidate's notes do not explain this one: its copy goes
+    // now, and the next review round writes this candidate's, if any.
+    await rm(this.implementerNotesPath(), { force: true })
     const tree = await treeOf(this.config.repoPath, sealed.commit)
     const id = `candidate-${args.iteration}-${tree.slice(0, 12)}`
     return {
@@ -700,6 +703,18 @@ export class RepoTarget implements Target {
     }))
   }
 
+  /**
+   * The factory's copy of the current candidate's implementer notes, beside
+   * the stage results' copies. Named with a dot, which no stage context's
+   * name has, so it never takes the place of a stage result's copy.
+   */
+  private implementerNotesPath(): string {
+    return join(
+      stageContextDirOf(this.runRoot),
+      'implementer-notes.untrusted.txt',
+    )
+  }
+
   async prepareStageContext(implementerNotes: string | null): Promise<{
     dir: string
     files: string[]
@@ -707,9 +722,7 @@ export class RepoTarget implements Target {
   } | null> {
     const copies = this.stageCopies()
     const dir = stageContextDirOf(this.runRoot)
-    // Named with a dot, which no stage context's name has, so it never
-    // takes the place of a stage result's copy.
-    const notesPath = join(dir, 'implementer-notes.untrusted.txt')
+    const notesPath = this.implementerNotesPath()
     const notesCopy =
       implementerNotes === null
         ? null

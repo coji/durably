@@ -256,7 +256,10 @@ export interface FakeReviewCall {
   role: AgentRole
   round: number
   workdir: string
-  /** The input exactly as received; null unless the role has a command. */
+  /**
+   * The input exactly as received; null unless the role has a command, or
+   * is a spec fix, a repair or a recorded plain review.
+   */
   input: string | null
   /**
    * Every file in the working directory when a command-mode call started,
@@ -278,22 +281,31 @@ export interface FakeReviewCall {
 
 /** The calls of the recording in progress; null when none is. */
 let recording: FakeReviewCall[] | null = null
+/** Whether the recording in progress keeps plain review calls too. */
+let recordingPlainReviews = false
 
 /**
  * Keep every configured review call from now until `stop`, in call order.
- * One recording at a time: starting one ends the one before. Only tests
- * record, so a long-running fake worker keeps nothing.
+ * With `plainReviews`, a review call without settings of its own is kept
+ * too, with its prompt as its input. One recording at a time: starting one
+ * ends the one before. Only tests record, so a long-running fake worker
+ * keeps nothing.
  */
-export function recordFakeReviewCalls(): {
+export function recordFakeReviewCalls(
+  options: { plainReviews?: boolean } = {},
+): {
   calls: FakeReviewCall[]
   stop: () => void
 } {
   const calls: FakeReviewCall[] = []
   recording = calls
+  recordingPlainReviews = options.plainReviews ?? false
   return {
     calls,
     stop: () => {
-      if (recording === calls) recording = null
+      if (recording !== calls) return
+      recording = null
+      recordingPlainReviews = false
     },
   }
 }
@@ -642,8 +654,14 @@ export class FakeProvider implements AgentProvider {
   ): Promise<AgentResult> {
     const review = options.review
     // A spec fix or a code repair has no `review` settings, but a recording
-    // test still wants its prompt, to see what feedback it was handed.
-    const promptOnly = options.role === 'spec-fix' || options.role === 'repair'
+    // test still wants its prompt, to see what feedback it was handed; so
+    // does one that asked for plain reviews.
+    const promptOnly =
+      options.role === 'spec-fix' ||
+      options.role === 'repair' ||
+      (recordingPlainReviews &&
+        !review &&
+        (options.role === 'review-a' || options.role === 'review-b'))
     // Recorded before anything else, so a call that is then cancelled is on
     // record too.
     const record: FakeReviewCall | null =

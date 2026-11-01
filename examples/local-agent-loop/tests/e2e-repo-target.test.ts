@@ -5011,6 +5011,11 @@ describe('owner context and stage context', { timeout: 240000 }, () => {
     new RegExp(
       `<<<TRUSTED ${label} ([0-9a-f]{16})>>>\\n([\\s\\S]*?)\\n<<<END TRUSTED ${label} \\1>>>`,
     ).exec(text)?.[2] ?? null
+  /** The text between an untrusted block's fences, or null. */
+  const untrustedBody = (text: string, label: string) =>
+    new RegExp(
+      `<<<UNTRUSTED ${label} ([0-9a-f]{16})>>>\\n([\\s\\S]*?)\\n<<<END UNTRUSTED ${label} \\1>>>`,
+    ).exec(text)?.[2] ?? null
 
   it('hands the stored context to the repairer and to a command and a local-instructions reviewer as trusted, and reports it', async () => {
     const root = await mkdtemp(join(tmpdir(), 'repo-owner-context-'))
@@ -5413,6 +5418,18 @@ describe('owner context and stage context', { timeout: 240000 }, () => {
       assert.ok(!options.readableFiles?.includes(notesCopy))
     }
     assert.ok(!existsSync(notesCopy))
+    // Nor does one sealed after them, before any review round of its own.
+    await review('stage:6:review', replayed, NOTES)
+    seen.splice(0)
+    assert.equal(await readFile(notesCopy, 'utf8'), NOTES)
+    await writeFile(join(worktree, 'src', 'calc.js'), 'export const x = 2\n')
+    await sealedBy.seal({
+      iteration: 2,
+      runId: 'run-1',
+      attemptId: 'b',
+      signal: new AbortController().signal,
+    })
+    assert.ok(!existsSync(notesCopy))
   })
 
   it("reads a code reply's NOTES once, in its candidate step, and replays them from there", async () => {
@@ -5716,6 +5733,72 @@ describe('owner context and stage context', { timeout: 240000 }, () => {
         (await buildReport(durably, run.id)).implementerNotes,
         expected,
       )
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
+  it("hands a fake reply's NOTES to plain prompt reviewers as untrusted, never trusted context or dispositions", async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-plain-implementer-notes-'))
+    const repo = await seedRepo(root)
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    recording = recordFakeReviewCalls({ plainReviews: true })
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    const NOTES = 'PLAIN-NOTES: left mul() as is; the owner context keeps it.'
+    try {
+      const input = configuredRun(
+        repo,
+        {},
+        {
+          fakeScenario: {
+            failIterations: 0,
+            codeReplies: [
+              `fake: fixed add()\n\n**Notes:** none\n\nNOTES:\n${NOTES}`,
+            ],
+          },
+        },
+      )
+      const run = await durably.jobs.agentLoop.trigger({
+        ...input,
+        target: {
+          ...input.target,
+          dispositions: DISPOSITIONS,
+          context: CONTEXT,
+        },
+      })
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'completed',
+        150000,
+        'run with plain reviewers and notes completes',
+      )
+      const output = (await durably.getRun(run.id))?.output as {
+        conclusion: string
+        workdir: string
+      }
+      assert.equal(output.conclusion, 'approved')
+      const reviews = endedCalls(output.workdir).filter(
+        (c) => c.role === 'review-a' || c.role === 'review-b',
+      )
+      assert.deepEqual(reviews.map((c) => c.role).sort(), [
+        'review-a',
+        'review-b',
+      ])
+      for (const { input: prompt } of reviews) {
+        assert.ok(prompt)
+        assert.equal(untrustedBody(prompt, 'REPAIR_NOTES'), NOTES)
+        const trusted = prompt.slice(
+          prompt.indexOf('TRUSTED CONTEXT'),
+          prompt.indexOf('IMPLEMENTER NOTES'),
+        )
+        assert.ok(trusted.includes(CONTEXT.trimEnd()))
+        assert.ok(!trusted.includes(NOTES))
+        assert.equal(untrustedBody(prompt, 'DISPOSITIONS'), DISPOSITIONS)
+      }
+      assert.deepEqual((await buildReport(durably, run.id)).implementerNotes, [
+        { iteration: 1, role: 'implement', notes: NOTES },
+      ])
     } finally {
       await durably.stop()
       await durably.db.destroy()
