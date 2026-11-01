@@ -1,7 +1,8 @@
 /** Persistable stage results consumed by the pure reducer. */
 import { z } from 'zod'
 
-import { IMPLEMENTER_NOTES_MAX_BYTES } from './prompts.js'
+/** The most of a code or repair reply's NOTES section a run stores, in UTF-8 bytes. */
+export const IMPLEMENTER_NOTES_MAX_BYTES = 4 * 1024
 
 /** A repository candidate's diff files and size, written when it was sealed. */
 export const candidateChangesSchema = z.object({

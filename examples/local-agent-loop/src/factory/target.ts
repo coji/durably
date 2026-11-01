@@ -395,7 +395,8 @@ export interface Target {
    * repair reply, get a copy of their own in the same directory, apart from
    * the stage results: the implementer wrote them, so they keep that
    * provenance and are never trusted context. Without notes, an earlier
-   * candidate's copy is removed.
+   * candidate's copy is removed; a repository target also removes it when
+   * it seals a new candidate.
    */
   prepareStageContext?(implementerNotes: string | null): Promise<{
     dir: string

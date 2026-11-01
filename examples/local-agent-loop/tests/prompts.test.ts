@@ -2,9 +2,9 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
 import { READ_ONLY_ROLES } from '../src/engine/providers/types.js'
+import { IMPLEMENTER_NOTES_MAX_BYTES } from '../src/factory/events.js'
 import {
   codePrompt,
-  IMPLEMENTER_NOTES_MAX_BYTES,
   OWNER_CONTEXT_LABEL,
   parseImplementerNotes,
   parseReviewOutput,
@@ -337,6 +337,54 @@ describe("the code and repair reply's NOTES section", () => {
     assert.equal(parseImplementerNotes('Notes about a.ts: none changed'), null)
   })
 
+  it('reads from a NOTES: line of its own before any earlier Markdown or generic heading', () => {
+    for (const earlier of ['## Notes', '**Notes:**', 'Notes: on the tests']) {
+      // However long the text under the earlier heading, the section the
+      // prompt asked for is the one read, within the cap.
+      const reply = `Changed a.ts.\n\n${earlier}\n${'x'.repeat(IMPLEMENTER_NOTES_MAX_BYTES + 100)}\n\nNOTES:\n- left b.ts on purpose`
+      assert.equal(
+        parseImplementerNotes(reply),
+        '- left b.ts on purpose',
+        earlier,
+      )
+    }
+    for (const exact of ['NOTES：', 'notes:', 'Notes:   ']) {
+      assert.equal(
+        parseImplementerNotes(
+          `## Notes\nthe tests\n${exact}\n- left b.ts on purpose`,
+        ),
+        '- left b.ts on purpose',
+        exact,
+      )
+    }
+    // The first of several such lines opens the section; later ones are in it.
+    assert.equal(
+      parseImplementerNotes('**Notes:** x\nNOTES:\n- left b.ts\nNOTES:\nmore'),
+      '- left b.ts\nNOTES:\nmore',
+    )
+    // An indented one is in the body, as before: the Markdown heading opens.
+    assert.equal(
+      parseImplementerNotes('## Notes\n- left b.ts\n  NOTES:\n  more'),
+      '- left b.ts\n  NOTES:\n  more',
+    )
+  })
+
+  it('does not read a list item, single emphasis or a qualified NOTES as a heading', () => {
+    for (const heading of [
+      '- NOTES:',
+      '*NOTES:*',
+      'NOTES (left unfixed):',
+      '  NOTES:',
+      '\tNOTES:',
+    ]) {
+      assert.equal(
+        parseImplementerNotes(`Changed a.ts.\n${heading}\n- left b.ts`),
+        null,
+        heading,
+      )
+    }
+  })
+
   it('is optional: a reply without it, or with an empty one, has no notes', () => {
     assert.equal(parseImplementerNotes('Changed src/calc.js.'), null)
     assert.equal(parseImplementerNotes(''), null)
@@ -349,11 +397,29 @@ describe("the code and repair reply's NOTES section", () => {
       'なし',
       'なし。',
       '特になし',
+      '特になし。',
+      '特にありません',
+      '特にありません。',
+      '- none',
+      '* None.',
+      '_None_',
+      '*none*',
+      '**None**',
     ]) {
       assert.equal(
         parseImplementerNotes(`Changed a.ts.\nNOTES: ${none}`),
         null,
         none,
+      )
+    }
+  })
+
+  it('keeps a section that says none and then more', () => {
+    for (const notes of ['- none\n- left b.ts', 'none of the tests changed']) {
+      assert.equal(
+        parseImplementerNotes(`Changed a.ts.\nNOTES:\n${notes}`),
+        notes,
+        notes,
       )
     }
   })
