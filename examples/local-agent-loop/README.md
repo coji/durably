@@ -680,7 +680,7 @@ report の確定値（所要時間、工程ごとの時間）とは別に扱い�
 2. **レビューの要点**：report の `reviewHighlights` です。最後より前のレビューで
    出た直すべき指摘を、最後のレビューが通過したときは「直した指摘」、そうでなければ
    「これまでの指摘」として、最後のレビューの助言を「残した指摘」として、件数と題名を
-   出します。最後のレビューが通過したと言えるのは、両方のレビュアーの判定がそろい、
+   出します。採点値のある指摘は、題名の横に頻度と深刻さを添えます。最後のレビューが通過したと言えるのは、両方のレビュアーの判定がそろい、
    どちらも通過したときだけです。通らなかった run では、そこで出た直すべき指摘を
    「残っている直すべき指摘」として別に出し、判定がそろっていない回はそう書きます。
    指摘を回をまたいで突き合わせることはしません。見出しの件数は report と同じ指摘の
@@ -1285,7 +1285,11 @@ reportの要約、`demo compare` の設定ごとの行、`demo compare --trend` 
   引き継ぎます。この設定ができる前に保存したrunとその修正runには規則を入れません。
   レビューの基準が変わるので、閾値は0も含めて `configVersion` に入ります。
 - reportは固定した閾値（JSONの `reviewBlockerThreshold`、Markdownの
-  `review blocker threshold` の行）を出します。
+  `review blocker threshold` の行）を出します。JSONの `reviewBlockerRuleLenses` は
+  規則が届いたレビュアー（`output` が `findings-json` で、レビューの記録があるもの）です。
+  Markdownの行は届いたレビュアーと規則の対象外を書き、どのレビューにも届いていない
+  run（コードレビューがすべて `verdict`、または最初のレビューの前に止まったrun）では
+  そう書きます。
 
 ### 設定の事前確認（preflight）
 
@@ -1578,7 +1582,8 @@ effortに加えて、呼び出し方と返答の読み方を役割ごとに書�
   `file` が空でない文字列、`line` が1以上の整数、`likelihood` と `impact` が
   1から10の整数でなければなりません（前述の「レビューのblockerを頻度と深刻さで決める」）。ファイル全体への
   指摘は `line` を省きます（`0` は形が違う指摘です）。`null` は「省いた」扱いにはせず
-  形が違う指摘として止めます。返答の最終行は改行1つ（`\n` または `\r\n`）を
+  形が違う指摘として止めます。レビュアーに示す返答の形にも `likelihood` と `impact` を
+  省ける欄として載せ、値のない欄は省いて `null` を書かないよう伝えます。返答の最終行は改行1つ（`\n` または `\r\n`）を
   除いて `REVIEW_STATUS: COMPLETE` ちょうどでなければならず、末尾の空白や
   タブがあれば完了行として認めません。`blocker` が一件でも
   あれば `needsChanges` で、`blocker` だけを `- [file:line] title — body` の形で
@@ -2224,7 +2229,8 @@ pnpm --filter example-local-agent-loop demo report --run <runId> --format md \
   runの出力（`output.reviews`）には指摘を入れません。Markdownと画面には、総件数と
   保存した指摘のタイトル、省いた件数だけを出し、本文、ファイル、行番号は出しません。
   Markdownでは、採点値のある指摘のタイトルの後ろに `(likelihood 2, impact 3)` の
-  形で付けます。
+  形で付けます。レビューの要点（`reviewHighlights` の各群の `kept`）の題名にも同じく
+  付けます。
   notesの表示は変わらないので、`blocker` の場所と本文は従来どおりnotesに出ます
 - **Verification logs**: 検証の試行ごとの終了コードと、`stdout.log` / `stderr.log` の
   パス。JSONでは `attempts[].measurement.verificationLog` で、`exitCode`、
