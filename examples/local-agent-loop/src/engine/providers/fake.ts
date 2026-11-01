@@ -303,7 +303,9 @@ export function recordFakeReviewCalls(
   return {
     calls,
     stop: () => {
-      if (recording === calls) recording = null
+      if (recording !== calls) return
+      recording = null
+      recordingPlainReviews = false
     },
   }
 }

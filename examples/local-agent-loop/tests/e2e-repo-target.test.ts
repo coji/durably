@@ -5011,6 +5011,11 @@ describe('owner context and stage context', { timeout: 240000 }, () => {
     new RegExp(
       `<<<TRUSTED ${label} ([0-9a-f]{16})>>>\\n([\\s\\S]*?)\\n<<<END TRUSTED ${label} \\1>>>`,
     ).exec(text)?.[2] ?? null
+  /** The text between an untrusted block's fences, or null. */
+  const untrustedBody = (text: string, label: string) =>
+    new RegExp(
+      `<<<UNTRUSTED ${label} ([0-9a-f]{16})>>>\\n([\\s\\S]*?)\\n<<<END UNTRUSTED ${label} \\1>>>`,
+    ).exec(text)?.[2] ?? null
 
   it('hands the stored context to the repairer and to a command and a local-instructions reviewer as trusted, and reports it', async () => {
     const root = await mkdtemp(join(tmpdir(), 'repo-owner-context-'))
@@ -5782,25 +5787,14 @@ describe('owner context and stage context', { timeout: 240000 }, () => {
       ])
       for (const { input: prompt } of reviews) {
         assert.ok(prompt)
-        assert.match(
-          prompt,
-          new RegExp(
-            `<<<UNTRUSTED REPAIR_NOTES ([0-9a-f]{16})>>>\\n${NOTES.replace(/[().]/g, '\\$&')}\\n<<<END UNTRUSTED REPAIR_NOTES \\1>>>`,
-          ),
-        )
+        assert.equal(untrustedBody(prompt, 'REPAIR_NOTES'), NOTES)
         const trusted = prompt.slice(
           prompt.indexOf('TRUSTED CONTEXT'),
           prompt.indexOf('IMPLEMENTER NOTES'),
         )
         assert.ok(trusted.includes(CONTEXT.trimEnd()))
         assert.ok(!trusted.includes(NOTES))
-        assert.ok(
-          !(
-            /<<<UNTRUSTED DISPOSITIONS [0-9a-f]{16}>>>\n([\s\S]*?)\n<<<END/.exec(
-              prompt,
-            )?.[1] ?? ''
-          ).includes(NOTES),
-        )
+        assert.equal(untrustedBody(prompt, 'DISPOSITIONS'), DISPOSITIONS)
       }
       assert.deepEqual((await buildReport(durably, run.id)).implementerNotes, [
         { iteration: 1, role: 'implement', notes: NOTES },

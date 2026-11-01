@@ -1621,6 +1621,7 @@ describe("the implementer's notes in a review", () => {
     lens: 'correctness' | 'edge-cases',
     context: string,
     notes: { content: string; path: string | null } | null,
+    output?: 'verdict' | 'findings-json',
   ) =>
     reviewPrompt(
       lens,
@@ -1629,7 +1630,7 @@ describe("the implementer's notes in a review", () => {
       withInputs.untrustedInputs(lens),
       null,
       null,
-      { implementerNotes: notes },
+      { implementerNotes: notes, ...(output ? { output } : {}) },
     )
 
   it('are an untrusted, hash-fenced block of their own, after the trusted context, for both reviewers', () => {
@@ -1687,14 +1688,11 @@ describe("the implementer's notes in a review", () => {
       ['verdict', 'findings-json'],
       ['findings-json', 'verdict'],
     ] as const) {
-      const prompt = reviewPrompt(
+      const prompt = review(
         'correctness',
         trusted,
-        withInputs.reviewRules(),
-        withInputs.untrustedInputs('correctness'),
-        null,
-        null,
-        { output, implementerNotes: { content: NOTES, path: null } },
+        { content: NOTES, path: null },
+        output,
       )
       const [check, definition] = STEERING_LINES[output]
       assert.ok(prompt.split('\n').includes(check), output)
@@ -1713,15 +1711,7 @@ describe("the implementer's notes in a review", () => {
       assert.ok(!preamble.includes(STEERING_LINES[other][1]), output)
       assert.equal(blockBody(prompt, REPAIR_NOTES_LABEL), NOTES, output)
       // Without notes, the same CHECK line and no preamble.
-      const without = reviewPrompt(
-        'correctness',
-        trusted,
-        withInputs.reviewRules(),
-        withInputs.untrustedInputs('correctness'),
-        null,
-        null,
-        { output },
-      )
+      const without = review('correctness', trusted, null, output)
       assert.ok(without.split('\n').includes(check), output)
       assert.doesNotMatch(without, /IMPLEMENTER NOTES|REPAIR_NOTES/, output)
     }
