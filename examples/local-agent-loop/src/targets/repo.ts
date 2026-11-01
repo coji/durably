@@ -13,7 +13,7 @@
  * still be the candidate's commit. Like the directory-hash check on the sample
  * target, this detects an unintended change; it is not a sandbox.
  */
-import { createHash } from 'node:crypto'
+import { createHash, type Hash } from 'node:crypto'
 import { createReadStream, constants as fsConstants, existsSync } from 'node:fs'
 import {
   copyFile,
@@ -1010,9 +1010,10 @@ export async function writeTestProbeBaseRecord(
 /**
  * Each of `paths`, relative to `dir`, with what it holds: a file by the
  * sha256 of its bytes, a symbolic link by its target, and a directory, such
- * as a nested repository `untrackedPaths` names with a trailing `/`, by the
- * sorted list of what is under it. A path that cannot be read is `missing`.
- * One at a time, so a setup that left many files opens one at once.
+ * as a nested repository `untrackedPaths` names with a trailing `/`, by
+ * everything under it (`hashTree`), so an edit inside it shows. A path that
+ * cannot be read is `missing`. One at a time, so a setup that left many
+ * files opens one at once.
  */
 export async function fingerprintPaths(
   dir: string,
@@ -1025,16 +1026,48 @@ export async function fingerprintPaths(
       .then(async (info) => {
         if (info.isSymbolicLink()) return `link:${await readlink(full)}`
         if (info.isDirectory()) {
-          const names = (await readdir(full, { recursive: true })).sort()
-          return `dir:${createHash('sha256').update(names.join('\0')).digest('hex')}`
+          const hash = createHash('sha256')
+          await hashTree(full, hash)
+          return `dir:${hash.digest('hex')}`
         }
-        const hash = createHash('sha256')
-        await pipeline(createReadStream(full), hash)
-        return `file:${hash.digest('hex')}`
+        return `file:${await hashFile(full)}`
       })
       .catch(() => 'missing')
   }
   return prints
+}
+
+/** The sha256 of a file's bytes, read as a stream. */
+async function hashFile(full: string): Promise<string> {
+  const hash = createHash('sha256')
+  await pipeline(createReadStream(full), hash)
+  return hash.digest('hex')
+}
+
+/**
+ * Feed `hash` everything under the directory `full`, depth first in sorted
+ * order and skipping nothing: each entry's name with a file's sha256, a
+ * link's target, or a directory's own entries, and any other kind by name.
+ * One file is open at a time.
+ */
+async function hashTree(full: string, hash: Hash): Promise<void> {
+  const entries = (await readdir(full, { withFileTypes: true })).sort((a, b) =>
+    a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+  )
+  for (const entry of entries) {
+    const path = join(full, entry.name)
+    if (entry.isSymbolicLink()) {
+      hash.update(`link\0${entry.name}\0${await readlink(path)}\0`)
+    } else if (entry.isDirectory()) {
+      hash.update(`dir\0${entry.name}\0`)
+      await hashTree(path, hash)
+      hash.update('end\0')
+    } else if (entry.isFile()) {
+      hash.update(`file\0${entry.name}\0${await hashFile(path)}\0`)
+    } else {
+      hash.update(`other\0${entry.name}\0`)
+    }
+  }
 }
 
 /**

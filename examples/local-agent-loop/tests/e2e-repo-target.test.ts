@@ -6352,6 +6352,86 @@ describe('the test probe', { timeout: 300000 }, () => {
     assert.equal(await setupRuns(), 4)
   })
 
+  it('makes the base worktree again when a test edited a file inside a nested repository its setup made', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-test-probe-nested-'))
+    const repo = await seedRepo(root)
+    const runRoot = join(root, 'state', 'runs', 'run-1')
+    const setupLog = join(root, 'setup.log')
+    // An untracked nested repository with a committed file, which git
+    // reports as one directory; each setup run is counted.
+    const setup = [
+      "const fs = require('node:fs')",
+      "const { execFileSync } = require('node:child_process')",
+      "const g = (...a) => execFileSync('git', ['-C', 'nested', '-c', 'user.name=t', '-c', 'user.email=t@t', ...a])",
+      "fs.mkdirSync('nested', { recursive: true })",
+      "g('init', '-q')",
+      "fs.writeFileSync('nested/data.txt', 'd')",
+      "g('add', '-A')",
+      "g('commit', '-q', '-m', 'fixture')",
+      `fs.appendFileSync(${JSON.stringify(setupLog)}, 'x')`,
+    ].join('\n')
+    // Prints the file, then, on the base only, edits it when its test file
+    // says so: the agent's seal commits the nested repository as a gitlink,
+    // which a reset does not put back.
+    const reader = [
+      "const fs = require('node:fs')",
+      "const f = 'nested/data.txt'",
+      "console.log(`data=${fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : 'missing'}`)",
+      "const edit = fs.readFileSync(process.argv[1], 'utf8').includes('edit')",
+      "if (edit && process.cwd().endsWith('base-work')) fs.writeFileSync(f, 'changed')",
+    ].join('\n')
+    const config = await prepareRepoTarget({
+      repoPath: repo,
+      baseRef: 'HEAD',
+      branch: `factory/probe-${randomUUID()}`,
+      root: runRoot,
+      task: 'x',
+      spec: null,
+      dispositions: null,
+      issue: null,
+      checkCommand: ['node', '--test'],
+      setupCommand: ['node', '-e', setup],
+      testProbe: [
+        {
+          glob: 'test/**/*.test.js',
+          command: ['node', '-e', reader, '{files}'],
+        },
+      ],
+      checkTimeoutMs: 10000,
+      publish: false,
+      commit: DEFAULT_COMMIT_SETTINGS,
+    })
+    const target = createTarget(config)
+    const setupRuns = async () => (await readFile(setupLog, 'utf8')).length
+    assert.equal(await setupRuns(), 2)
+    const probeWith = async (iteration: number, body: string) => {
+      await writeFile(join(config.workdir, 'test', 'a.test.js'), body)
+      const candidate = await target.seal({
+        iteration,
+        runId: 'run-1',
+        attemptId: 'a',
+        signal: new AbortController().signal,
+      })
+      const result = await runTestProbe({
+        config,
+        candidate,
+        runRoot,
+        assertIntact: () => target.assertIntact(candidate),
+        signal: new AbortController().signal,
+      })
+      await target.assertIntact(candidate)
+      return result.files[0]?.baseOutputTail
+    }
+    // The first candidate's test edits the file inside the nested repository.
+    assert.equal(await probeWith(1, '// edit 1\n'), 'data=d')
+    // The next one sees setup's content, on a base set up again.
+    assert.equal(await probeWith(2, '// keep 2\n'), 'data=d')
+    assert.equal(await setupRuns(), 3)
+    // A base its tests left as setup did is not set up again.
+    assert.equal(await probeWith(3, '// keep 3\n'), 'data=d')
+    assert.equal(await setupRuns(), 3)
+  })
+
   it('prunes the registration of a base worktree whose directory a dying worker had already removed, also of a run no longer recorded', async () => {
     const root = await mkdtemp(join(tmpdir(), 'repo-test-probe-stale-'))
     const repo = await seedRepo(root)

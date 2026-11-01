@@ -211,10 +211,21 @@ async function worktreeRegistered(repo: string, dir: string): Promise<boolean> {
     if (dirname(at) === at) break
     rest = rest ? join(basename(at), rest) : basename(at)
   }
-  const out = await git(repo, ['worktree', 'list', '--porcelain', '-z'])
+  const out = await git(repo, ['worktree', 'list', '--porcelain'])
+  return porcelainWorktreePaths(out).some((path) => wanted.has(path))
+}
+
+/**
+ * The paths a `git worktree list --porcelain` output names, one per
+ * `worktree <path>` line. Without `-z`, which needs git 2.36, the lines are
+ * newline-separated, so a path that holds a newline cannot be read back;
+ * such a path is not supported and never matches.
+ */
+export function porcelainWorktreePaths(out: string): string[] {
   return out
-    .split('\0')
-    .some((line) => line.startsWith('worktree ') && wanted.has(line.slice(9)))
+    .split('\n')
+    .filter((line) => line.startsWith('worktree '))
+    .map((line) => line.slice(9))
 }
 
 /**

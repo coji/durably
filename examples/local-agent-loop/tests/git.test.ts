@@ -23,6 +23,7 @@ import {
   diffStat,
   isDirty,
   discardWorktree,
+  porcelainWorktreePaths,
   writePatch,
   readFileAt,
   removeWorktree,
@@ -479,5 +480,30 @@ describe('git engine', () => {
       'fix: Fix add() for {runId} inputs [run-9#2] {other}',
     )
     assert.equal(squashedBranchFor('run-9'), 'factory/run-9-squashed')
+  })
+
+  it('reads the worktree paths of a porcelain list without -z', () => {
+    const out = [
+      'worktree /repo',
+      'HEAD 0123456789abcdef0123456789abcdef01234567',
+      'branch refs/heads/main',
+      '',
+      'worktree /runs/run 1/base-work',
+      'HEAD 0123456789abcdef0123456789abcdef01234567',
+      'detached',
+      'locked initializing',
+      '',
+      'worktree /runs/gone',
+      'HEAD 0123456789abcdef0123456789abcdef01234567',
+      'detached',
+      'prunable gitdir file points to non-existent location',
+      '',
+    ].join('\n')
+    assert.deepEqual(porcelainWorktreePaths(out), [
+      '/repo',
+      '/runs/run 1/base-work',
+      '/runs/gone',
+    ])
+    assert.deepEqual(porcelainWorktreePaths(''), [])
   })
 })
