@@ -484,15 +484,12 @@ export function repoNames(
   const depth = new Map([...parts.keys()].map((key) => [key, 1]))
   const nameOf = (key: string) =>
     (parts.get(key) ?? []).slice(-(depth.get(key) ?? 1)).join('/') || key
-  const byName = () => {
-    const by = new Map<string, string[]>()
-    for (const key of parts.keys())
-      by.set(nameOf(key), [...(by.get(nameOf(key)) ?? []), key])
-    return by
-  }
   for (let grew = true; grew;) {
     grew = false
-    for (const [name, same] of byName())
+    const byName = new Map<string, string[]>()
+    for (const key of parts.keys())
+      byName.set(nameOf(key), [...(byName.get(nameOf(key)) ?? []), key])
+    for (const [name, same] of byName)
       if (same.length > 1 || taken.has(name))
         for (const key of same) {
           const d = depth.get(key) ?? 1
@@ -502,11 +499,27 @@ export function repoNames(
           }
         }
   }
-  // Two configured names can be the same all the way up; each is then its
-  // path, as is a name still the same as one the page always has.
-  for (const [name, same] of byName())
-    for (const key of same)
-      names.set(key, same.length > 1 || taken.has(name) ? key : name)
+  // Two configured names can be the same all the way up, or a configured
+  // name can be another repository's path; each is then its own path, as is
+  // a name still the same as one the page always has. Paths never repeat,
+  // so this ends with every name told apart.
+  const named = new Map(
+    [...parts.keys()].map((key) => {
+      const name = nameOf(key)
+      return [key, taken.has(name) ? key : name]
+    }),
+  )
+  for (let moved = true; moved;) {
+    moved = false
+    const uses = new Map<string, number>()
+    for (const name of named.values()) uses.set(name, (uses.get(name) ?? 0) + 1)
+    for (const [key, name] of named)
+      if (name !== key && (uses.get(name) ?? 0) > 1) {
+        named.set(key, key)
+        moved = true
+      }
+  }
+  for (const [key, name] of named) names.set(key, name)
   return names
 }
 

@@ -485,6 +485,20 @@ describe('repositories', () => {
         [SUBJECT_REPO]: REPO.subject,
       },
     )
+    // A configured name that is another repository's path is a path too.
+    assert.deepEqual(
+      Object.fromEntries(
+        repoNames(
+          ['/a', '/b', '/c'],
+          new Map([
+            ['/a', 'x'],
+            ['/b', 'x'],
+            ['/c', '/a'],
+          ]),
+        ),
+      ),
+      { '/a': '/a', '/b': '/b', '/c': '/c' },
+    )
   })
 
   it("takes a repository's name from its newest run that has one, and keeps ?repo= its path", () => {
