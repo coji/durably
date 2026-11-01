@@ -2946,6 +2946,7 @@ describe('verification and review side by side', { timeout: 300000 }, () => {
             ...(args.parallelReview !== undefined
               ? { parallelReview: args.parallelReview }
               : {}),
+            ...(args.review ? { reviewBlockerThreshold: 5 } : {}),
           },
           maxIterations: args.maxIterations,
           context: 'reuse',
@@ -3016,12 +3017,15 @@ describe('verification and review side by side', { timeout: 300000 }, () => {
         maxIterations: 1,
       })
       // The check fails while both reviews still run: both are cancelled.
+      // One is a findings-json review, which a cancelled call never counts
+      // as having been told the blocker rule (ADR-0040).
       ids['cancelled'] = await start({
         parallelReview: true,
         waitFor: 'started',
         failIterations: 1,
         maxIterations: 1,
         latencyMs: 10000,
+        review: true,
       })
       // The same, with reviews that report their session and usage while
       // they work: the stopped calls keep them (ADR-0034).
@@ -3215,6 +3219,11 @@ describe('verification and review side by side', { timeout: 300000 }, () => {
         assert.equal(saved.cancelled, 'superseded-by-verify')
       }
       assert.equal(cancelledReport.reviewRounds[0]?.status, 'cancelled')
+      assert.deepEqual(cancelledReport.reviewBlockerRuleLenses, [])
+      assert.match(
+        reportToMarkdown(cancelledReport),
+        /review blocker threshold: \d+ \(.*reached no review/,
+      )
       assert.equal(
         cancelledReport.reviewRounds[0]?.reason,
         'superseded-by-verify',

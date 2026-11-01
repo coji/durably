@@ -1353,10 +1353,13 @@ export async function buildReport(
   const discardedReviews = discardedReviewsOf(rows, reviewRounds)
   const reviews = lastReviews(run.output, waits, countedRounds)
   // The rule is told only to a findings-json code review (ADR-0040), and
-  // reached it only once one of its reviews is recorded.
+  // reached it only once one of its reviews is recorded. A cancelled review
+  // may never have been sent its prompt, so it does not count.
   const reviewInvocations = setupOutput ? setupOutput.review : input?.review
   const reviewed = new Set(
-    [...reviewRounds.flatMap((r) => r.reviews), ...reviews].map((r) => r.lens),
+    [...reviewRounds.flatMap((r) => r.reviews), ...reviews]
+      .filter((r) => r.status !== 'cancelled')
+      .map((r) => r.lens),
   )
   const reviewBlockerRuleLenses =
     reviewBlockerThreshold != null && reviewBlockerThreshold > 0
