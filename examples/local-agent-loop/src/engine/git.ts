@@ -147,15 +147,28 @@ export function describeGitFailure(error: unknown): string {
 
 /**
  * A failed `git worktree remove` of `dir` as one line: git's words, or, when
- * it was stopped at its limit, that `dir` may be partly removed and how to
- * finish. `demo prune --apply` continues only while git still lists the
- * worktree: once git has deleted `dir/.git`, it no longer takes it as one,
- * and the directory is not removed any other way, so a person does.
+ * it was stopped at its limit, that `dir` may be partly removed. `listed`
+ * says whether git still lists `dir` as a worktree afterwards, null when it
+ * could not tell: while it does, `demo prune --apply` continues the removal;
+ * once git has deleted `dir/.git` it no longer does, and since the directory
+ * is not removed any other way (ADR-0028), a person removes it.
  */
-function describeRemoveFailure(error: unknown, dir: string): string {
-  return error instanceof SpawnTimeoutError
-    ? `git worktree remove was stopped at its ${formatDuration(error.timeoutMs, 'en')} limit before it finished; ${dir} may be partly removed. If git worktree list still names it, ${DEMO} prune --apply continues the removal; otherwise remove the directory by hand`
-    : describeGitFailure(error)
+function describeRemoveFailure(
+  error: unknown,
+  dir: string,
+  listed: boolean | null,
+): string {
+  const failure =
+    error instanceof SpawnTimeoutError
+      ? `git worktree remove was stopped at its ${formatDuration(error.timeoutMs, 'en')} limit before it finished; ${dir} may be partly removed`
+      : describeGitFailure(error)
+  if (listed === false)
+    return `${failure}. git no longer lists ${dir} as a worktree, so neither archive nor ${DEMO} prune --apply can remove it: remove the directory by hand`
+  if (error instanceof SpawnTimeoutError)
+    return listed
+      ? `${failure}. git still lists it, so ${DEMO} prune --apply continues the removal`
+      : `${failure}. If git worktree list in the run's repository still names it, ${DEMO} prune --apply continues the removal; otherwise remove the directory by hand`
+  return failure
 }
 
 /**
@@ -165,27 +178,36 @@ function describeRemoveFailure(error: unknown, dir: string): string {
  * removal succeeds. Returns why git could not, or null. The directory is
  * never removed any other way: a worktree git refuses to remove is left for
  * a person to look at. A removal stopped at `timeoutMs` may have deleted
- * part of the directory; the warning says so and how to finish.
+ * part of the directory; the warning says so, and whether a retry can
+ * still finish it or a person removes it.
  */
 export async function forceRemoveWorktree(
   repo: string,
   dir: string,
   timeoutMs = WORKTREE_REMOVE_TIMEOUT_MS,
 ): Promise<string | null> {
-  let failure: string | null = null
+  let refused: unknown = null
   if (existsSync(dir)) {
     try {
       await git(repo, ['worktree', 'remove', '--force', dir], { timeoutMs })
     } catch (error) {
-      failure = describeRemoveFailure(error, dir)
+      refused = error
     }
   }
   try {
     await git(repo, ['worktree', 'prune'])
   } catch (error) {
-    failure ??= describeGitFailure(error)
+    return refused
+      ? describeRemoveFailure(refused, dir, null)
+      : describeGitFailure(error)
   }
-  return failure
+  if (!refused) return null
+  // Whether a retry can still finish it: git refuses a directory it no
+  // longer lists, as after a removal stopped once dir/.git was deleted.
+  const listed = existsSync(dir)
+    ? await worktreeRegistered(repo, dir).catch(() => null)
+    : true
+  return describeRemoveFailure(refused, dir, listed)
 }
 
 /**
@@ -208,8 +230,9 @@ export async function removeWorktreeRegistration(
       timeoutMs,
     })
   } catch (error) {
-    // Also refused when git never registered it, which the list tells.
-    failure = describeRemoveFailure(error, dir)
+    // Also refused when git never registered it, which the list tells; the
+    // failure is answered only while git still lists it.
+    failure = describeRemoveFailure(error, dir, true)
   }
   try {
     await git(repo, ['worktree', 'prune'])

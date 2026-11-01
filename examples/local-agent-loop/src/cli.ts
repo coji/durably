@@ -1398,12 +1398,13 @@ if (cmd === 'worker') {
         r.warnings.map((w) => `${r.runId}: ${w}`),
       )
       printWarnings(warnings)
-      // Only a removal git refused is retried by asking again, and only while
-      // git still lists the worktree; a run that could not be read or
-      // archived has to be looked at first.
+      // Only what git refused is retried by asking again, once its cause is
+      // gone; a worktree git no longer lists is removed by hand, as its
+      // warning says. A run that could not be read or archived has to be
+      // looked at first.
       if (warnings.length > 0)
         console.error(
-          `if git worktree list still names a worktree above, run ${DEMO} archive --series ${seriesId} again to retry`,
+          `run ${DEMO} archive --series ${seriesId}${a['delete-branch'] === 'true' ? ' --delete-branch' : ''} again to retry what git refused`,
         )
       if (done.errors.length > 0)
         failed.push(
@@ -1441,7 +1442,7 @@ if (cmd === 'worker') {
     printWarnings(done.warnings)
     if (done.warnings.length > 0)
       console.error(
-        `if git worktree list still names the worktree, run ${DEMO} archive --run ${runId} again to retry`,
+        `run ${DEMO} archive --run ${runId}${a['delete-branch'] === 'true' ? ' --delete-branch' : ''} again to retry what git refused`,
       )
   } finally {
     await durably.db.destroy()

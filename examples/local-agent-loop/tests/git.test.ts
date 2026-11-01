@@ -188,12 +188,29 @@ describe('git engine', () => {
     const stopped = await forceRemoveWorktree(repo, wt, 1)
     assert.equal(
       stopped,
-      `git worktree remove was stopped at its <0.1s limit before it finished; ${wt} may be partly removed. If git worktree list still names it, pnpm --filter example-local-agent-loop demo prune --apply continues the removal; otherwise remove the directory by hand`,
+      `git worktree remove was stopped at its <0.1s limit before it finished; ${wt} may be partly removed. git still lists it, so pnpm --filter example-local-agent-loop demo prune --apply continues the removal`,
     )
     // The registration is kept, so asking again with the usual limit
     // finishes the removal.
     assert.equal(await forceRemoveWorktree(repo, wt), null)
     assert.doesNotMatch(await git(repo, ['worktree', 'list']), /wt-slow/)
+    // A directory git no longer lists, as when a stopped removal had
+    // deleted its .git: no retry can remove it, and the warning says so.
+    const orphan = join(root, 'wt-orphan')
+    await addWorktree({
+      repo,
+      dir: orphan,
+      baseCommit: base,
+      branch: 'work/orphan',
+    })
+    await rm(join(orphan, '.git'))
+    for (let i = 0; i < 2; i++)
+      assert.match(
+        (await forceRemoveWorktree(repo, orphan)) ?? '',
+        new RegExp(
+          `git no longer lists ${orphan.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} as a worktree, so neither archive nor pnpm --filter example-local-agent-loop demo prune --apply can remove it: remove the directory by hand$`,
+        ),
+      )
     // A refusal that is not the limit keeps git's own words.
     await addWorktree({
       repo,

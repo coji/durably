@@ -1172,7 +1172,7 @@ describe('archive --series', { timeout: 300000 }, () => {
     )
     assert.ok(
       locked.stderr.includes(
-        `if git worktree list still names a worktree above, run pnpm --filter example-local-agent-loop demo archive --series ${repair} again to retry`,
+        `run pnpm --filter example-local-agent-loop demo archive --series ${repair} again to retry what git refused`,
       ),
     )
     assert.ok(existsSync(work(first)))
