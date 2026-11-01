@@ -189,6 +189,14 @@ export interface FactorySetup {
    */
   review?: Partial<Record<ReviewLens, ReviewInvocation>> | null
   /**
+   * The code reviews' blocker threshold, fixed at trigger (ADR-0040): a
+   * findings-json reviewer is told that a product-behavior finding whose
+   * likelihood × impact is below it is a non-blocker. 0 or null: no such
+   * rule; null on the sample and on a run stored before it existed, absent
+   * on a run set up before it existed.
+   */
+  reviewBlockerThreshold?: number | null
+  /**
    * The spec stages, fixed at trigger: set only on a repository run whose
    * `factory.json` configures them and that was given no `--spec-file`.
    * Absent: the run starts from the spec it was given, as before.

@@ -1239,6 +1239,40 @@ reportの要約、`demo compare` の設定ごとの行、`demo compare --trend` 
 - 判断の理由は [ADR-0039](../../docs/adr/0039-local-agent-loop-test-probe.md)
   にあります。
 
+### レビューのblockerを頻度と深刻さで決める（review.blockerThreshold）
+
+`findings-json` のコードレビューには、製品の動作についての指摘を、実際に起こる
+頻度（likelihood）と起きたときの深刻さ（impact）でそれぞれ1から10の整数で評価させ、
+2つの積が閾値未満なら `non-blocker` にするよう伝えます。起こる可能性が極めて低い
+指摘で、修正と再レビューの往復を重ねないためです（ADR-0040）。
+
+```json
+{
+  "check": ["pnpm", "validate"],
+  "review": { "blockerThreshold": 5 }
+}
+```
+
+- `blockerThreshold` は0から100の整数で、書かなければ5です。負の数、101以上、
+  小数、数でない値は `trigger` の時点で拒否します。0は規則を入れません（今までの
+  レビューと同じです）。
+- 積が閾値以上の指摘は、今までどおりレビュアーが `blocker` か `non-blocker` かを
+  決めます。テストの十分さ、範囲の逸脱、誘導（steering）、秘密情報の混入など、
+  製品の動作でない指摘には積の規則を当てず、今までどおり判断させます。
+- 分類するのはレビュアーです。factoryは返された `severity` を採点値から書き換えず、
+  今までどおり `blocker` が一件でもあれば `needsChanges` にします。指摘が製品の
+  動作についてのものかは、JSONの値からは分からないからです。
+- 規則はレビューの文脈のCHECKに入るので、通常のprompt、`command` の後ろに続く文脈、
+  `local-instructions` の `CLAUDE.local.md` のどれにも届きます。`verdict` のレビューと
+  仕様のレビューには入れません。重さで振り分けたいレビューは `output` を
+  `findings-json` にします。
+- 値は `trigger` の時点でrun inputに保存します。`retrigger` は保存した値を引き継ぎ、
+  `--reload-config` はファイルを読み直し、`demo repair` の修正runは元のrunの値を
+  引き継ぎます。この設定ができる前に保存したrunとその修正runには規則を入れません。
+  レビューの基準が変わるので、閾値は0も含めて `configVersion` に入ります。
+- reportは固定した閾値（JSONの `reviewBlockerThreshold`、Markdownの
+  `review blocker threshold` の行）を出します。
+
 ### 設定の事前確認（preflight）
 
 baselineの後、triageを含む最初のエージェント呼び出しの前に、全役割
@@ -1287,7 +1321,7 @@ baselineの後、triageを含む最初のエージェント呼び出しの前に
 保存します。実際に使うmodelとeffortは、workerがそのrequested設定からproviderの
 presetで解決します。workerは元のファイルを読み直さないので、trigger後にファイルを
 書き換えても、そのrunの設定とpromptは変わりません。timeout、`codexPath`、
-`baselineCheck`、`baselineReuse`、`parallelReview`、`selfCheck`、`testProbe`、`commit` も同じく解決済みの値をrun inputに保存します。reportには各入力ファイルの
+`baselineCheck`、`baselineReuse`、`parallelReview`、`selfCheck`、`testProbe`、`review.blockerThreshold`、`commit` も同じく解決済みの値をrun inputに保存します。reportには各入力ファイルの
 pathと、保存した本文から計算したSHA-256が出ます。contextは本文もreportに出します。
 Markdownでは本文中のどのバッククォートの並びより長いフェンスで囲むので、
 本文の見出しがreportの見出しと混ざりません。設定を直した後に同じtaskで
@@ -1524,8 +1558,10 @@ effortに加えて、呼び出し方と返答の読み方を役割ごとに書�
 - `output` は返答の読み方です。`verdict`（既定）は従来の `DECISION`／`NOTES` です。
   `findings-json` は、返答の最後の ` ```json ` ブロックにある配列を読みます。
   各指摘は `{"severity": "blocker" | "non-blocker", "title": "...", "body": "...",
-"file": "...", "line": 12}` で、`file` と `line` は省けます。書く場合は
-  `file` が空でない文字列、`line` が1以上の整数でなければなりません。ファイル全体への
+"file": "...", "line": 12, "likelihood": 2, "impact": 3}` で、`file`、`line`、
+  `likelihood`、`impact` は省けます。書く場合は
+  `file` が空でない文字列、`line` が1以上の整数、`likelihood` と `impact` が
+  1から10の整数でなければなりません（前述の「レビューのblockerを頻度と深刻さで決める」）。ファイル全体への
   指摘は `line` を省きます（`0` は形が違う指摘です）。`null` は「省いた」扱いにはせず
   形が違う指摘として止めます。返答の最終行は改行1つ（`\n` または `\r\n`）を
   除いて `REVIEW_STATUS: COMPLETE` ちょうどでなければならず、末尾の空白や
@@ -2164,14 +2200,16 @@ pnpm --filter example-local-agent-loop demo report --run <runId> --format md \
   途中で止まった回には、終わったレビュアーの分だけが入ります。`reviews` は従来どおり
   最後の回です。`findings-json` のレビューは、`reviewRounds[].reviews[]` と
   `reviews[]` の両方に `findings` を持ちます。`findings.blocker` と
-  `findings.nonBlocker` は保存した指摘（`severity`、`title`、`body`、あれば `file`
-  と `line`）の配列で、それぞれ先頭20件までです。`findings.counts` は省いた分も
+  `findings.nonBlocker` は保存した指摘（`severity`、`title`、`body`、あれば `file`、
+  `line`、`likelihood`、`impact`）の配列で、それぞれ先頭20件までです。`findings.counts` は省いた分も
   含めたseverityごとの総件数なので、配列の長さではなくこちらを件数として読みます。
   指摘は完了したチェックポイントの返答をレビューstepが読んだときに保存したもので、
   レポートを作るときにreviewerを呼び直したり、チェックポイントを読み直したりしません。
   `verdict` のレビューと、指摘を保存する前のrunのレビューは `findings: null` です。
   runの出力（`output.reviews`）には指摘を入れません。Markdownと画面には、総件数と
   保存した指摘のタイトル、省いた件数だけを出し、本文、ファイル、行番号は出しません。
+  Markdownでは、採点値のある指摘のタイトルの後ろに `(likelihood 2, impact 3)` の
+  形で付けます。
   notesの表示は変わらないので、`blocker` の場所と本文は従来どおりnotesに出ます
 - **Verification logs**: 検証の試行ごとの終了コードと、`stdout.log` / `stderr.log` の
   パス。JSONでは `attempts[].measurement.verificationLog` で、`exitCode`、

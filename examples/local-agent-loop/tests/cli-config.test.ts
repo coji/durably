@@ -198,6 +198,7 @@ type RunInput = {
     parallelReview?: boolean
     selfCheck?: string[][] | null
     testProbe?: { glob: string; command: string[] }[] | null
+    reviewBlockerThreshold?: number | null
     commit?: {
       authorName: string | null
       authorEmail: string | null
@@ -2285,6 +2286,216 @@ describe('testProbe', { timeout: 240000 }, () => {
       (JSON.parse(res.stdout) as { runId: string }).runId,
     )
     assert.deepEqual(child.target.testProbe, PROBE)
+  })
+})
+
+describe('review.blockerThreshold', { timeout: 240000 }, () => {
+  const thresholdOf = async (box: Sandbox) =>
+    (
+      await inputOf(
+        box,
+        await trigger(box, ['--repo', box.repo, '--task', 'x']),
+      )
+    ).target.reviewBlockerThreshold
+
+  it('fixes 5 when left out, takes 0 to 100, and reads the file again only on a reload', async () => {
+    assert.equal(await thresholdOf(await sandbox({ check: CHECK })), 5)
+    assert.equal(
+      await thresholdOf(await sandbox({ check: CHECK, review: {} })),
+      5,
+    )
+    for (const blockerThreshold of [0, 1, 100])
+      assert.equal(
+        await thresholdOf(
+          await sandbox({ check: CHECK, review: { blockerThreshold } }),
+        ),
+        blockerThreshold,
+      )
+    const box = await sandbox({ check: CHECK, review: { blockerThreshold: 8 } })
+    const input = await inputOf(
+      box,
+      await trigger(box, ['--repo', box.repo, '--task', 'x']),
+    )
+    assert.equal(input.target.reviewBlockerThreshold, 8)
+    const reload = async (config: unknown) => {
+      await writeFile(join(box.repo, 'factory.json'), JSON.stringify(config))
+      const reloaded = await reloadTriggerInput(
+        input as unknown as Parameters<typeof reloadTriggerInput>[0],
+      )
+      return (reloaded.input.target as { reviewBlockerThreshold?: unknown })
+        .reviewBlockerThreshold
+    }
+    assert.equal(
+      await reload({ check: CHECK, review: { blockerThreshold: 12 } }),
+      12,
+    )
+    assert.equal(await reload({ check: CHECK }), 5)
+  })
+
+  it('refuses a negative, 101, a fraction, Infinity, an unsafe integer, a non-number and unknown keys before the run exists', async () => {
+    for (const review of [
+      '{ "blockerThreshold": -1 }',
+      '{ "blockerThreshold": 101 }',
+      '{ "blockerThreshold": 2.5 }',
+      // What JSON gives for a number too large to hold.
+      '{ "blockerThreshold": 1e400 }',
+      '{ "blockerThreshold": 9007199254740993 }',
+      '{ "blockerThreshold": "5" }',
+      '{ "blockerThreshold": null }',
+      '{ "blockerThreshold": 5, "other": 1 }',
+      '5',
+    ]) {
+      const box = await sandbox()
+      await writeFile(
+        join(box.repo, 'factory.json'),
+        `{ "check": ${JSON.stringify(CHECK)}, "review": ${review} }`,
+      )
+      await rejected(
+        box,
+        ['--repo', box.repo, '--task', 'x'],
+        /invalid factory config[\s\S]*review/,
+      )
+    }
+  })
+
+  it('keeps the threshold fixed at trigger for the worker, names it in the config version, and gives it to a repair run whatever factory.json says now', async () => {
+    const box = await sandbox({ check: CHECK })
+    const task = (id: string) => [
+      '--repo',
+      box.repo,
+      '--task',
+      `the ${id} task`,
+      '--max-iterations',
+      '1',
+    ]
+    const byDefault = await trigger(box, task('default'))
+    await writeFile(
+      join(box.repo, 'factory.json'),
+      JSON.stringify({ check: CHECK, review: { blockerThreshold: 9 } }),
+    )
+    const nine = await trigger(box, task('nine'))
+    // Edited after both triggers: neither run reads it.
+    await writeFile(
+      join(box.repo, 'factory.json'),
+      JSON.stringify({ check: CHECK, review: { blockerThreshold: 40 } }),
+    )
+    process.env.FAKE_FAIL_FIRST = '0'
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    await durably.init()
+    const setups: FactorySetup[] = []
+    try {
+      for (const id of [byDefault, nine]) {
+        await until(
+          async () => (await durably.getRun(id))?.status === 'completed',
+          `run ${id} completes`,
+        )
+        setups.push(
+          (await durably.storage.getCompletedStep(id, 'setup'))
+            ?.output as FactorySetup,
+        )
+      }
+      const report = await buildReport(durably, nine)
+      assert.equal(report.reviewBlockerThreshold, 9)
+      assert.match(
+        reportToMarkdown(report),
+        /- review blocker threshold: 9 \(a product-behavior finding whose likelihood × impact is below it is a non-blocker\)/,
+      )
+      assert.match(reportToJson(report), /"reviewBlockerThreshold": 9/)
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+    }
+    assert.deepEqual(
+      setups.map((s) => s.reviewBlockerThreshold),
+      [5, 9],
+    )
+    assert.notEqual(setups[0]?.configVersion, setups[1]?.configVersion)
+    // A repair run takes the parent's value, not the edited file's.
+    await writeFile(join(box.root, 'findings.md'), 'FINDING: refunds\n')
+    const res = await demo(box, [
+      'repair',
+      '--run',
+      nine,
+      '--findings-file',
+      'findings.md',
+    ])
+    assert.equal(res.code, 0, res.stderr)
+    const child = await inputOf(
+      box,
+      (JSON.parse(res.stdout) as { runId: string }).runId,
+    )
+    assert.equal(child.target.reviewBlockerThreshold, 9)
+  })
+
+  it("gives a repair run its parent's value, and no rule to a parent stored without one", () => {
+    const commit = 'a'.repeat(40)
+    const profile = (role: string) => ({
+      id: `fake:provider-default:provider-default:${role}`,
+      provider: 'fake',
+      requestedModel: null,
+      requestedEffort: null,
+      effectiveModel: null,
+      effectiveEffort: null,
+    })
+    const parent = (reviewBlockerThreshold?: number) => ({
+      id: 'p',
+      status: 'completed',
+      input: {
+        provider: 'fake',
+        target: {
+          kind: 'repo',
+          ...(reviewBlockerThreshold === undefined
+            ? {}
+            : { reviewBlockerThreshold }),
+        },
+      },
+      output: {
+        approved: true,
+        conclusion: 'approved',
+        candidate: { commit, branch: 'factory/p' },
+        delivery: { commit },
+      },
+    })
+    const setup = {
+      contextMode: 'reuse',
+      maxIterations: 1,
+      agentTimeoutMs: 600000,
+      autoApprove: true,
+      profiles: {
+        code: profile('code'),
+        correctness: profile('correctness'),
+        'edge-cases': profile('edge-cases'),
+      },
+      target: {
+        kind: 'repo',
+        repoPath: '/repo',
+        task: 'task',
+        spec: null,
+        dispositions: null,
+        issue: null,
+        checkCommand: ['true'],
+        setupCommand: null,
+        checkTimeoutMs: 120000,
+        publish: false,
+      },
+    }
+    const files = {
+      findings: { content: 'FINDING\n', ref: { path: '/f.md' } },
+      dispositions: null,
+    }
+    const repair = (p: ReturnType<typeof parent>, s: object) =>
+      buildRepairInput(p, s, files).input.target.reviewBlockerThreshold
+    assert.equal(repair(parent(7), { ...setup, reviewBlockerThreshold: 7 }), 7)
+    assert.equal(repair(parent(0), { ...setup, reviewBlockerThreshold: 0 }), 0)
+    // A parent stored before it existed: set up with null, never the default.
+    assert.equal(
+      repair(parent(), { ...setup, reviewBlockerThreshold: null }),
+      null,
+    )
+    // A setup from before it existed falls back to the parent's input.
+    assert.equal(repair(parent(3), setup), 3)
+    assert.equal(repair(parent(), setup), null)
   })
 })
 

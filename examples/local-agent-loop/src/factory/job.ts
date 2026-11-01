@@ -221,6 +221,17 @@ export const testProbeSchema = z
   .min(1)
   .max(TEST_PROBE_MAX_RULES)
 
+/**
+ * `review.blockerThreshold` in factory.json and a target's
+ * `reviewBlockerThreshold` (ADR-0040): a product-behavior finding of a
+ * findings-json code review whose likelihood × impact is below it is a
+ * non-blocker. 0 puts no such rule in the review.
+ */
+export const reviewBlockerThresholdSchema = z.number().int().min(0).max(100)
+
+/** The threshold a new trigger fixes when factory.json names none. */
+export const DEFAULT_REVIEW_BLOCKER_THRESHOLD = 5
+
 /** Where an input came from. Its hash is taken from the stored content. */
 const inputFileSchema = z.object({ path: z.string().min(1) })
 
@@ -285,6 +296,13 @@ const targetSchema = z
        * check and reviews (ADR-0039). Null or absent: none, as before.
        */
       testProbe: testProbeSchema.nullable().optional(),
+      /**
+       * The code reviews' blocker threshold, fixed at trigger (ADR-0040).
+       * Null or absent, as on a run stored before it existed: no such rule.
+       */
+      reviewBlockerThreshold: reviewBlockerThresholdSchema
+        .nullable()
+        .optional(),
       /** Push the branch and open a draft pull request when approved. */
       publish: z.boolean().default(false),
       /**
@@ -1652,6 +1670,12 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                   specPath: specFileOf(root),
                 }
               : null
+            // Null, not absent, on a run stored before it existed, so a repair
+            // of that run does not take the value from its input instead.
+            const reviewBlockerThreshold =
+              input.target.kind === 'repo'
+                ? (input.target.reviewBlockerThreshold ?? null)
+                : null
             const instructionsVersion = 'local-factory.v3'
             // Fixed here with the CLI version just recorded, so a restarted
             // worker with another environment never changes how this run's
@@ -1694,6 +1718,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                 selfCheck:
                   target.kind === 'repo' ? (target.selfCheck ?? null) : null,
                 review,
+                reviewBlockerThreshold,
                 spec,
               })
             const value: FactorySetup = {
@@ -1730,6 +1755,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               ...(baselineCheck ? { baselineIdentity } : {}),
               codexPath,
               ...(Object.keys(review).length > 0 ? { review } : {}),
+              reviewBlockerThreshold,
               ...(spec ? { spec } : {}),
               // Only when on, so a run without it keeps the setup it had.
               ...(parallelReview ? { parallelReview } : {}),

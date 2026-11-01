@@ -268,6 +268,9 @@ export interface ReportFinding {
   body: string
   file?: string
   line?: number
+  /** The reviewer's scores of a product-behavior finding (ADR-0040). */
+  likelihood?: number
+  impact?: number
 }
 
 /**
@@ -318,6 +321,15 @@ function reviewLines(reviews: ReportReview[], indent: string): string[] {
   ])
 }
 
+/** ` (likelihood 2, impact 3)` with the scores a finding has; else nothing. */
+function scoreAside(f: ReportFinding): string {
+  const scores = [
+    ...(f.likelihood !== undefined ? [`likelihood ${f.likelihood}`] : []),
+    ...(f.impact !== undefined ? [`impact ${f.impact}`] : []),
+  ]
+  return scores.length > 0 ? ` (${scores.join(', ')})` : ''
+}
+
 function findingLines(
   findings: ReportReviewFindings | null,
   indent: string,
@@ -331,7 +343,7 @@ function findingLines(
     const rest = count - kept.length
     return [
       `${indent}- ${label}: ${count}`,
-      ...kept.map((f) => `${indent}  - ${f.title}`),
+      ...kept.map((f) => `${indent}  - ${f.title}${scoreAside(f)}`),
       ...(rest > 0 ? [`${indent}  - ${rest} more not kept`] : []),
     ]
   }
@@ -888,6 +900,11 @@ export interface LoopReport {
   configVersion: string | null
   /** The agent call limits; null or absent when the run stored none. */
   agentTimeouts?: ReportAgentTimeouts | null
+  /**
+   * The code reviews' blocker threshold the run fixed (ADR-0040); null or
+   * absent when it fixed none.
+   */
+  reviewBlockerThreshold?: number | null
   summary: RunSummary
   triage: ReportTriage | null
   /**
@@ -1616,6 +1633,10 @@ export function reportToMarkdown(r: LoopReport): string {
   if (r.agentTimeouts)
     lines.push(
       `- agent call limits: total ${formatDuration(r.agentTimeouts.totalMs)}, idle ${r.agentTimeouts.idleMs === null ? 'none' : formatDuration(r.agentTimeouts.idleMs)}`,
+    )
+  if (r.reviewBlockerThreshold != null)
+    lines.push(
+      `- review blocker threshold: ${r.reviewBlockerThreshold === 0 ? '0 (no likelihood × impact rule)' : `${r.reviewBlockerThreshold} (a product-behavior finding whose likelihood × impact is below it is a non-blocker)`}`,
     )
   if (r.repairSession) {
     const { setup, confirmed } = r.repairSession

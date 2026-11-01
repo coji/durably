@@ -704,6 +704,9 @@ async function reviewRoundOf(args: {
         // when the check runs in the worktree beside it.
         worktree: commandMode && !snapshotOnly ? reviewCwd : null,
         candidateTree: !commandMode && trees ? trees.headDir : null,
+        // In the context itself, so the prompt, the input after a command
+        // and the local instructions all carry it (ADR-0040).
+        blockerThreshold: setup.reviewBlockerThreshold ?? 0,
       },
     )
     // `{base}` and `{head}` are the run's base commit and this candidate's.

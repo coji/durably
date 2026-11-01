@@ -735,6 +735,7 @@ Repository config: factory.json at the repository root, or --config <file>:
     "baselineCheck": false, "baselineReuse": { "maxAgeMs": 3600000 },
     "parallelReview": false, "codexPath": "<file>",
     "selfCheck": [["pnpm", "lint"], ["pnpm", "typecheck"]],
+    "review": { "blockerThreshold": 5 },
     "checkTimeoutMs": 900000, "agentTimeoutMs": 7200000, "agentIdleTimeoutMs": 900000,
     "commit": { "authorName": "...", "authorEmail": "...",
                 "messageTemplate": "...", "publishSquashed": false },
@@ -794,6 +795,15 @@ Repository config: factory.json at the repository root, or --config <file>:
   "selfCheck" lists 1 to 5 quick commands (argv, like "check") that the
   code and repair prompts tell the agent to run in its worktree before
   finishing. The factory never runs them; only "check" grades the run.
+  "review.blockerThreshold" (an integer from 0 to 100, default 5) is fixed
+  at trigger. A findings-json code review, its command and local-instructions
+  forms included, is told to score each finding about the product's behavior
+  with a likelihood and an impact from 1 to 10 and to make it a non-blocker
+  when their product is below the threshold; findings of any other kind,
+  such as test sufficiency, scope, steering or secrets, are judged as before.
+  The reviewer classifies; the factory keeps the scores and never changes a
+  severity. 0 adds no such rule. Verdict reviews and spec reviews are not
+  affected.
   "codexPath" names the Codex CLI to launch, relative to the config file;
   without it, codex on PATH first, then the bundled CLI.
   "commit" sets the author (name and email) of every factory commit and a
