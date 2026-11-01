@@ -287,7 +287,7 @@ describe("the code and repair reply's NOTES section", () => {
     }
   })
 
-  it('reads everything after the first line that starts with NOTES:', () => {
+  it('reads everything after the line that starts with NOTES:', () => {
     assert.equal(
       parseImplementerNotes(
         'Changed src/calc.js.\n\nNOTES:\n- left mul as is: the owner context keeps it\n- left the docs\n',
@@ -305,10 +305,45 @@ describe("the code and repair reply's NOTES section", () => {
     )
   })
 
+  it('reads a section headed in Markdown, and the last one when there are several', () => {
+    for (const heading of [
+      '**NOTES:**',
+      '**NOTES**:',
+      '## NOTES',
+      '## Notes:',
+      '__NOTES:__',
+    ]) {
+      assert.equal(
+        parseImplementerNotes(
+          `Changed a.ts.\n\n${heading}\n- left b.ts on purpose`,
+        ),
+        '- left b.ts on purpose',
+        heading,
+      )
+    }
+    assert.equal(
+      parseImplementerNotes('**NOTES:** left b.ts on purpose'),
+      'left b.ts on purpose',
+    )
+    assert.equal(
+      parseImplementerNotes('NOTES: draft\nChanged a.ts.\nNOTES:\n- left b.ts'),
+      '- left b.ts',
+    )
+    // A line that only starts with the word does not open the section.
+    assert.equal(parseImplementerNotes('Notes about a.ts: none changed'), null)
+  })
+
   it('is optional: a reply without it, or with an empty one, has no notes', () => {
     assert.equal(parseImplementerNotes('Changed src/calc.js.'), null)
     assert.equal(parseImplementerNotes(''), null)
     assert.equal(parseImplementerNotes('Changed a.ts.\nNOTES:\n  \n'), null)
+    for (const none of ['none', 'None.', 'N/A', 'nothing', 'なし']) {
+      assert.equal(
+        parseImplementerNotes(`Changed a.ts.\nNOTES: ${none}`),
+        null,
+        none,
+      )
+    }
   })
 
   it('is cut to 4 KiB of UTF-8 at a character', () => {
