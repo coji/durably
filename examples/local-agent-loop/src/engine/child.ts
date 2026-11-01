@@ -68,6 +68,21 @@ export function childLogError(error: unknown): string | null {
   return (error as { logError?: string | null } | null)?.logError ?? null
 }
 
+/**
+ * The output tails a timeout or cancel rejection from `runChild` carries:
+ * what the child printed before it was killed, capped like a result's.
+ */
+export function childOutput(error: unknown): {
+  stdout: string
+  stderr: string
+} {
+  const carried = error as { stdout?: unknown; stderr?: unknown } | null
+  return {
+    stdout: typeof carried?.stdout === 'string' ? carried.stdout : '',
+    stderr: typeof carried?.stderr === 'string' ? carried.stderr : '',
+  }
+}
+
 export interface RunChildOptions extends SpawnOptions {
   signal?: AbortSignal
   timeoutMs: number
@@ -230,6 +245,8 @@ export async function runChild(
             return reject(
               Object.assign(terminationError, {
                 logError: logError?.message ?? null,
+                stdout,
+                stderr,
               }),
             )
           resolve({

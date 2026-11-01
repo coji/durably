@@ -14,6 +14,7 @@
 import { existsSync } from 'node:fs'
 import {
   mkdir,
+  readdir,
   readFile,
   realpath,
   rm,
@@ -30,14 +31,16 @@ import {
   sep,
 } from 'node:path'
 
-import { runChild } from '../engine/child.js'
+import { childOutput, runChild } from '../engine/child.js'
 import { formatters } from '../engine/format.js'
 import {
+  changedGitlinks,
   checkoutPathsFrom,
   cleanUntracked,
   describeCommitChanges,
   describeGitFailure,
   resetHard,
+  someUntracked,
   untrackedPaths,
 } from '../engine/git.js'
 import { fencedText } from '../engine/markdown.js'
@@ -136,7 +139,7 @@ function notRun(reason: string): TestProbeSide {
   return { ran: false, reason: reason.slice(0, REASON_CHARS), elapsedMs: 0 }
 }
 
-/** One side's result and what it printed. */
+/** One side's result and its stored output tail (`storedTail`). */
 interface SideRun {
   side: TestProbeSide
   output: string
@@ -174,17 +177,19 @@ async function runSide(
     })
     return {
       side: { ran: true, exitCode: res.code, elapsedMs: res.elapsedMs },
-      output: `${res.stdout}${res.stderr}`,
+      output: storedTail(res.stdout, res.stderr),
     }
   } catch (error) {
     if (signal.aborted || (error as Error).name === 'SpawnCancelledError')
       throw error
+    // A command that ran out of time keeps what it printed until then.
+    const { stdout, stderr } = childOutput(error)
     return {
       side: {
         ...notRun((error as Error).message),
         elapsedMs: Date.now() - started,
       },
-      output: '',
+      output: storedTail(stdout, stderr),
     }
   }
 }
@@ -196,14 +201,17 @@ async function runSide(
  * candidate's tests wrote removed and what setup wrote kept
  * (`restoreBase`), made again when a test changed or removed what setup
  * wrote, and given only those files from the candidate. Returns its
- * directory, or why it could not be made ready.
+ * directory with why each file that could not be taken from the candidate
+ * could not, or why the base could not be made ready.
  */
 async function prepareBase(
   config: RepoTargetConfig,
   candidate: CandidateRef,
   paths: string[],
   signal: AbortSignal,
-): Promise<{ dir: string } | { failure: string }> {
+): Promise<
+  { dir: string; unplaced: Map<string, string> } | { failure: string }
+> {
   const base = config.testProbeBase
   if (!base) return { failure: 'no base worktree was set up' }
   if (base.setupFailure)
@@ -248,14 +256,30 @@ async function prepareBase(
       const failure = await remake()
       if (failure) return { failure }
     }
-    await checkoutPathsFrom(base.workdir, candidate.commit, paths, signal)
-    return { dir: base.workdir }
   } catch (error) {
     if (signal.aborted) throw error
     return {
-      failure: `the candidate's test files could not be put on the base: ${describeGitFailure(error)}`,
+      failure: `the base worktree could not be put back: ${describeGitFailure(error)}`,
     }
   }
+  const unplaced = new Map<string, string>()
+  const commit = candidate.commit
+  const place = (some: string[]) =>
+    checkoutPathsFrom(base.workdir, commit, some, signal)
+  // All at once, and one at a time only when that fails, so one file git
+  // refuses leaves only its own base side not run.
+  await place(paths).catch(async (all: unknown) => {
+    if (signal.aborted) throw all
+    for (const path of paths)
+      await place([path]).catch((error: unknown) => {
+        if (signal.aborted) throw error
+        unplaced.set(
+          path,
+          `the test file could not be put on the base: ${describeGitFailure(error)}`,
+        )
+      })
+  })
+  return { dir: base.workdir, unplaced }
 }
 
 /**
@@ -264,6 +288,12 @@ async function prepareBase(
  * test wrote removed (`cleanUntracked`). Ignored files, such as installed
  * dependencies, stay. The candidate's worktree is put back this way: what
  * its setup wrote is in its commit from the first seal on.
+ *
+ * A nested repository, such as one setup made, is in that commit only as a
+ * gitlink, which neither puts back. Each one a test edited or committed in
+ * is reset to the commit its gitlink records, one level down; its untracked
+ * files stay, since no seal holds them and the check may need them. One
+ * that cannot be reset is left for `assertIntact` to report.
  */
 async function restoreWorktree(
   dir: string,
@@ -272,6 +302,12 @@ async function restoreWorktree(
 ): Promise<void> {
   await resetHard(dir, commit, signal)
   await cleanUntracked(dir, signal)
+  for (const nested of await changedGitlinks(dir, commit, signal)) {
+    const nestedDir = join(dir, nested.path)
+    // Without its own `.git`, git would reset the outer worktree instead.
+    if (!existsSync(join(nestedDir, '.git'))) continue
+    await resetHard(nestedDir, nested.commit, signal).catch(() => {})
+  }
 }
 
 /**
@@ -282,8 +318,9 @@ async function restoreWorktree(
  * stays, as it does in the candidate, while what an earlier candidate's
  * tests wrote goes. Returns false when a path setup left is gone or no
  * longer matches its fingerprint (`fingerprintPaths`): a test changed it,
- * and only setup can make it again. Ignored files stay, and so does an
- * empty directory a test made.
+ * and only setup can make it again. Ignored files stay. A directory a
+ * test made that holds no file, which no listing of untracked files names,
+ * goes too.
  */
 async function restoreBase(
   dir: string,
@@ -310,8 +347,22 @@ async function restoreBase(
       if (!removed) break
     }
   }
+  // What `git clean` would still remove: a directory holding a file is
+  // setup's, or a nested repository, and stays.
+  for (const path of await someUntracked(dir, Number.POSITIVE_INFINITY, signal))
+    if (path.endsWith('/') && (await holdsNoFile(join(dir, path))))
+      await rm(join(dir, path), { recursive: true, force: true })
   const now = await fingerprintPaths(dir, [...keep])
   return [...keep].every((path) => now[path] === setupUntracked[path])
+}
+
+/** True when the directory `full` holds only directories, if any. */
+async function holdsNoFile(full: string): Promise<boolean> {
+  const entries = await readdir(full, {
+    recursive: true,
+    withFileTypes: true,
+  }).catch(() => null)
+  return entries?.every((entry) => entry.isDirectory()) ?? false
 }
 
 /** What one file came to, as the result and the report name it. */
@@ -343,9 +394,25 @@ function sideLine(name: string, side: TestProbeSide): string {
     : `${name}: could not run: ${side.reason}`
 }
 
-/** What the probe stores of a side's output: its last characters. */
-function storedTail(output: string): string {
-  return output.trimEnd().slice(-TAIL_CHARS)
+/**
+ * What the probe stores of a side's output: stdout's last characters, then
+ * stderr's, at most `TAIL_CHARS` in all. Neither can push the other's end
+ * out: one longer than half keeps what the other leaves, so a stderr full of
+ * warnings does not hide the failure a runner printed to stdout. A tail
+ * that was cut is exactly `TAIL_CHARS` long.
+ */
+function storedTail(stdout: string, stderr: string): string {
+  const out = stdout.trimEnd()
+  const err = stderr.trimEnd()
+  if (out.length === 0 || err.length === 0)
+    return `${out}${err}`.slice(-TAIL_CHARS)
+  // One character goes to the line between them.
+  const room = TAIL_CHARS - 1
+  const errChars = Math.min(
+    err.length,
+    Math.max(room - out.length, Math.floor(room / 2)),
+  )
+  return `${out.slice(-(room - errChars))}\n${err.slice(-errChars)}`
 }
 
 /**
@@ -518,10 +585,12 @@ export async function runTestProbe(args: {
     )
     try {
       for (const target of targets) {
+        const unrunnable =
+          'dir' in base ? base.unplaced.get(target.path) : base.failure
         const onBase =
-          'dir' in base
+          'dir' in base && unrunnable === undefined
             ? await runSide(target, base.dir, config.checkTimeoutMs, signal)
-            : { side: notRun(base.failure), output: '' }
+            : { side: notRun(unrunnable ?? ''), output: '' }
         const onCandidate = await runSide(
           target,
           config.workdir,
@@ -533,8 +602,8 @@ export async function runTestProbe(args: {
           command: target.argv,
           base: onBase.side,
           candidate: onCandidate.side,
-          baseOutputTail: storedTail(onBase.output),
-          candidateOutputTail: storedTail(onCandidate.output),
+          baseOutputTail: onBase.output,
+          candidateOutputTail: onCandidate.output,
         })
       }
     } finally {

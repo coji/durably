@@ -6852,6 +6852,200 @@ describe('the test probe', { timeout: 300000 }, () => {
     assert.equal(await setupRuns(), 3)
   })
 
+  it('puts back a nested repository a test edited and committed in on the candidate side, and the run goes on', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-test-probe-nested-cand-'))
+    const repo = await seedRepo(root)
+    const runRoot = join(root, 'state', 'runs', 'run-1')
+    const setupLog = join(root, 'setup.log')
+    // An untracked nested repository with a committed file, which the
+    // agent's first seal commits as a gitlink; each setup run is counted.
+    const setup = [
+      "const fs = require('node:fs')",
+      "const { execFileSync } = require('node:child_process')",
+      "const g = (...a) => execFileSync('git', ['-C', 'nested', '-c', 'user.name=t', '-c', 'user.email=t@t', ...a])",
+      "fs.mkdirSync('nested', { recursive: true })",
+      "g('init', '-q')",
+      "fs.writeFileSync('nested/data.txt', 'd')",
+      "g('add', '-A')",
+      "g('commit', '-q', '-m', 'fixture')",
+      `fs.appendFileSync(${JSON.stringify(setupLog)}, 'x')`,
+    ].join('\n')
+    // Prints the file, then, on the candidate only, does what its test file
+    // says inside the nested repository: edit a file and commit it, edit one
+    // and leave an untracked file, or edit one under a lock no reset passes.
+    const reader = [
+      "const fs = require('node:fs')",
+      "const { execFileSync } = require('node:child_process')",
+      "const g = (...a) => execFileSync('git', ['-C', 'nested', '-c', 'user.name=t', '-c', 'user.email=t@t', ...a])",
+      "const f = 'nested/data.txt'",
+      "console.log(`data=${fs.readFileSync(f, 'utf8')}`)",
+      "const what = fs.readFileSync(process.argv[1], 'utf8')",
+      "if (!process.cwd().endsWith('base-work')) {",
+      "  if (what.includes('commit')) { fs.writeFileSync(f, 'committed'); g('commit', '-q', '-am', 'test') }",
+      "  if (what.includes('edit')) { fs.writeFileSync(f, 'changed'); fs.writeFileSync('nested/scratch.txt', 's') }",
+      "  if (what.includes('lock')) { fs.writeFileSync(f, 'changed'); fs.writeFileSync('nested/.git/index.lock', '') }",
+      '}',
+    ].join('\n')
+    const config = await prepareRepoTarget({
+      repoPath: repo,
+      baseRef: 'HEAD',
+      branch: `factory/probe-${randomUUID()}`,
+      root: runRoot,
+      task: 'x',
+      spec: null,
+      dispositions: null,
+      issue: null,
+      checkCommand: ['node', '--test'],
+      setupCommand: ['node', '-e', setup],
+      testProbe: [
+        {
+          glob: 'test/**/*.test.js',
+          command: ['node', '-e', reader, '{files}'],
+        },
+      ],
+      checkTimeoutMs: 10000,
+      publish: false,
+      commit: DEFAULT_COMMIT_SETTINGS,
+    })
+    const target = createTarget(config)
+    const setupRuns = async () => (await readFile(setupLog, 'utf8')).length
+    assert.equal(await setupRuns(), 2)
+    const sealWith = async (iteration: number, body: string) => {
+      await writeFile(join(config.workdir, 'test', 'a.test.js'), body)
+      return target.seal({
+        iteration,
+        runId: 'run-1',
+        attemptId: 'a',
+        signal: new AbortController().signal,
+      })
+    }
+    const probe = (candidate: Awaited<ReturnType<typeof sealWith>>) =>
+      runTestProbe({
+        config,
+        candidate,
+        runRoot,
+        assertIntact: () => target.assertIntact(candidate),
+        signal: new AbortController().signal,
+      })
+    const gitlink = (commit: string) => git(repo, ['ls-tree', commit, 'nested'])
+    // A commit inside the nested repository, then an edit beside an
+    // untracked file: each candidate is put back as sealed and checked.
+    const first = await sealWith(1, '// commit 1\n')
+    assert.match(await gitlink(first.commit!), /^160000 commit /)
+    const one = await probe(first)
+    assert.equal(one.files[0]?.candidateOutputTail, 'data=d')
+    await target.assertIntact(first)
+    const second = await sealWith(2, '// edit 2\n')
+    // The next seal records the nested repository as the first did.
+    assert.equal(await gitlink(second.commit!), await gitlink(first.commit!))
+    const two = await probe(second)
+    assert.equal(two.files[0]?.candidateOutputTail, 'data=d')
+    await target.assertIntact(second)
+    assert.equal(
+      await readFile(join(config.workdir, 'nested', 'data.txt'), 'utf8'),
+      'd',
+    )
+    // The nested repository's untracked files stay.
+    assert.equal(
+      existsSync(join(config.workdir, 'nested', 'scratch.txt')),
+      true,
+    )
+    // The base was never touched, so it was never set up again.
+    assert.equal(await setupRuns(), 2)
+    // A nested repository that cannot be reset is what `assertIntact`
+    // reports, not the reset.
+    const third = await sealWith(3, '// lock 3\n')
+    await assert.rejects(probe(third), /candidate-mutated/)
+  })
+
+  it('removes empty directories a test made on the base, runs the files git could put there, and keeps the end of stdout and of stderr', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-test-probe-paths-'))
+    const repo = await seedRepo(root)
+    // A directory that is made read-only in the base, so git cannot put a
+    // file into it there.
+    await mkdir(join(repo, 'locked'))
+    await writeFile(join(repo, 'locked', 'keep'), 'k')
+    await git(repo, ['add', '-A'])
+    await git(repo, ['commit', '-m', 'locked'])
+    const runRoot = join(root, 'state', 'runs', 'run-1')
+    const base = join(runRoot, 'base-work')
+    // Says whether an earlier run left its empty directory, then makes one,
+    // and prints more than a tail holds to each stream.
+    const reader = [
+      "const fs = require('node:fs')",
+      "console.log('o'.repeat(5000))",
+      "console.log(`STDOUT-END empty=${fs.existsSync('empty')}`)",
+      "console.error('w'.repeat(5000))",
+      "console.error('STDERR-END')",
+      "fs.mkdirSync('empty/deeper', { recursive: true })",
+    ].join('\n')
+    const config = await prepareRepoTarget({
+      repoPath: repo,
+      baseRef: 'HEAD',
+      branch: `factory/probe-${randomUUID()}`,
+      root: runRoot,
+      task: 'x',
+      spec: null,
+      dispositions: null,
+      issue: null,
+      checkCommand: ['node', '--test'],
+      setupCommand: null,
+      testProbe: [
+        { glob: '**/*.test.js', command: ['node', '-e', reader, '{files}'] },
+      ],
+      checkTimeoutMs: 10000,
+      publish: false,
+      commit: DEFAULT_COMMIT_SETTINGS,
+    })
+    const target = createTarget(config)
+    const probeWith = async (iteration: number) => {
+      await writeFile(
+        join(config.workdir, 'test', 'a.test.js'),
+        `// ${iteration}\n`,
+      )
+      const candidate = await target.seal({
+        iteration,
+        runId: 'run-1',
+        attemptId: 'a',
+        signal: new AbortController().signal,
+      })
+      return runTestProbe({
+        config,
+        candidate,
+        runRoot,
+        assertIntact: () => target.assertIntact(candidate),
+        signal: new AbortController().signal,
+      })
+    }
+    await chmod(join(base, 'locked'), 0o555)
+    await writeFile(join(config.workdir, 'locked', 'b.test.js'), '// b\n')
+    const one = await probeWith(1).finally(() =>
+      chmod(join(base, 'locked'), 0o755),
+    )
+    const byPath = (files: typeof one.files) =>
+      Object.fromEntries(files.map((f) => [f.path, f]))
+    const first = byPath(one.files)
+    // Only the file git refused has its base side not run, with its reason.
+    assert.equal(first['test/a.test.js']?.base.ran, true)
+    assert.equal(first['locked/b.test.js']?.base.ran, false)
+    assert.match(
+      first['locked/b.test.js']?.base.reason ?? '',
+      /^the test file could not be put on the base: /,
+    )
+    assert.equal(first['locked/b.test.js']?.candidate.ran, true)
+    assert.equal(existsSync(join(base, 'empty', 'deeper')), true)
+    // Each stream's end is kept, within the tail's length.
+    const tail = first['test/a.test.js']?.baseOutputTail ?? ''
+    assert.equal(tail.length, 2000)
+    assert.match(tail, /STDOUT-END empty=false\n/)
+    assert.match(tail, /STDERR-END$/)
+    // The next candidate's base has no empty directory left when its first
+    // file runs.
+    const two = await probeWith(2)
+    assert.equal(two.files[0]?.base.ran, true)
+    assert.match(two.files[0]?.baseOutputTail ?? '', /STDOUT-END empty=false\n/)
+  })
+
   it('prunes the registration of a base worktree whose directory a dying worker had already removed, also of a run no longer recorded', async () => {
     const root = await mkdtemp(join(tmpdir(), 'repo-test-probe-stale-'))
     const repo = await seedRepo(root)

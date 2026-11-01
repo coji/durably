@@ -561,6 +561,38 @@ export async function cleanUntracked(
   await git(cwd, ['clean', '-ffd'], signal ? { signal } : {})
 }
 
+/**
+ * The nested repositories `commit` records as gitlinks, each with the commit
+ * it records, that the worktree `dir` reports as changed: a file edited, or
+ * a commit made, inside one. Run it after `resetHard` to `commit`, which
+ * puts back everything else but leaves what is inside a nested repository.
+ */
+export async function changedGitlinks(
+  dir: string,
+  commit: string,
+  signal?: AbortSignal,
+): Promise<{ path: string; commit: string }[]> {
+  const pass = signal ? { signal } : {}
+  const status = await git(
+    dir,
+    ['status', '--porcelain=v1', '-z', '--untracked-files=no'],
+    pass,
+  )
+  const paths = status
+    .split('\0')
+    .filter((entry) => entry.length > 3)
+    .map((entry) => entry.slice(3))
+  if (paths.length === 0) return []
+  const listed = await git(dir, ['ls-tree', '-z', commit, '--', ...paths], {
+    env: { GIT_LITERAL_PATHSPECS: '1' },
+    ...pass,
+  })
+  return listed.split('\0').flatMap((entry) => {
+    const found = /^160000 commit ([0-9a-f]+)\t(.+)$/s.exec(entry)
+    return found?.[1] && found[2] ? [{ path: found[2], commit: found[1] }] : []
+  })
+}
+
 /** The longest `untrackedPaths` listing read, in characters. */
 const UNTRACKED_LIST_CHARS = 10_000_000
 

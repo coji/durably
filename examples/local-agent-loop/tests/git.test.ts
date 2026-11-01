@@ -16,6 +16,7 @@ import { runChild } from '../src/engine/child.js'
 import {
   addWorktree,
   branchCommit,
+  changedGitlinks,
   commitAll,
   DEFAULT_COMMIT_AUTHOR,
   ensureSquashedBranch,
@@ -161,6 +162,36 @@ describe('git engine', () => {
     // The sealed candidate names a commit; a file git does not track cannot
     // be part of it, so integrity checking must not see this.
     assert.equal(await isDirty(wt, { includeUntracked: false }), false)
+    await removeWorktree(repo, wt)
+  })
+
+  it('names the nested repositories a worktree changed, with the commit each gitlink records', async () => {
+    const wt = join(root, 'wt-gitlink')
+    await addWorktree({ repo, dir: wt, baseCommit: base, branch: 'work/gl' })
+    const nested = join(wt, 'deps', 'nested')
+    await mkdir(nested, { recursive: true })
+    await git(nested, ['init', '-q'])
+    await writeFile(join(nested, 'n.txt'), 'n\n')
+    await git(nested, ['add', '-A'])
+    await git(nested, [
+      '-c',
+      'user.name=t',
+      '-c',
+      'user.email=t@t',
+      'commit',
+      '-q',
+      '-m',
+      'n',
+    ])
+    const recorded = await resolveCommit(nested, 'HEAD')
+    const { commit } = await commitAll(wt, 'with a nested repository')
+    assert.deepEqual(await changedGitlinks(wt, commit), [])
+    // A tracked file changed beside it is not a gitlink.
+    await writeFile(join(wt, 'a.txt'), 'two\n')
+    await writeFile(join(nested, 'n.txt'), 'changed\n')
+    assert.deepEqual(await changedGitlinks(wt, commit), [
+      { path: 'deps/nested', commit: recorded },
+    ])
     await removeWorktree(repo, wt)
   })
 

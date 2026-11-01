@@ -5,6 +5,7 @@ import { existsSync } from 'node:fs'
 import type { AnyDurably, Run } from '@coji/durably'
 
 import { REPAIR_OF_LABEL, triageThatRuns } from '../factory/repair.js'
+import { testProbeOutcomeOf } from '../factory/test-probe.js'
 import {
   BASELINE_STEP,
   REPAIR_SESSION_STEP,
@@ -498,8 +499,9 @@ function testProbesOf(steps: StoredStep[]): ReportTestProbe[] {
           candidateId: record.candidateId,
           sequence: where.sequence,
           targets: files.length,
-          failedOnBase: files.filter((f) => f.base.ran && f.base.exitCode !== 0)
-            .length,
+          failedOnBase: files.filter(
+            (f) => testProbeOutcomeOf(f) === 'failed-on-base',
+          ).length,
           elapsedMs: record.elapsedMs ?? 0,
           couldNotRun: files.flatMap((f) =>
             (['base', 'candidate'] as const).flatMap((side) => {

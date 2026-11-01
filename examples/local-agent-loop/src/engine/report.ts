@@ -232,7 +232,11 @@ export interface ReportTestProbe {
   sequence: number
   /** Added or modified test files that matched a glob, each run once. */
   targets: number
-  /** Of those, the ones that ran on the base and failed there. */
+  /**
+   * Of those, the ones that failed on the base and passed on the candidate,
+   * as the result text counts them; one that also failed on the candidate
+   * is not among them.
+   */
   failedOnBase: number
   elapsedMs: number
   /** One line per side that could not run: `<path> (<side>): <reason>`. */
@@ -1848,7 +1852,7 @@ export function reportToMarkdown(r: LoopReport): string {
     lines.push('')
     for (const p of r.testProbes) {
       lines.push(
-        `- ${p.candidateId}: ${p.targets} test file(s), ${p.failedOnBase} failed on the base, ${p.couldNotRun.length} side(s) could not run, ${formatDuration(p.elapsedMs)}`,
+        `- ${p.candidateId}: ${p.targets} test file(s), ${p.failedOnBase} failed on the base and passed on the candidate, ${p.couldNotRun.length} side(s) could not run, ${formatDuration(p.elapsedMs)}`,
       )
       // The reasons are command and git output, so none reads as Markdown.
       if (p.couldNotRun.length > 0)
