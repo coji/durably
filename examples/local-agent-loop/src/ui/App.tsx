@@ -34,8 +34,9 @@ import {
   type SeriesResult,
 } from './components/BulkNotice'
 import { focusPageTitle } from './components/Layout'
+import { runHref } from './components/RunLink'
 import { SHELL } from './glossary'
-import { parseRoute, routeKey, type Route } from './route'
+import { parseRoute, routeKey, withRepo, type Route } from './route'
 import {
   CompareScreen,
   TrendScreen,
@@ -213,12 +214,23 @@ export function App({ token }: { token: string }) {
   const [compareView, setCompareView] = useState<CompareView>('trend')
   useFocusOnChange(compareView)
   // The repository the list or the summary was last narrowed to, from its
-  // URL: a run's page keeps it for its links back.
+  // URL: a run's page keeps it for its links back, and writes it into its
+  // own URL so a reload keeps it too.
   const [lastRepo, setLastRepo] = useState<string | undefined>(undefined)
-  const scoped = route.page === 'runs' || route.page === 'compare'
-  if (scoped && route.repo !== lastRepo) setLastRepo(route.repo)
-  const repo = scoped ? route.repo : lastRepo
-  const query = repo ? `?repo=${encodeURIComponent(repo)}` : ''
+  const repo =
+    route.page === 'runs' || route.page === 'compare'
+      ? route.repo
+      : route.page === 'run'
+        ? (route.repo ?? lastRepo)
+        : lastRepo
+  if (repo !== lastRepo) setLastRepo(repo)
+  const runId = route.page === 'run' ? route.id : null
+  const runRepo = route.page === 'run' ? route.repo : undefined
+  useEffect(() => {
+    if (runId !== null && repo && runRepo !== repo)
+      history.replaceState(null, '', withRepo(runHref(runId), repo))
+  }, [runId, runRepo, repo])
+  const query = withRepo('', repo)
   // The design page reads nothing from the API, so nothing polls there.
   if (route.page === 'design') return <DesignScreen route={route} />
   // Keyed by URL, so moving to another page stops the old page's polling

@@ -305,15 +305,17 @@ export const UNKNOWN_REPO = 'unknown'
 
 /**
  * Which repository a run worked on, from its stored input: the target's
- * `repoPath`, or a key of its own for the bundled sample and for a
- * repository run without a path. A path always starts with `/`, so it is
- * never mistaken for either.
+ * `repoPath`, the bundled sample's own key, or the unknown key for any
+ * other input, such as a repository run without a path. A path always
+ * starts with `/`, so it is never mistaken for either.
  */
 export function repoKeyOf(input: unknown): string {
   const target = (input as { target?: { kind?: string; repoPath?: unknown } })
     ?.target
-  if (target?.kind !== 'repo') return SUBJECT_REPO
-  return typeof target.repoPath === 'string' && target.repoPath.length > 0
+  if (target?.kind === 'subject') return SUBJECT_REPO
+  return target?.kind === 'repo' &&
+    typeof target.repoPath === 'string' &&
+    target.repoPath.length > 0
     ? target.repoPath
     : UNKNOWN_REPO
 }

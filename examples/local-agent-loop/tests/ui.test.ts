@@ -136,7 +136,7 @@ import {
   type LogView,
 } from '../src/ui/components/trace/AttemptLog.js'
 import { pollEvery } from '../src/ui/poll.js'
-import { pageHref, parseRoute } from '../src/ui/route.js'
+import { pageHref, parseRoute, withRepo } from '../src/ui/route.js'
 import { GroupPanel } from '../src/ui/screens/compare/GroupPanel.js'
 import { TrendScreen } from '../src/ui/screens/CompareScreen.js'
 import { DesignScreen } from '../src/ui/screens/DesignScreen.js'
@@ -226,7 +226,10 @@ describe('repositories', () => {
     assert.equal(repoKeyOf(repo('/w/durably')), '/w/durably')
     assert.equal(repoKeyOf({ target: { kind: 'subject' } }), SUBJECT_REPO)
     assert.equal(repoKeyOf(repo()), UNKNOWN_REPO)
-    assert.equal(repoKeyOf(null), SUBJECT_REPO)
+    // An input that names no target is unknown, never the sample.
+    assert.equal(repoKeyOf(null), UNKNOWN_REPO)
+    assert.equal(repoKeyOf({}), UNKNOWN_REPO)
+    assert.equal(repoKeyOf({ target: {} }), UNKNOWN_REPO)
     // A repository run without a path is never counted as the sample.
     assert.notEqual(
       repoKeyOf(repo()),
@@ -3642,6 +3645,12 @@ describe('routes', () => {
     assert.equal(pageHref('compare'), '#/compare')
     assert.deepEqual(parseRoute('#/?repo='), { page: 'runs' })
     assert.deepEqual(parseRoute('#/runs/a%3Fb'), { page: 'run', id: 'a?b' })
+    // A run's page keeps the list's repository, so its links back do.
+    assert.deepEqual(parseRoute(withRepo('#/runs/a%2Fb', path)), {
+      page: 'run',
+      id: 'a/b',
+      repo: path,
+    })
   })
 })
 
