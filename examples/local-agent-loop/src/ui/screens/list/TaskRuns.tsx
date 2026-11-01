@@ -3,7 +3,11 @@ import type { Act, ActionName } from '../../components/ActionNotice'
 import { RunActions } from '../../components/RunActions'
 import { runHref } from '../../components/RunLink'
 import { StatusBadge } from '../../components/StatusBadge'
-import { ArchivedMark, SupersededMark } from '../../components/SupersededMark'
+import {
+  ArchivedMark,
+  RepoMark,
+  SupersededMark,
+} from '../../components/SupersededMark'
 import { runRole, runState, TaskMeta } from '../../components/TaskRow'
 import type { RunRow } from '../../server'
 
@@ -59,6 +63,7 @@ export function TaskRuns({
               >
                 {runRole(r)}
               </a>
+              <RepoMark name={row.repo} />
               {r.superseded ? <SupersededMark /> : null}
               {r.archived ? <ArchivedMark /> : null}
             </span>

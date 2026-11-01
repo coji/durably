@@ -2,6 +2,7 @@ import type { Act } from '../components/ActionNotice'
 import type { BulkAct } from '../components/BulkNotice'
 import { EmptyState } from '../components/EmptyState'
 import { Section } from '../components/Layout'
+import { RepoFilter } from '../components/RepoFilter'
 import { LIST } from '../glossary'
 import type { RunsResponse } from '../server'
 import { DoneTasks } from './list/DoneTasks'
@@ -16,7 +17,8 @@ import { Tasks } from './list/Tasks'
  * Decisions and running tasks open, since they change and ask to be
  * watched; stopped ones stay closed, each with why on its row, unless
  * another run of the task is still open or asks for a person. Archived
- * tasks are among the finished ones.
+ * tasks are among the finished ones. With runs of more than one
+ * repository, a switch above narrows all of it to one.
  */
 export function RunsScreen({
   data,
@@ -47,6 +49,7 @@ export function RunsScreen({
   ).length
   return (
     <>
+      <RepoFilter page="runs" scope={data} />
       <Overview
         note={
           decision.length === 0 && stop.length === 0
@@ -82,6 +85,8 @@ export function RunsScreen({
       </Section>
       {stop.length > 0 ? (
         <StopTasks
+          // Another repository's choice is never carried over.
+          key={data.repo ?? ''}
           tasks={stop}
           rows={rows}
           now={data.now}

@@ -4,7 +4,7 @@ import { EmptyState } from '../components/EmptyState'
 import { PageTitle } from '../components/Layout'
 import { RefreshStatus, Shell } from '../components/Shell'
 import { REFRESH, SHELL } from '../glossary'
-import type { Route } from '../route'
+import { pageHref, type Route } from '../route'
 import { usePolled } from '../usePolled'
 
 /**
@@ -13,6 +13,7 @@ import { usePolled } from '../usePolled'
  */
 export function PolledPage<T>({
   route,
+  repo,
   url,
   heading,
   back,
@@ -20,6 +21,8 @@ export function PolledPage<T>({
   render,
 }: {
   route: Route
+  /** The repository last chosen, which the links to the list keep. */
+  repo?: string
   url: string
   heading: (data: T | null) => ReactNode
   back?: boolean
@@ -29,11 +32,11 @@ export function PolledPage<T>({
 }) {
   const polled = usePolled<T>(url)
   return (
-    <Shell route={route} status={<RefreshStatus polled={polled} />}>
+    <Shell route={route} repo={repo} status={<RefreshStatus polled={polled} />}>
       <div className="mb-6 flex flex-col gap-2">
         {back ? (
           <a
-            href="#/"
+            href={pageHref('runs', repo)}
             className="text-fg-2 hover:text-fg inline-flex min-h-8 items-center self-start text-sm"
           >
             {SHELL.back}

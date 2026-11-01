@@ -3,7 +3,11 @@ import { CopyAnnouncer, CopyButton, useCopy } from '../components/copy'
 import { Collapsible, Panel } from '../components/Layout'
 import { StageTrack } from '../components/StageTrack'
 import { StatusBadge } from '../components/StatusBadge'
-import { ArchivedMark, SupersededMark } from '../components/SupersededMark'
+import {
+  ArchivedMark,
+  RepoMark,
+  SupersededMark,
+} from '../components/SupersededMark'
 import { TaskLineage } from '../components/TaskLineage'
 import { runState } from '../components/TaskRow'
 import { Ago } from '../components/Time'
@@ -19,8 +23,9 @@ import { tokensComplete, TriagePanel } from './run/SummaryPanel'
 import { UsagePanels } from './run/UsagePanels'
 
 /**
- * The run's one state, when it started, its ID, the other runs of its task
- * and its stages. The state is said once: how it ended, or where it is.
+ * The run's one state, its repository, when it started, its ID, the other
+ * runs of its task and its stages. The state is said once: how it ended, or
+ * where it is.
  */
 function RunHeader({ data }: { data: RunDetailResponse }) {
   const r = data.report
@@ -40,6 +45,7 @@ function RunHeader({ data }: { data: RunDetailResponse }) {
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <StatusBadge label={state.label} tone={state.tone} />
+        <RepoMark name={data.repo.name} path={data.repo.path ?? undefined} />
         {superseded ? <SupersededMark /> : null}
         {data.archived ? <ArchivedMark /> : null}
         <span className="text-fg-2 text-sm">

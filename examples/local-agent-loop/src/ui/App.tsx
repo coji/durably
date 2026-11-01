@@ -212,6 +212,13 @@ export function App({ token }: { token: string }) {
   // the view last chosen until the page reloads.
   const [compareView, setCompareView] = useState<CompareView>('trend')
   useFocusOnChange(compareView)
+  // The repository the list or the summary was last narrowed to, from its
+  // URL: a run's page keeps it for its links back.
+  const [lastRepo, setLastRepo] = useState<string | undefined>(undefined)
+  const scoped = route.page === 'runs' || route.page === 'compare'
+  if (scoped && route.repo !== lastRepo) setLastRepo(route.repo)
+  const repo = scoped ? route.repo : lastRepo
+  const query = repo ? `?repo=${encodeURIComponent(repo)}` : ''
   // The design page reads nothing from the API, so nothing polls there.
   if (route.page === 'design') return <DesignScreen route={route} />
   // Keyed by URL, so moving to another page stops the old page's polling
@@ -222,6 +229,7 @@ export function App({ token }: { token: string }) {
       <PolledPage<RunDetailResponse>
         key={url}
         route={route}
+        repo={repo}
         url={url}
         back
         notice={notice}
@@ -235,7 +243,8 @@ export function App({ token }: { token: string }) {
       <PolledPage<TrendResponse>
         key="trend"
         route={route}
-        url="/api/trend"
+        repo={repo}
+        url={`/api/trend${query}`}
         heading={() => SHELL.compare}
         render={(data) => <TrendScreen data={data} onView={setCompareView} />}
       />
@@ -243,7 +252,8 @@ export function App({ token }: { token: string }) {
       <PolledPage<CompareResponse>
         key="compare"
         route={route}
-        url="/api/compare"
+        repo={repo}
+        url={`/api/compare${query}`}
         heading={() => SHELL.compare}
         render={(data) => <CompareScreen data={data} onView={setCompareView} />}
       />
@@ -252,7 +262,8 @@ export function App({ token }: { token: string }) {
     <PolledPage<RunsResponse>
       key="runs"
       route={route}
-      url="/api/runs"
+      repo={repo}
+      url={`/api/runs${query}`}
       notice={notice}
       heading={() => SHELL.runs}
       render={(data) => <RunsScreen data={data} act={act} actMany={actMany} />}

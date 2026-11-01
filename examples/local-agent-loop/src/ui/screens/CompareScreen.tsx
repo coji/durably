@@ -8,6 +8,7 @@ import {
 } from '../../engine/format'
 import { DataTable, Td, Th } from '../components/DataTable'
 import { EmptyState } from '../components/EmptyState'
+import { RepoFilter } from '../components/RepoFilter'
 import { COMMON, COMPARE, TREND } from '../glossary'
 import type { CompareResponse, TrendResponse } from '../server'
 import { GroupPanel } from './compare/GroupPanel'
@@ -222,6 +223,7 @@ export function TrendScreen({
   const days = formatCount(data.days)
   return (
     <div className="flex flex-col gap-4">
+      <RepoFilter page="compare" scope={data} />
       <ViewSwitch view="trend" onView={onView} />
       {data.groups.length === 0 ? (
         <EmptyState>
@@ -257,6 +259,7 @@ export function CompareScreen({
   const groups = data.comparison.groups
   return (
     <div className="flex flex-col gap-4">
+      <RepoFilter page="compare" scope={data} />
       <ViewSwitch view="config" onView={onView} />
       {groups.length === 0 ? (
         <EmptyState>{COMPARE.empty}</EmptyState>

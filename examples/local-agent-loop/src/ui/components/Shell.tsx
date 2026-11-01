@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 
 import { REFRESH, SHELL } from '../glossary'
-import type { Route } from '../route'
+import { pageHref, type Route } from '../route'
 import type { PollState } from '../usePolled'
 import { focusPageTitle } from './Layout'
 import { clockFormat } from './Time'
@@ -59,13 +59,18 @@ function NavLink({
   )
 }
 
-/** The sticky header with the two screens, and the page below it. */
+/**
+ * The sticky header with the two screens, and the page below it. Both
+ * screens open narrowed to `repo`, the repository last chosen.
+ */
 export function Shell({
   route,
+  repo,
   status,
   children,
 }: {
   route: Route
+  repo?: string
   status?: ReactNode
   children: ReactNode
 }) {
@@ -84,12 +89,15 @@ export function Shell({
           <span className="text-sm font-semibold">{SHELL.product}</span>
           <nav aria-label={SHELL.nav} className="flex gap-1">
             <NavLink
-              href="#/"
+              href={pageHref('runs', repo)}
               current={route.page === 'runs' || route.page === 'run'}
             >
               {SHELL.runs}
             </NavLink>
-            <NavLink href="#/compare" current={route.page === 'compare'}>
+            <NavLink
+              href={pageHref('compare', repo)}
+              current={route.page === 'compare'}
+            >
               {SHELL.compare}
             </NavLink>
           </nav>

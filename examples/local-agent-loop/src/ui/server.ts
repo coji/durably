@@ -114,7 +114,13 @@ import {
 import { TERMINAL_STATUSES } from '../engine/terminal.js'
 import { runRootOf } from '../factory/layout.js'
 import { BASELINE_STEP } from '../factory/types.js'
-import { COMMON, PIPELINE_WORDS, RUN_NAME, TRACE_WORDS } from './glossary.js'
+import {
+  COMMON,
+  PIPELINE_WORDS,
+  REPO,
+  RUN_NAME,
+  TRACE_WORDS,
+} from './glossary.js'
 import { lensName, roleName, stageName, stepPartName } from './labels.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -143,6 +149,8 @@ export interface RunRow {
   createdAt: string
   /** From the stored input; see `runName`. */
   name: string
+  /** The repository's short name; see `repoNames`. */
+  repo: string
   diagnosis: Diagnosis
   /** A lease-expired run left an agent call without a completion. */
   uncertainCall: boolean
@@ -172,7 +180,24 @@ export interface RunRow {
   pipeline: Pipeline
 }
 
-export interface RunsResponse {
+/** A repository the runs worked on, as the page's switch offers it. */
+export interface RepoOption {
+  /** What `?repo=` names it by; see `repoKeyOf`. */
+  key: string
+  /** See `repoNames`. */
+  name: string
+}
+
+/**
+ * The repositories of every run, and the one a view was narrowed to: null
+ * for all of them, also when `?repo=` names none of them.
+ */
+export interface RepoScope {
+  repos: RepoOption[]
+  repo: string | null
+}
+
+export interface RunsResponse extends RepoScope {
   db: string
   /** False until a worker or `trigger` creates the database. */
   exists: boolean
@@ -190,6 +215,8 @@ export interface RunDetailResponse {
   now: string
   /** From the stored input; see `runName`. */
   name: string
+  /** The repository's short name, and its path for a repository run. */
+  repo: { name: string; path: string | null }
   createdAt: string
   diagnosis: Diagnosis
   uncertainCall: boolean
@@ -229,9 +256,9 @@ export interface RunDetailResponse {
  * run's code model and effort, fake tasks left out: what `compare --trend
  * --format json` prints.
  */
-export type TrendResponse = Trend
+export type TrendResponse = Trend & RepoScope
 
-export interface CompareResponse {
+export interface CompareResponse extends RepoScope {
   /** Finished runs, newest first, in the order given to `compareReports`. */
   runIds: string[]
   comparison: Comparison
@@ -269,6 +296,110 @@ export function runName(input: unknown): string {
           .find((l) => l.length > 0) ?? '')
   if (line.length === 0) return RUN_NAME.unnamed
   return line.length > NAME_MAX ? `${line.slice(0, NAME_MAX - 1)}…` : line
+}
+
+/** The key of the bundled sample's runs; a repository's is its path. */
+export const SUBJECT_REPO = 'subject'
+/** The key of a repository run whose input names no path. */
+export const UNKNOWN_REPO = 'unknown'
+
+/**
+ * Which repository a run worked on, from its stored input: the target's
+ * `repoPath`, or a key of its own for the bundled sample and for a
+ * repository run without a path. A path always starts with `/`, so it is
+ * never mistaken for either.
+ */
+export function repoKeyOf(input: unknown): string {
+  const target = (input as { target?: { kind?: string; repoPath?: unknown } })
+    ?.target
+  if (target?.kind !== 'repo') return SUBJECT_REPO
+  return typeof target.repoPath === 'string' && target.repoPath.length > 0
+    ? target.repoPath
+    : UNKNOWN_REPO
+}
+
+/**
+ * A short name for each repository key: the directory's own name, with as
+ * many parent directories before it as it takes to tell apart repositories
+ * whose names are the same. The bundled sample and a run without a path
+ * have names of their own.
+ */
+export function repoNames(keys: Iterable<string>): Map<string, string> {
+  const names = new Map<string, string>()
+  const parts = new Map<string, string[]>()
+  for (const key of new Set(keys)) {
+    if (key === SUBJECT_REPO) names.set(key, REPO.subject)
+    else if (key === UNKNOWN_REPO) names.set(key, REPO.unknown)
+    else parts.set(key, key.split('/').filter(Boolean))
+  }
+  const depth = new Map([...parts.keys()].map((key) => [key, 1]))
+  const nameOf = (key: string) =>
+    (parts.get(key) ?? []).slice(-(depth.get(key) ?? 1)).join('/') || key
+  for (let grew = true; grew;) {
+    grew = false
+    const byName = new Map<string, string[]>()
+    for (const key of parts.keys())
+      byName.set(nameOf(key), [...(byName.get(nameOf(key)) ?? []), key])
+    for (const same of byName.values())
+      if (same.length > 1)
+        for (const key of same) {
+          const d = depth.get(key) ?? 1
+          if (d < (parts.get(key)?.length ?? 0)) {
+            depth.set(key, d + 1)
+            grew = true
+          }
+        }
+  }
+  for (const key of parts.keys()) names.set(key, nameOf(key))
+  return names
+}
+
+/**
+ * The repositories of `all`, by name with the sample and an unknown one
+ * last, and the runs of the one `wanted` names: every run when it names
+ * none of them. A run counts under its task's first run's repository, so
+ * a repair is never split from the run it repairs. `keys` holds each run's
+ * key by its ID.
+ */
+export function scopeRuns<
+  R extends Pick<Run, 'id' | 'input'> & { labels?: Record<string, string> },
+>(
+  all: R[],
+  wanted: string | null,
+): {
+  scope: RepoScope
+  keys: Map<string, string>
+  names: Map<string, string>
+  runs: R[]
+} {
+  const byId = new Map(all.map((r) => [r.id, r]))
+  const rootOf = (run: R) => {
+    const seen = new Set([run.id])
+    for (let up = byId.get(repairParentId(run) ?? ''); up;) {
+      if (seen.has(up.id)) break
+      seen.add(up.id)
+      run = up
+      up = byId.get(repairParentId(up) ?? '')
+    }
+    return run
+  }
+  const keys = new Map(all.map((r) => [r.id, repoKeyOf(rootOf(r).input)]))
+  const names = repoNames(keys.values())
+  const last = (key: string) => key === SUBJECT_REPO || key === UNKNOWN_REPO
+  const repos = [...names]
+    .map(([key, name]) => ({ key, name }))
+    .sort(
+      (x, y) =>
+        Number(last(x.key)) - Number(last(y.key)) ||
+        x.name.localeCompare(y.name),
+    )
+  const repo = wanted !== null && names.has(wanted) ? wanted : null
+  return {
+    scope: { repos, repo },
+    keys,
+    names,
+    runs: repo === null ? all : all.filter((r) => keys.get(r.id) === repo),
+  }
 }
 
 // ---------------------------------------------------------------- pipeline
@@ -1183,6 +1314,9 @@ export function deriveTrace(input: TraceInput): Trace {
   }
 }
 
+/** A view before the database exists: no repositories, none chosen. */
+const NO_SCOPE: RepoScope = { repos: [], repo: null }
+
 /** A database that exists but has no tables yet reads as `empty`. */
 function orEmpty<T>(read: Promise<T>, empty: T): Promise<T> {
   return read.catch((error: unknown) => {
@@ -1382,11 +1516,13 @@ async function inspect(
 function runRow(
   run: Run,
   { report, ...seen }: Awaited<ReturnType<typeof inspect>>,
+  repo: string,
 ): RunRow {
   return {
     id: run.id,
     status: run.status,
     ...seen,
+    repo,
     reviewHighlights:
       seen.diagnosis.kind === 'approval' ? report.reviewHighlights : null,
     conclusion: report.summary.conclusion,
@@ -1545,22 +1681,27 @@ function createUiApi() {
 
   const reports = finishedReportCache()
 
-  async function runs(): Promise<RunsResponse> {
+  async function runs(wanted: string | null): Promise<RunsResponse> {
     const now = Date.now()
     const base = {
       db: dbPath(stateRoot),
       now: new Date(now).toISOString(),
     }
     const db = source()
-    if (!db) return { ...base, exists: false, runs: [], tasks: [] }
+    if (!db) return { ...base, ...NO_SCOPE, exists: false, runs: [], tasks: [] }
     const all = await orEmpty(allRuns(db), [])
     reports.keep(all)
-    const src = readOnce(db, all)
+    const { scope, keys, names, runs: picked } = scopeRuns(all, wanted)
+    const src = readOnce(db, picked)
     const archived = archivedRunIds(stateRoot)
-    const built = await listedReports(reports, src, all, all)
+    const built = await listedReports(reports, src, picked, all)
     const rows = await Promise.all(
       built.map(async ({ run, report, fresh }) =>
-        runRow(run, await inspect(src, run, now, report, fresh, archived)),
+        runRow(
+          run,
+          await inspect(src, run, now, report, fresh, archived),
+          names.get(keys.get(run.id) ?? '') ?? REPO.unknown,
+        ),
       ),
     )
     const tasks = groupTasks(
@@ -1569,7 +1710,13 @@ function createUiApi() {
         archived: archived.has(run.id),
       })),
     )
-    return { ...base, exists: true, runs: listRows(rows, tasks), tasks }
+    return {
+      ...base,
+      ...scope,
+      exists: true,
+      runs: listRows(rows, tasks),
+      tasks,
+    }
   }
 
   async function run(id: string): Promise<RunDetailResponse> {
@@ -1579,12 +1726,17 @@ function createUiApi() {
     if (!db || !found) throw new HttpError(404, `no run ${id}`)
     const src = readOnce(db, [found])
     const archived = archivedRunIds(stateRoot)
-    const { report, fresh } = await reports.get(src, found)
+    const [{ report, fresh }, all] = await Promise.all([
+      reports.get(src, found),
+      orEmpty(allRuns(db), [found]),
+    ])
+    const { keys, names } = scopeRuns(all, null)
+    const key = keys.get(id) ?? repoKeyOf(found.input)
     const [seen, steps, baselineSource, lineage] = await Promise.all([
       inspect(src, found, now, report, fresh, archived),
       src.storage.getSteps(id),
       baselineSourceOf(src, report.baseline),
-      lineageOf(db, found, now, archived),
+      lineageOf(db, all, found, now, archived),
     ])
     const stepOutputs: Record<string, unknown> = {}
     for (const s of steps)
@@ -1592,6 +1744,10 @@ function createUiApi() {
     return {
       now: new Date(now).toISOString(),
       ...seen,
+      repo: {
+        name: names.get(key) ?? REPO.unknown,
+        path: key.startsWith('/') ? key : null,
+      },
       lineage,
       checkLogs: checkLogFiles(seen.diagnosis.failure?.details ?? []),
       baselineSource,
@@ -1619,11 +1775,11 @@ function createUiApi() {
    */
   async function lineageOf(
     db: AgentLoopDurably,
+    all: Run[],
     run: Run,
     now: number,
     archived: ReadonlySet<string>,
   ): Promise<LineageRun[]> {
-    const all = await orEmpty(allRuns(db), [run])
     const ids = new Set(
       taskRunIds(
         all.map((r) => ({ id: r.id, parentId: repairParentId(r) })),
@@ -1672,38 +1828,47 @@ function createUiApi() {
     })
   }
 
-  async function compare(): Promise<CompareResponse> {
+  async function compare(wanted: string | null): Promise<CompareResponse> {
     const db = source()
-    if (!db) return { runIds: [], comparison: { groups: [] } }
+    if (!db) return { ...NO_SCOPE, runIds: [], comparison: { groups: [] } }
     const all = await orEmpty(allRuns(db), [])
     reports.keep(all)
-    const done = all.filter((r) => TERMINAL_STATUSES.includes(r.status))
+    const { scope, runs: picked } = scopeRuns(all, wanted)
+    const done = picked.filter((r) => TERMINAL_STATUSES.includes(r.status))
     const src = readOnce(db, done)
     const built = (await listedReports(reports, src, done, all)).map(
       (r) => r.report,
     )
     return {
+      ...scope,
       runIds: done.map((r) => r.id),
       comparison: compareReports(built),
     }
   }
 
-  async function trend(): Promise<TrendResponse> {
+  async function trend(wanted: string | null): Promise<TrendResponse> {
     const now = Date.now()
     const db = source()
-    if (!db) return trendOf([], { now })
+    if (!db) return { ...trendOf([], { now }), ...NO_SCOPE }
     const all = await orEmpty(allRuns(db), [])
     reports.keep(all)
+    const { scope, runs: picked } = scopeRuns(all, wanted)
     // Only the runs of the window's tasks get a report, never the whole
     // history.
-    const rows = all.map((run) => ({ ...run, parentId: repairParentId(run) }))
+    const rows = picked.map((run) => ({
+      ...run,
+      parentId: repairParentId(run),
+    }))
     const read = new Set(trendRunIds(rows, { now }))
     const done = rows.filter((r) => read.has(r.id))
     const built = await listedReports(reports, readOnce(db, done), done, all)
-    return trendOf(
-      built.map(({ run, report }) => ({ ...run, report })),
-      { now },
-    )
+    return {
+      ...trendOf(
+        built.map(({ run, report }) => ({ ...run, report })),
+        { now },
+      ),
+      ...scope,
+    }
   }
 
   // Writes wait for the one before: several sent at once, such as a bulk
@@ -1807,9 +1972,10 @@ function createUiApi() {
 
   async function handle(url: URL): Promise<unknown> {
     const { pathname } = url
-    if (pathname === '/api/runs') return runs()
-    if (pathname === '/api/compare') return compare()
-    if (pathname === '/api/trend') return trend()
+    const repo = url.searchParams.get('repo')
+    if (pathname === '/api/runs') return runs(repo)
+    if (pathname === '/api/compare') return compare(repo)
+    if (pathname === '/api/trend') return trend(repo)
     const match = /^\/api\/runs\/([^/]+)$/.exec(pathname)
     if (match?.[1]) return run(idOf(match[1]))
     const logs = /^\/api\/runs\/([^/]+)\/logs\/([^/]+)$/.exec(pathname)
