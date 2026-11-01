@@ -34,6 +34,8 @@ export function reduce(state: FactoryState, event: FactoryEvent): FactoryState {
         approval: null,
         repairNotes: [],
         failedCheckReviews: [],
+        // The new candidate's own, or none: never an earlier candidate's.
+        implementerNotes: event.implementerNotes ?? null,
       }
     case 'verify.completed':
       if (event.targetId !== state.candidate?.id)

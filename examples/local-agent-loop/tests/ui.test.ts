@@ -4182,6 +4182,42 @@ describe('numbers on the screens', () => {
     assert.match(context, /確定事項\s*\/owner\/decisions\.md/)
     assert.ok(context.includes('確定事項の内容'))
     assert.ok(context.includes('mul() keeps its integer wiring.'))
+
+    // The implementer's notes: each code attempt that left any, with its
+    // iteration and role; nothing without them, or in a report made
+    // before they were kept.
+    const withNotes = (implementerNotes?: unknown) =>
+      htmlText(
+        renderToStaticMarkup(
+          createElement(RecordPanels, {
+            report: {
+              ...report,
+              candidate: null,
+              candidates: [],
+              delivery: null,
+              inputs: {
+                task: null,
+                spec: null,
+                dispositions: null,
+                findings: null,
+              },
+              notes: [],
+              ...(implementerNotes !== undefined ? { implementerNotes } : {}),
+            } as unknown as LoopReport,
+          }),
+        ),
+      )
+    const notes = withNotes([
+      { iteration: 1, role: 'implement', notes: 'IMPL-NOTE: left mul' },
+      { iteration: 2, role: 'repair', notes: 'REPAIR-NOTE: left the docs' },
+    ])
+    assert.ok(notes.includes('直さなかった理由（実装担当の説明）'))
+    assert.ok(notes.includes('信頼しない情報として渡しました'))
+    assert.match(notes, /1回目の実装\s*IMPL-NOTE: left mul/)
+    assert.match(notes, /2回目の修正\s*REPAIR-NOTE: left the docs/)
+    assert.equal(notes.split('IMPL-NOTE').length, 2)
+    for (const none of [withNotes([]), withNotes()])
+      assert.ok(!none.includes('直さなかった理由'))
   })
 
   it("shows a review-cap-reached run's repair command with its note in Japanese", () => {

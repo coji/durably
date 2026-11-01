@@ -626,3 +626,45 @@ describe('the agent call limits and a candidate sealed from a stopped call', () 
     assert.doesNotMatch(reportToMarkdown(baseReport()), /agent call limits/)
   })
 })
+
+describe("the implementer's notes in the report", () => {
+  it('lists each code attempt with notes once, by iteration and role, in the Markdown and the JSON', () => {
+    const implementerNotes = [
+      { iteration: 1, role: 'implement' as const, notes: 'left mul as is' },
+      {
+        iteration: 3,
+        role: 'repair' as const,
+        notes: '## not a heading\n```\nleft the docs',
+      },
+    ]
+    const report: LoopReport = { ...baseReport(), implementerNotes }
+    const md = reportToMarkdown(report)
+    assert.equal(
+      md.split(
+        "## Implementer notes (untrusted, the implementer's own explanations)",
+      ).length,
+      2,
+    )
+    assert.match(
+      md,
+      /- iteration 1 \(implement\):\n\n```+\nleft mul as is\n```+/,
+    )
+    // The implementer's text is fenced longer than any run of backticks in
+    // it, so none of it reads as the report's own Markdown.
+    assert.match(
+      md,
+      /- iteration 3 \(repair\):\n\n````+\n## not a heading\n```\nleft the docs\n````+/,
+    )
+    assert.equal(md.split('left mul as is').length, 2)
+    const json = JSON.parse(reportToJson(report)) as LoopReport
+    assert.deepEqual(json.implementerNotes, implementerNotes)
+  })
+
+  it('omits the section without notes, and for a report made before they were kept', () => {
+    for (const report of [
+      { ...baseReport(), implementerNotes: [] },
+      baseReport(),
+    ])
+      assert.doesNotMatch(reportToMarkdown(report), /Implementer notes/)
+  })
+})

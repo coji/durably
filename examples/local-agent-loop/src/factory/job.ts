@@ -386,6 +386,7 @@ const fakeScenarioSchema = z
       .optional(),
     usage: z.enum(['none', 'realistic']).optional(),
     summary: z.string().optional(),
+    codeReplies: z.array(z.string()).optional(),
     changes: z.record(z.string().min(1), z.string()).optional(),
     claudeEffortResume: z.boolean().optional(),
     specText: z.string().min(1).optional(),

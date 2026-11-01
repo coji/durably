@@ -44,7 +44,6 @@ import {
   DEFAULT_COMMIT_SETTINGS,
   type CommitSettings,
   type FindingsRef,
-  checkContextText,
   type InputFileRef,
   MAX_CONTEXT_BYTES,
   type RepairParentConclusion,
@@ -318,12 +317,11 @@ async function resolveCodexPath(
  * confirmed decisions cannot change under it.
  */
 async function readContextFile(path: string) {
-  const file = await readInputFile(path, {
+  // Not blank and within the limit, as `checkContextText` would check.
+  return readInputFile(path, {
     name: '--context-file',
     maxBytes: MAX_CONTEXT_BYTES,
   })
-  checkContextText(`--context-file ${path}`, file.content)
-  return file
 }
 
 function splitArgv(value: string): string[] {

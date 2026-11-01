@@ -17,6 +17,7 @@ import {
   SPEC_FINAL_STEP,
   type RepairSessionRecord,
   type ReviewLens,
+  type StoredImplementerNotes,
   type TestProbeRecord,
 } from '../factory/types.js'
 import { classifyRun, stageStep } from './failure-reasons.js'
@@ -52,6 +53,7 @@ import {
   type ReportDelivery,
   type ReportFinding,
   type ReportFindings,
+  type ReportImplementerNotes,
   type ReportInputs,
   type ReportLineage,
   type ReportPreflight,
@@ -417,9 +419,14 @@ function asTimeout(value: unknown): AgentTimeout | null {
     : null
 }
 
-/** Every completed `stage:<n>:code:candidate` step, in sealing order. */
-function sealedCandidates(steps: StoredStep[]): ReportSealedCandidate[] {
-  const sealed = steps
+/**
+ * Every completed `stage:<n>:code:candidate` step, in sealing order, with
+ * its iteration: the one numbering both the candidates and their notes use.
+ */
+function sealedCodeSteps(
+  steps: StoredStep[],
+): { candidate: ReportSealedCandidate; output: unknown }[] {
+  return steps
     .flatMap((s) => {
       const where = stageStep(s.name)
       const candidate = asReportCandidate(s.output)
@@ -427,11 +434,43 @@ function sealedCandidates(steps: StoredStep[]): ReportSealedCandidate[] {
         where?.stage === 'code' &&
         where.part === 'candidate' &&
         candidate
-        ? [{ ...candidate, sequence: where.sequence }]
+        ? [{ candidate, sequence: where.sequence, output: s.output }]
         : []
     })
     .sort((x, y) => x.sequence - y.sequence)
-  return sealed.map((c, i) => ({ ...c, iteration: i + 1 }))
+    .map(({ candidate, sequence, output }, i) => ({
+      candidate: { ...candidate, sequence, iteration: i + 1 },
+      output,
+    }))
+}
+
+/** Every completed `stage:<n>:code:candidate` step, in sealing order. */
+function sealedCandidates(steps: StoredStep[]): ReportSealedCandidate[] {
+  return sealedCodeSteps(steps).map((s) => s.candidate)
+}
+
+/**
+ * Each code attempt's NOTES, from its completed `stage:<n>:code:candidate`
+ * step, in sealing order: only what the step stored is read, so the reply
+ * is never parsed again. Attempts that left none are skipped, keeping the
+ * iteration of the rest.
+ */
+function implementerNotesOf(steps: StoredStep[]): ReportImplementerNotes[] {
+  return sealedCodeSteps(steps).flatMap(({ candidate, output }) => {
+    const stored = (
+      output as { implementerNotes?: Partial<StoredImplementerNotes> }
+    ).implementerNotes
+    return (stored?.role === 'implement' || stored?.role === 'repair') &&
+      typeof stored.notes === 'string'
+      ? [
+          {
+            iteration: candidate.iteration,
+            role: stored.role,
+            notes: stored.notes,
+          },
+        ]
+      : []
+  })
 }
 
 /**
@@ -1369,6 +1408,7 @@ export async function buildReport(
     candidate,
     candidates,
     testProbes: testProbesOf(steps),
+    implementerNotes: implementerNotesOf(steps),
     repairSession: repairSession?.report ?? null,
     repairCalls: repairCallsOf(rows),
     reviews,

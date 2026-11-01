@@ -1,6 +1,8 @@
 /** Persistable stage results consumed by the pure reducer. */
 import { z } from 'zod'
 
+import { IMPLEMENTER_NOTES_MAX_BYTES } from './prompts.js'
+
 /** A repository candidate's diff files and size, written when it was sealed. */
 export const candidateChangesSchema = z.object({
   diffPath: z.string(),
@@ -102,6 +104,17 @@ export const FactoryEventSchema = z.discriminatedUnion('type', [
     role: z.enum(['implement', 'repair']),
     candidate: candidateSchema,
     session: sessionSchema.nullable(),
+    // The reply's NOTES, as the candidate step stored them. Optional so an
+    // event recorded before it existed still parses, as no notes.
+    implementerNotes: z
+      .string()
+      .min(1)
+      .refine(
+        (notes) =>
+          Buffer.byteLength(notes, 'utf8') <= IMPLEMENTER_NOTES_MAX_BYTES,
+        `implementer notes are over ${IMPLEMENTER_NOTES_MAX_BYTES} bytes`,
+      )
+      .optional(),
   }),
   z.object({
     type: z.literal('verify.completed'),
