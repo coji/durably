@@ -5,9 +5,13 @@ import type { Act } from '../../components/ActionNotice'
 import { EmptyState } from '../../components/EmptyState'
 import { LiveProgress } from '../../components/LiveProgress'
 import { RunActions } from '../../components/RunActions'
-import { runHref } from '../../components/RunLink'
+import { useRunHref } from '../../components/RunLink'
 import { StageTrack } from '../../components/StageTrack'
-import { ArchivedMark, FakeMark } from '../../components/SupersededMark'
+import {
+  ArchivedMark,
+  FakeMark,
+  RepoMark,
+} from '../../components/SupersededMark'
 import { runState, TaskList, TaskMeta, TaskRow } from '../../components/TaskRow'
 import { BULK, LIST } from '../../glossary'
 import { diagnosisText, retryLabel } from '../../labels'
@@ -53,10 +57,14 @@ function othersOpen(task: Task): boolean {
   )
 }
 
-/** Words beside the ID: archived, and a finished rehearsal on the fake. */
+/**
+ * Words beside the name: its repository, archived, and a finished
+ * rehearsal on the fake.
+ */
 function Marks({ task, rep }: { task: Task; rep: RunRow }) {
   return (
     <>
+      <RepoMark name={rep.repo} />
       {rep.archived ? <ArchivedMark /> : null}
       {task.attention === 'done' && task.fake ? <FakeMark /> : null}
     </>
@@ -125,6 +133,7 @@ function TaskItem({
   selection?: Selection
 }) {
   const [asking, setAsking] = useState<string | null>(null)
+  const runHref = useRunHref()
   const rep = rows.get(task.representative)
   const name = taskName(task, rows)
   if (!rep || !name) return null

@@ -8,13 +8,14 @@
  * by an in-process fake-mode worker against that same database.
  */
 import assert from 'node:assert/strict'
-import { spawn, type ChildProcess } from 'node:child_process'
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import {
   mkdir,
   mkdtemp,
   readdir,
   readFile,
+  realpath,
   rm,
   symlink,
   writeFile,
@@ -65,7 +66,7 @@ import {
   type TaskRunInput,
 } from '../src/engine/status.js'
 import { archiveMarkerOf } from '../src/factory/layout.js'
-import { repairLabels } from '../src/factory/repair.js'
+import { REPAIR_OF_LABEL, repairLabels } from '../src/factory/repair.js'
 import { ActionNotice } from '../src/ui/components/ActionNotice.js'
 import {
   BulkNotice,
@@ -76,7 +77,9 @@ import {
   type BulkOutcome,
   type SeriesResult,
 } from '../src/ui/components/BulkNotice.js'
+import { RepoFilter } from '../src/ui/components/RepoFilter.js'
 import { ReviewFindingTitles } from '../src/ui/components/ReviewFindingTitles.js'
+import { RepoContext, RunLink } from '../src/ui/components/RunLink.js'
 import { openNow } from '../src/ui/components/TaskRow.js'
 import {
   ACTION,
@@ -91,6 +94,7 @@ import {
   KIND_NAME,
   LIST,
   PIPELINE_SUFFIX,
+  REPO,
   REVIEW,
   REVIEW_STATUS,
   TREND,
@@ -122,6 +126,7 @@ import { BaselineSource } from '../src/ui/screens/run/StageTimings.js'
 
 /** A page's actions, for a page rendered where nothing is sent. */
 const noAct = async () => true
+const noBulk = async () => {}
 
 /** A diagnosis sentence in Japanese only. */
 const KIND_TEXT_OK = (text: string) => !/[A-Za-z()（）]/.test(text)
@@ -133,7 +138,12 @@ import {
   type LogView,
 } from '../src/ui/components/trace/AttemptLog.js'
 import { pollEvery } from '../src/ui/poll.js'
-import { parseRoute } from '../src/ui/route.js'
+import {
+  pageHref,
+  parseRoute,
+  reconciledHref,
+  withRepo,
+} from '../src/ui/route.js'
 import { GroupPanel } from '../src/ui/screens/compare/GroupPanel.js'
 import { TrendScreen } from '../src/ui/screens/CompareScreen.js'
 import { DesignScreen } from '../src/ui/screens/DesignScreen.js'
@@ -157,8 +167,15 @@ import {
   type LogChunk,
   listRows,
   readOnce,
+  repoKeyOf,
+  repoNames,
+  repoTopLevel,
+  TOP_LEVEL_RETRY_MS,
   runName,
+  scopeRuns,
+  SUBJECT_REPO,
   SUBJECT_RUN_NAME,
+  UNKNOWN_REPO,
   type CompareResponse,
   type RunDetailResponse,
   type RunRef,
@@ -206,6 +223,232 @@ describe('runName', () => {
     assert.equal(runName({ target: { kind: 'subject' } }), SUBJECT_RUN_NAME)
     assert.equal(SUBJECT_RUN_NAME, '同梱題材: calc の add を直す')
     assert.notEqual(runName(repo({ task: '   \n ' })), '')
+  })
+})
+
+describe('repositories', () => {
+  const repo = (repoPath?: string) => ({
+    target: { kind: 'repo', task: 't', ...(repoPath ? { repoPath } : {}) },
+  })
+
+  it('keys a run by its repository path, the sample and a run without a path by their own keys', () => {
+    assert.equal(repoKeyOf(repo('/w/durably')), '/w/durably')
+    assert.equal(repoKeyOf({ target: { kind: 'subject' } }), SUBJECT_REPO)
+    assert.equal(repoKeyOf(repo()), UNKNOWN_REPO)
+    // An input that names no target is unknown, never the sample.
+    assert.equal(repoKeyOf(null), UNKNOWN_REPO)
+    assert.equal(repoKeyOf({}), UNKNOWN_REPO)
+    assert.equal(repoKeyOf({ target: {} }), UNKNOWN_REPO)
+    // A repository run without a path is never counted as the sample.
+    assert.notEqual(
+      repoKeyOf(repo()),
+      repoKeyOf({ target: { kind: 'subject' } }),
+    )
+  })
+
+  it('keys one repository by one key, however its path was written', async () => {
+    // Paths git can't answer for are only resolved.
+    assert.equal(repoKeyOf(repo('/w/durably/')), '/w/durably')
+    assert.equal(repoKeyOf(repo('/w/x/../durably')), '/w/durably')
+    const all = scopeRuns(
+      [
+        { id: '1', input: repo('/w/durably') },
+        { id: '2', input: repo('/w/durably/') },
+      ],
+      null,
+    )
+    assert.deepEqual(all.scope.repos, [{ key: '/w/durably', name: 'durably' }])
+    // Another spelling of a repository's path asks for that repository.
+    assert.equal(
+      scopeRuns([{ id: '1', input: repo('/w/durably') }], '/w/durably/').scope
+        .repo,
+      '/w/durably',
+    )
+    // A directory inside a repository is that repository's top level.
+    const dir = await mkdtemp(join(tmpdir(), 'repo-key-'))
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: dir })
+      await mkdir(join(dir, 'app'))
+      const top = await realpath(dir)
+      assert.equal(repoKeyOf(repo(join(dir, 'app'))), top)
+      assert.equal(repoKeyOf(repo(`${dir}/`)), top)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+    // A directory git can't answer for keeps its own path for a while, then
+    // is asked again, so a repository that comes back is grouped again.
+    const late = await mkdtemp(join(tmpdir(), 'repo-late-'))
+    try {
+      const sub = join(late, 'app')
+      const now = Date.now()
+      assert.equal(repoTopLevel(sub, now), sub)
+      execFileSync('git', ['init', '-q'], { cwd: late })
+      await mkdir(sub)
+      assert.equal(repoTopLevel(sub, now + 1), sub)
+      assert.equal(
+        repoTopLevel(sub, now + TOP_LEVEL_RETRY_MS),
+        await realpath(late),
+      )
+    } finally {
+      await rm(late, { recursive: true, force: true })
+    }
+  })
+
+  it('names a repository by its directory, with parents only where two names are the same', () => {
+    const names = repoNames([
+      '/a/x/public',
+      '/b/x/public',
+      '/a/artifactshare/public2',
+      '/w/durably',
+      '/w/durably',
+      SUBJECT_REPO,
+      UNKNOWN_REPO,
+    ])
+    assert.deepEqual(Object.fromEntries(names), {
+      '/a/x/public': 'a/x/public',
+      '/b/x/public': 'b/x/public',
+      '/a/artifactshare/public2': 'public2',
+      '/w/durably': 'durably',
+      [SUBJECT_REPO]: REPO.subject,
+      [UNKNOWN_REPO]: REPO.unknown,
+    })
+    assert.equal(REPO.subject, '同梱題材')
+    // A repository named as the sample or an unknown one is told apart.
+    assert.deepEqual(
+      Object.fromEntries(
+        repoNames([
+          '/w/同梱題材',
+          `/w/${REPO.unknown}`,
+          `/${REPO.subject}`,
+          SUBJECT_REPO,
+          UNKNOWN_REPO,
+        ]),
+      ),
+      {
+        '/w/同梱題材': 'w/同梱題材',
+        [`/w/${REPO.unknown}`]: `w/${REPO.unknown}`,
+        [`/${REPO.subject}`]: `/${REPO.subject}`,
+        [SUBJECT_REPO]: REPO.subject,
+        [UNKNOWN_REPO]: REPO.unknown,
+      },
+    )
+    // Only the two that clash get a parent.
+    assert.deepEqual(
+      Object.fromEntries(repoNames(['/a/public', '/b/public', '/c/site'])),
+      { '/a/public': 'a/public', '/b/public': 'b/public', '/c/site': 'site' },
+    )
+  })
+
+  it('narrows the runs to one repository, and to none for a key no run has', () => {
+    const runs = [
+      { id: '1', input: repo('/a/public') },
+      { id: '2', input: { target: { kind: 'subject' } } },
+      { id: '3', input: repo('/b/public') },
+      { id: '4', input: repo('/a/public') },
+    ]
+    const all = scopeRuns(runs, null)
+    assert.deepEqual(all.scope, {
+      repos: [
+        { key: '/a/public', name: 'a/public' },
+        { key: '/b/public', name: 'b/public' },
+        { key: SUBJECT_REPO, name: REPO.subject },
+      ],
+      repo: null,
+    })
+    assert.deepEqual(
+      all.runs.map((r) => r.id),
+      ['1', '2', '3', '4'],
+    )
+    const one = scopeRuns(runs, '/a/public')
+    assert.equal(one.scope.repo, '/a/public')
+    assert.deepEqual(
+      one.runs.map((r) => r.id),
+      ['1', '4'],
+    )
+    // The options are always every repository's, not the chosen one's.
+    assert.deepEqual(one.scope.repos, all.scope.repos)
+    const gone = scopeRuns(runs, '/c/gone')
+    assert.equal(gone.scope.repo, null)
+    assert.equal(gone.runs.length, 4)
+  })
+
+  it("counts a repair under its task's first run, whatever its own input names", () => {
+    const runs = [
+      { id: 'root', input: repo('/a/site') },
+      {
+        id: 'fix',
+        input: repo('/b/site'),
+        labels: { [REPAIR_OF_LABEL]: 'root' },
+      },
+      { id: 'fix2', input: { ...repo('/b/site'), repairOf: { runId: 'fix' } } },
+      { id: 'other', input: repo('/b/site') },
+    ]
+    const { runs: picked } = scopeRuns(runs, '/a/site')
+    assert.deepEqual(
+      picked.map((r) => r.id),
+      ['root', 'fix', 'fix2'],
+    )
+    assert.deepEqual(
+      scopeRuns(runs, '/b/site').runs.map((r) => r.id),
+      ['other'],
+    )
+    // Each run is still named by its own input; the switch offers only the
+    // repositories tasks count under.
+    const lone = scopeRuns(runs.slice(0, 3), null)
+    assert.equal(lone.names.get(repoKeyOf(runs[1]?.input)), 'b/site')
+    assert.deepEqual(
+      lone.scope.repos.map((r) => r.key),
+      ['/a/site'],
+    )
+    assert.equal(scopeRuns(runs.slice(0, 3), '/b/site').scope.repo, null)
+  })
+
+  it('offers the switch only for more than one repository, with the counted one current', () => {
+    const repos = [
+      { key: '/a/public', name: 'public' },
+      { key: SUBJECT_REPO, name: REPO.subject },
+    ]
+    assert.equal(
+      renderToStaticMarkup(
+        createElement(RepoFilter, {
+          page: 'runs',
+          scope: { repos: repos.slice(0, 1), repo: null },
+        }),
+      ),
+      '',
+    )
+    assert.equal(
+      renderToStaticMarkup(
+        createElement(RepoFilter, {
+          page: 'runs',
+          scope: { repos: [], repo: null },
+        }),
+      ),
+      '',
+    )
+    const html = renderToStaticMarkup(
+      createElement(RepoFilter, {
+        page: 'compare',
+        scope: { repos, repo: '/a/public' },
+      }),
+    )
+    assert.match(html, new RegExp(`aria-label="${REPO.label}"`))
+    assert.match(html, /href="#\/compare"[^>]*>すべて</)
+    assert.match(
+      html,
+      /href="#\/compare\?repo=%2Fa%2Fpublic" title="\/a\/public" aria-current="true"[^>]*>public</,
+    )
+    assert.match(html, /href="#\/compare\?repo=subject"[^>]*>同梱題材</)
+    // All is current when the server counted every repository.
+    assert.match(
+      renderToStaticMarkup(
+        createElement(RepoFilter, {
+          page: 'runs',
+          scope: { repos, repo: null },
+        }),
+      ),
+      /href="#\/" aria-current="true"[^>]*>すべて</,
+    )
   })
 })
 
@@ -2111,6 +2354,8 @@ describe('diagnosis wording on the page', () => {
           weeks: [],
           taskIds: [],
           fakeExcluded: 1200,
+          repos: [],
+          repo: null,
           groups: [],
         },
         onView: () => {},
@@ -3020,7 +3265,10 @@ describe('web UI over fake runs', { timeout: 300000 }, () => {
         'json',
       ])
       assert.equal(trendCli.code, 0, trendCli.stderr)
-      assert.deepEqual(trend, JSON.parse(trendCli.stdout))
+      // The page's repository switch is the API's own addition.
+      const { repos, repo, ...trendOnly } = trend
+      assert.deepEqual([repos.length, repo], [1, null])
+      assert.deepEqual(trendOnly, JSON.parse(trendCli.stdout))
       assert.equal(trend.fakeExcluded, finishedTasks.length)
       assert.deepEqual(trend.groups, [])
       const withFake = await demo(home, [
@@ -3145,6 +3393,147 @@ function repairChildInput(home: string, parentId: string) {
     },
   }
 }
+
+describe('repositories on the page', { timeout: 120000 }, () => {
+  it('names each run by its repository, and narrows the list, the counts and the summary to one', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'ui-repos-'))
+    const stateRoot = join(home, '.local', 'state', 'local-agent-loop')
+    const port = await freePort()
+    const ui = await startUi(home, port)
+    try {
+      const durably = createAgentDurably({ stateRoot })
+      await durably.migrate()
+      const base = repairChildInput(home, 'unused')
+      const inRepo = async (repoPath: string, task: string) =>
+        (
+          await durably.jobs.agentLoop.trigger({
+            provider: base.provider,
+            maxIterations: base.maxIterations,
+            context: base.context,
+            checkTimeoutMs: base.checkTimeoutMs,
+            agentTimeoutMs: base.agentTimeoutMs,
+            target: { ...base.target, repoPath, task },
+          })
+        ).id
+      const a = join(home, 'a', 'public')
+      const b = join(home, 'b', 'public')
+      const site = join(home, 'site')
+      const ids = {
+        aDone: await inRepo(a, 'Alpha done'),
+        aOpen: await inRepo(a, 'Alpha open'),
+        bStop: await inRepo(b, 'Beta stopped'),
+        siteDone: await inRepo(site, 'Site done'),
+        subject: (
+          await durably.jobs.agentLoop.trigger({
+            provider: 'fake',
+            target: { kind: 'subject' as const },
+            maxIterations: 1,
+            context: 'reuse',
+          })
+        ).id,
+      }
+      const finish = (id: string, status: 'completed' | 'failed') =>
+        durably.db
+          .updateTable('durably_runs')
+          .set({ status, completed_at: new Date().toISOString() })
+          .where('id', '=', id)
+          .execute()
+      await finish(ids.aDone, 'completed')
+      await finish(ids.siteDone, 'completed')
+      await finish(ids.bStop, 'failed')
+      await durably.db.destroy()
+
+      const all = await api<RunsResponse>(port, '/api/runs')
+      assert.equal(all.repo, null)
+      assert.deepEqual(all.repos, [
+        { key: a, name: 'a/public' },
+        { key: b, name: 'b/public' },
+        { key: site, name: 'site' },
+        { key: SUBJECT_REPO, name: REPO.subject },
+      ])
+      assert.deepEqual(
+        Object.fromEntries(all.runs.map((r) => [r.id, r.repo])),
+        {
+          [ids.aDone]: 'a/public',
+          [ids.aOpen]: 'a/public',
+          [ids.bStop]: 'b/public',
+          [ids.siteDone]: 'site',
+          [ids.subject]: REPO.subject,
+        },
+      )
+      assert.equal(all.tasks.length, 5)
+
+      const query = (key: string) => `?repo=${encodeURIComponent(key)}`
+      const onlyA = await api<RunsResponse>(port, `/api/runs${query(a)}`)
+      assert.equal(onlyA.repo, a)
+      // The switch still offers every repository.
+      assert.deepEqual(onlyA.repos, all.repos)
+      assert.deepEqual(
+        onlyA.runs.map((r) => r.id).sort(),
+        [ids.aDone, ids.aOpen].sort(),
+      )
+      assert.deepEqual(
+        onlyA.tasks.map((t) => t.id).sort(),
+        [ids.aDone, ids.aOpen].sort(),
+      )
+      // The other repository's stop is not among this one's stops, so
+      // choosing every stopped task cannot reach it.
+      const stops = (data: RunsResponse) =>
+        data.tasks.filter((t) => t.attention === 'stop').map((t) => t.id)
+      assert.ok(stops(all).includes(ids.bStop))
+      assert.deepEqual(stops(onlyA), [])
+      const onlyB = await api<RunsResponse>(port, `/api/runs${query(b)}`)
+      assert.deepEqual(stops(onlyB), [ids.bStop])
+      const page = renderToStaticMarkup(
+        createElement(RunsScreen, { data: onlyB, act: noAct, actMany: noBulk }),
+      )
+      assert.match(page, new RegExp(BULK.selectAll))
+      assert.match(page, /Beta stopped/)
+      assert.doesNotMatch(page, /Alpha|Site done/)
+      assert.match(page, /aria-current="true"[^>]*>b\/public</)
+
+      // The summary counts the chosen repository's finished runs only.
+      const compared = (key?: string) =>
+        api<CompareResponse>(port, `/api/compare${key ? query(key) : ''}`)
+      assert.deepEqual(
+        (await compared()).runIds.sort(),
+        [ids.aDone, ids.bStop, ids.siteDone].sort(),
+      )
+      const comparedA = await compared(a)
+      assert.equal(comparedA.repo, a)
+      assert.deepEqual(comparedA.runIds, [ids.aDone])
+      const trend = (key?: string) =>
+        api<TrendResponse>(port, `/api/trend${key ? query(key) : ''}`)
+      const trendAll = await trend()
+      const trendSite = await trend(site)
+      assert.equal(trendSite.repo, site)
+      assert.deepEqual(trendSite.repos, all.repos)
+      // Every run here is fake, so the trend leaves them out and says how
+      // many it left out: all of them, or the chosen repository's.
+      assert.equal(trendAll.fakeExcluded, 3)
+      assert.equal(trendSite.fakeExcluded, 1)
+
+      // A key no run has counts every repository again.
+      const gone = await api<RunsResponse>(port, '/api/runs?repo=%2Fgone')
+      assert.equal(gone.repo, null)
+      assert.equal(gone.runs.length, 5)
+
+      // The run's page names its repository, with the path for a repository.
+      const detail = await api<RunDetailResponse>(
+        port,
+        `/api/runs/${ids.aDone}`,
+      )
+      assert.deepEqual(detail.repo, { name: 'a/public', path: a })
+      const sample = await api<RunDetailResponse>(
+        port,
+        `/api/runs/${ids.subject}`,
+      )
+      assert.deepEqual(sample.repo, { name: REPO.subject, path: null })
+    } finally {
+      ui.child.kill('SIGTERM')
+    }
+  })
+})
 
 describe('repair runs on the page', { timeout: 120000 }, () => {
   it('lists and compares runs without a child query per run, and still shows a child added after the parent finished', async () => {
@@ -3328,6 +3717,61 @@ describe('routes', () => {
     assert.deepEqual(parseRoute('#/design'), { page: 'design' })
     assert.deepEqual(parseRoute('#/runs/a%2Fb'), { page: 'run', id: 'a/b' })
   })
+
+  it('keeps the chosen repository in the hash, for the list and the summary', () => {
+    const path = '/Users/me/my repo+1'
+    assert.deepEqual(parseRoute(pageHref('runs', path)), {
+      page: 'runs',
+      repo: path,
+    })
+    assert.deepEqual(parseRoute(pageHref('compare', path)), {
+      page: 'compare',
+      repo: path,
+    })
+    assert.equal(pageHref('runs'), '#/')
+    assert.equal(pageHref('compare'), '#/compare')
+    assert.deepEqual(parseRoute('#/?repo='), { page: 'runs' })
+    assert.deepEqual(parseRoute('#/runs/a%3Fb'), { page: 'run', id: 'a?b' })
+    // A run's link keeps the page's repository, also opened in a new tab.
+    assert.ok(
+      renderToStaticMarkup(
+        createElement(
+          RepoContext,
+          { value: path },
+          createElement(RunLink, { id: 'a/b', name: 'n' }),
+        ),
+      ).includes(`href="${withRepo('#/runs/a%2Fb', path)}"`),
+    )
+    assert.match(
+      renderToStaticMarkup(createElement(RunLink, { id: 'a/b', name: 'n' })),
+      /href="#\/runs\/a%2Fb"/,
+    )
+    // A run's page keeps the list's repository, so its links back do.
+    assert.deepEqual(parseRoute(withRepo('#/runs/a%2Fb', path)), {
+      page: 'run',
+      id: 'a/b',
+      repo: path,
+    })
+  })
+
+  it('sets the URL to the repository the server counted', () => {
+    const runs = parseRoute(pageHref('runs', '/gone'))
+    // A key no run has any more leaves the URL.
+    assert.equal(reconciledHref(runs, null), '#/')
+    assert.equal(
+      reconciledHref(parseRoute(pageHref('compare', '/w/a/')), '/w/a'),
+      pageHref('compare', '/w/a'),
+    )
+    assert.equal(
+      reconciledHref(parseRoute(pageHref('runs', '/w/a')), '/w/a'),
+      null,
+    )
+    assert.equal(reconciledHref(parseRoute('#/'), null), null)
+    assert.equal(
+      reconciledHref(parseRoute('#/runs/x?repo=%2Fgone'), null),
+      null,
+    )
+  })
 })
 
 describe('the design page', () => {
@@ -3452,6 +3896,8 @@ describe('numbers on the screens', () => {
           archived: r.archived,
         })),
       ),
+      repos: [],
+      repo: null,
     } as unknown as RunsResponse
     return renderToStaticMarkup(createElement(RunsScreen, { data, act: noAct }))
   }
@@ -3517,6 +3963,8 @@ describe('numbers on the screens', () => {
           archived: false,
         })),
       ),
+      repos: [],
+      repo: null,
     } as unknown as RunsResponse
     const html = renderToStaticMarkup(
       createElement(RunsScreen, { data, act: noAct, actMany: async () => {} }),
@@ -3869,6 +4317,8 @@ describe('numbers on the screens', () => {
       now,
       runs,
       tasks,
+      repos: [],
+      repo: null,
     } as unknown as RunsResponse
     const list = htmlText(
       renderToStaticMarkup(createElement(RunsScreen, { data, act: noAct })),
@@ -3961,7 +4411,15 @@ describe('numbers on the screens', () => {
     )
     // A finished row is closed, and draws its runs only when opened: the
     // way back shows among them.
-    const data = { exists: true, db: '/tmp/x.db', now, runs, tasks }
+    const data = {
+      exists: true,
+      db: '/tmp/x.db',
+      now,
+      runs,
+      tasks,
+      repos: [],
+      repo: null,
+    }
     const closed = renderToStaticMarkup(
       createElement(RunsScreen, {
         data: data as unknown as RunsResponse,
@@ -4047,7 +4505,15 @@ describe('numbers on the screens', () => {
         [realRoot, false],
       ],
     )
-    const data = { exists: true, db: '/tmp/x.db', now, runs, tasks }
+    const data = {
+      exists: true,
+      db: '/tmp/x.db',
+      now,
+      runs,
+      tasks,
+      repos: [],
+      repo: null,
+    }
     const html = renderToStaticMarkup(
       createElement(RunsScreen, {
         data: data as unknown as RunsResponse,
@@ -4104,6 +4570,8 @@ describe('numbers on the screens', () => {
           weeks: ['2026-09-21', '2026-09-28'],
           taskIds: ['a'],
           fakeExcluded: 6,
+          repos: [],
+          repo: null,
           groups: [
             {
               model: 'gpt-6-astra',
@@ -4174,6 +4642,8 @@ describe('numbers on the screens', () => {
           costUsd: r.costUsd,
         })),
       ),
+      repos: [],
+      repo: null,
     } as unknown as RunsResponse
     const list = htmlText(
       renderToStaticMarkup(createElement(RunsScreen, { data, act: noAct })),

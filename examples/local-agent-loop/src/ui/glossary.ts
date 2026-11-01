@@ -601,6 +601,18 @@ export const REFRESH = {
   loadFailed: (error: string) => `読み込めませんでした: ${error}`,
 } as const
 
+// ---------------------------------------------------------------- repositories
+
+export const REPO = {
+  /** The switch's name, and the word before a run's repository. */
+  label: 'リポジトリ',
+  all: 'すべて',
+  /** The bundled sample, short enough for a row. */
+  subject: '同梱題材',
+  /** A repository run whose input names no path. */
+  unknown: UNKNOWN,
+} as const
+
 // ---------------------------------------------------------------- run list
 
 export const LIST = {

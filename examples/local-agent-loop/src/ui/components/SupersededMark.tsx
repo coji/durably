@@ -1,4 +1,4 @@
-import { LIST } from '../glossary'
+import { LIST, REPO } from '../glossary'
 
 /**
  * The word beside a stopped run a person archived, with why on hover. The
@@ -20,6 +20,20 @@ export function SupersededMark() {
   return (
     <span title={LIST.supersededTitle} className="text-fg-2 text-xs">
       {LIST.superseded}
+    </span>
+  )
+}
+
+/**
+ * The repository a run worked on, beside its name, with its path on hover
+ * when it has one. The list, the detail header and the task's runs all use
+ * it.
+ */
+export function RepoMark({ name, path }: { name: string; path?: string }) {
+  return (
+    <span title={path} className="font-code text-fg-2 text-xs">
+      <span className="sr-only">{REPO.label} </span>
+      {name}
     </span>
   )
 }

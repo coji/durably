@@ -155,6 +155,7 @@ const RUNS: [keyof typeof DESIGN.state, ActionTarget, ActionName?][] = [
 const REPAIR = '01K6D2Q7XB3M9RKT4WREPAR1'
 const runRow = (over: Partial<RunRow> & Pick<RunRow, 'id'>): RunRow => ({
   ...target(stopped, { diagnosis: diagnosis('finished', []) }),
+  repo: 'artifactshare',
   status: 'completed',
   createdAt: '2026-09-30T09:02:00.000Z',
   uncertainCall: false,

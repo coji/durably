@@ -1,9 +1,13 @@
 import type { Task } from '../../../engine/status'
 import type { Act, ActionName } from '../../components/ActionNotice'
 import { RunActions } from '../../components/RunActions'
-import { runHref } from '../../components/RunLink'
+import { useRunHref } from '../../components/RunLink'
 import { StatusBadge } from '../../components/StatusBadge'
-import { ArchivedMark, SupersededMark } from '../../components/SupersededMark'
+import {
+  ArchivedMark,
+  RepoMark,
+  SupersededMark,
+} from '../../components/SupersededMark'
 import { runRole, runState, TaskMeta } from '../../components/TaskRow'
 import type { RunRow } from '../../server'
 
@@ -31,6 +35,7 @@ export function TaskRuns({
   aside?: string | null
   onAsking?: (runId: string, action: ActionName | null) => void
 }) {
+  const runHref = useRunHref()
   return (
     <ol className="border-line flex flex-col border-t">
       {task.runs.map((r) => {
@@ -59,6 +64,7 @@ export function TaskRuns({
               >
                 {runRole(r)}
               </a>
+              <RepoMark name={row.repo} />
               {r.superseded ? <SupersededMark /> : null}
               {r.archived ? <ArchivedMark /> : null}
             </span>

@@ -1,6 +1,6 @@
 import { ACTION, ACTION_DONE } from '../glossary'
 import { Notice } from './Notice'
-import { runHref } from './RunLink'
+import { useRunHref } from './RunLink'
 
 /** A write the page can ask for, by the last segment of its path. */
 export type ActionName =
@@ -90,6 +90,7 @@ export function ActionNotice({
   onDismiss?: () => void
 }) {
   const { request } = outcome
+  const runHref = useRunHref()
   if ('error' in outcome)
     return (
       <Notice

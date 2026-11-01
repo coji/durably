@@ -34,8 +34,9 @@ import {
   type SeriesResult,
 } from './components/BulkNotice'
 import { focusPageTitle } from './components/Layout'
+import { runHref } from './components/RunLink'
 import { SHELL } from './glossary'
-import { parseRoute, routeKey, type Route } from './route'
+import { parseRoute, routeKey, withRepo, type Route } from './route'
 import {
   CompareScreen,
   TrendScreen,
@@ -212,16 +213,38 @@ export function App({ token }: { token: string }) {
   // the view last chosen until the page reloads.
   const [compareView, setCompareView] = useState<CompareView>('trend')
   useFocusOnChange(compareView)
+  // The repository the list or the summary was last narrowed to, from its
+  // URL: a run's page keeps it for its links back, and writes it into its
+  // own URL so a reload keeps it too.
+  const [lastRepo, setLastRepo] = useState<string | undefined>(undefined)
+  const repo =
+    route.page === 'runs' || route.page === 'compare'
+      ? route.repo
+      : route.page === 'run'
+        ? (route.repo ?? lastRepo)
+        : lastRepo
+  if (repo !== lastRepo) setLastRepo(repo)
+  const runId = route.page === 'run' ? route.id : null
+  const runRepo = route.page === 'run' ? route.repo : undefined
+  useEffect(() => {
+    if (runId !== null && repo && runRepo !== repo)
+      history.replaceState(null, '', withRepo(runHref(runId), repo))
+  }, [runId, runRepo, repo])
+  const query = withRepo('', repo)
+  // Switching repositories replaces the page, the pressed link with it.
+  useFocusOnChange(query)
   // The design page reads nothing from the API, so nothing polls there.
   if (route.page === 'design') return <DesignScreen route={route} />
   // Keyed by URL, so moving to another page stops the old page's polling
-  // and never shows one run's data under another's address.
+  // and never shows one run's data under another's address, nor one
+  // repository's list, and the tasks chosen in it, under another's.
   if (route.page === 'run') {
     const url = `/api/runs/${encodeURIComponent(route.id)}`
     return (
       <PolledPage<RunDetailResponse>
         key={url}
         route={route}
+        repo={repo}
         url={url}
         back
         notice={notice}
@@ -233,26 +256,32 @@ export function App({ token }: { token: string }) {
   if (route.page === 'compare')
     return compareView === 'trend' ? (
       <PolledPage<TrendResponse>
-        key="trend"
+        key={`trend${query}`}
         route={route}
-        url="/api/trend"
+        repo={repo}
+        url={`/api/trend${query}`}
+        counted={(data) => data.repo}
         heading={() => SHELL.compare}
         render={(data) => <TrendScreen data={data} onView={setCompareView} />}
       />
     ) : (
       <PolledPage<CompareResponse>
-        key="compare"
+        key={`compare${query}`}
         route={route}
-        url="/api/compare"
+        repo={repo}
+        url={`/api/compare${query}`}
+        counted={(data) => data.repo}
         heading={() => SHELL.compare}
         render={(data) => <CompareScreen data={data} onView={setCompareView} />}
       />
     )
   return (
     <PolledPage<RunsResponse>
-      key="runs"
+      key={`runs${query}`}
       route={route}
-      url="/api/runs"
+      repo={repo}
+      url={`/api/runs${query}`}
+      counted={(data) => data.repo}
       notice={notice}
       heading={() => SHELL.runs}
       render={(data) => <RunsScreen data={data} act={act} actMany={actMany} />}
