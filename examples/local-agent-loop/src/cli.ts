@@ -1398,10 +1398,13 @@ if (cmd === 'worker') {
         r.warnings.map((w) => `${r.runId}: ${w}`),
       )
       printWarnings(warnings)
-      // Only a removal git refused is retried by asking again; a run that
-      // could not be read or archived has to be looked at first.
+      // Only a removal git refused is retried by asking again, and only while
+      // git still lists the worktree; a run that could not be read or
+      // archived has to be looked at first.
       if (warnings.length > 0)
-        console.error(`run ${DEMO} archive --series ${seriesId} again to retry`)
+        console.error(
+          `if git worktree list still names a worktree above, run ${DEMO} archive --series ${seriesId} again to retry`,
+        )
       if (done.errors.length > 0)
         failed.push(
           `could not diagnose or archive every run of task ${done.taskId}:\n${done.errors.join('\n')}`,
@@ -1437,7 +1440,9 @@ if (cmd === 'worker') {
       console.log(`deleted branches: ${done.deletedBranches.join(', ')}`)
     printWarnings(done.warnings)
     if (done.warnings.length > 0)
-      console.error(`run ${DEMO} archive --run ${runId} again to retry`)
+      console.error(
+        `if git worktree list still names the worktree, run ${DEMO} archive --run ${runId} again to retry`,
+      )
   } finally {
     await durably.db.destroy()
   }

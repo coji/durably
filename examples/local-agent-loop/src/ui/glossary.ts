@@ -683,10 +683,10 @@ export const DETAIL = {
     'ログ、差分、仕様、チェックポイント、納品の記録は残っています。直すときは記録したコミットから新しい実行を始めます。',
   worktreeWarning: '納品のあと、作業ツリーを片付けられませんでした',
   worktreeWarningNote:
-    '実行は承認と納品を終えています。demo prune --apply で片付けをやり直せます。',
+    '実行は承認と納品を終えています。git worktree list にまだ出ていれば demo prune --apply で片付けをやり直せます。出ていなければ、ディレクトリを手で消します。',
   worktreeLeft: 'アーカイブした実行の作業ツリーが残っています',
   worktreeLeftNote:
-    'アーカイブのときに片付けられませんでした。原因を取り除いてから demo prune --apply で片付けます。',
+    'アーカイブのときに片付けられませんでした。git worktree list にまだ出ていれば、原因を取り除いてから demo prune --apply で片付けます。出ていなければ、ディレクトリを手で消します。',
   retry: '再実行',
   humanCheck: '人が確認すること',
   leadTime: '所要時間',
