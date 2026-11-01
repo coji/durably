@@ -168,6 +168,11 @@ function configuresSpecStages(spec: SpecConfig | undefined): boolean {
  */
 const factoryConfigSchema = z
   .object({
+    /**
+     * The repository's name on the web UI, instead of its directory's.
+     * Display only: stored on the run, never part of the config version.
+     */
+    name: z.string().trim().min(1).optional(),
     check: z.array(z.string().min(1)).min(1).optional(),
     /**
      * Quick commands the implementer and repairer are told to run before
@@ -539,6 +544,7 @@ async function repoSettings(
   return {
     specStages,
     settings: {
+      ...(config?.name !== undefined ? { name: config.name } : {}),
       baseRef: a['base'] ?? config?.base ?? 'HEAD',
       checkCommand: checkCommand ?? null,
       checkFromSpec,
@@ -823,7 +829,8 @@ export async function reloadTriggerInput(stored: StoredInput): Promise<{
     (source.path !== null && source.path !== join(root, 'factory.json'))
   const explicit = named && source.path ? source.path : undefined
   const loaded = await loadConfig(root, explicit)
-  const storedTarget = stored.target as Extract<
+  // The name is read again too, so a config that dropped it names none.
+  const { name: _storedName, ...storedTarget } = stored.target as Extract<
     ResolvedTarget['target'],
     { kind: 'repo' }
   >

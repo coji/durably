@@ -167,6 +167,9 @@ import {
   type LogChunk,
   listRows,
   readOnce,
+  askRepoTopLevel,
+  askRepoTopLevels,
+  foldRepoKeys,
   repoKeyOf,
   repoNames,
   repoTopLevel,
@@ -264,12 +267,15 @@ describe('repositories', () => {
         .repo,
       '/w/durably',
     )
-    // A directory inside a repository is that repository's top level.
+    // A directory inside a repository is that repository's top level, once
+    // git has been asked; until then it is its own path.
     const dir = await mkdtemp(join(tmpdir(), 'repo-key-'))
     try {
       execFileSync('git', ['init', '-q'], { cwd: dir })
       await mkdir(join(dir, 'app'))
       const top = await realpath(dir)
+      assert.equal(repoKeyOf(repo(join(dir, 'app'))), join(dir, 'app'))
+      await askRepoTopLevels([repo(join(dir, 'app')), repo(`${dir}/`), null])
       assert.equal(repoKeyOf(repo(join(dir, 'app'))), top)
       assert.equal(repoKeyOf(repo(`${dir}/`)), top)
     } finally {
@@ -281,16 +287,115 @@ describe('repositories', () => {
     try {
       const sub = join(late, 'app')
       const now = Date.now()
-      assert.equal(repoTopLevel(sub, now), sub)
+      assert.equal(await askRepoTopLevel(sub, now), sub)
       execFileSync('git', ['init', '-q'], { cwd: late })
       await mkdir(sub)
-      assert.equal(repoTopLevel(sub, now + 1), sub)
+      assert.equal(await askRepoTopLevel(sub, now + 1), sub)
+      assert.equal(repoTopLevel(sub), sub)
       assert.equal(
-        repoTopLevel(sub, now + TOP_LEVEL_RETRY_MS),
+        await askRepoTopLevel(sub, now + TOP_LEVEL_RETRY_MS),
         await realpath(late),
       )
+      assert.equal(repoTopLevel(sub), await realpath(late))
     } finally {
       await rm(late, { recursive: true, force: true })
+    }
+  })
+
+  it('asks git without blocking, once per path however many ask at once, and different paths side by side', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-ask-'))
+    try {
+      const one = join(root, 'one')
+      const two = join(root, 'two')
+      for (const dir of [one, two]) {
+        await mkdir(dir)
+        execFileSync('git', ['init', '-q'], { cwd: dir })
+      }
+      // Two asks while git answers get the one answer it gives.
+      const first = askRepoTopLevel(one)
+      assert.equal(askRepoTopLevel(`${one}/`), first)
+      // The ask hands back control before git answers, so a poll is never
+      // held by it.
+      let ticked = false
+      setImmediate(() => {
+        ticked = true
+      })
+      const both = askRepoTopLevels([
+        { target: { kind: 'repo', repoPath: one } },
+        { target: { kind: 'repo', repoPath: two } },
+      ])
+      assert.equal(repoTopLevel(two), two)
+      await both
+      assert.ok(ticked)
+      const top = await realpath(one)
+      assert.equal(await first, top)
+      assert.equal(repoTopLevel(two), await realpath(two))
+      // A known top level is answered from memory, even with the
+      // repository gone.
+      await rm(one, { recursive: true, force: true })
+      assert.equal(await askRepoTopLevel(one), top)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('counts a directory of a repository that is gone under that repository, and never a repository git named', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-fold-'))
+    try {
+      const outer = await realpath(root)
+      const nested = join(outer, 'nested')
+      await mkdir(nested)
+      execFileSync('git', ['init', '-q'], { cwd: outer })
+      execFileSync('git', ['init', '-q'], { cwd: nested })
+      await askRepoTopLevels([
+        { target: { kind: 'repo', repoPath: outer } },
+        { target: { kind: 'repo', repoPath: nested } },
+      ])
+      // Gone, never answered: each directory joins the nearest key above it.
+      const gone = '/gone/site'
+      const keys = [
+        gone,
+        `${gone}/app`,
+        `${gone}/app/deep`,
+        '/gone/site2',
+        '/gone/other/x',
+        outer,
+        nested,
+        `${nested}/vanished`,
+        SUBJECT_REPO,
+        UNKNOWN_REPO,
+      ]
+      assert.deepEqual(Object.fromEntries(foldRepoKeys(keys)), {
+        [gone]: gone,
+        [`${gone}/app`]: gone,
+        [`${gone}/app/deep`]: gone,
+        // A name that only starts the same is another directory.
+        '/gone/site2': '/gone/site2',
+        '/gone/other/x': '/gone/other/x',
+        [outer]: outer,
+        // A repository git named inside another stays its own.
+        [nested]: nested,
+        [`${nested}/vanished`]: nested,
+        [SUBJECT_REPO]: SUBJECT_REPO,
+        [UNKNOWN_REPO]: UNKNOWN_REPO,
+      })
+      const run = (id: string, repoPath: string, name?: string) => ({
+        id,
+        input: { target: { kind: 'repo', task: 't', repoPath, name } },
+      })
+      const scoped = scopeRuns(
+        [run('1', gone), run('2', `${gone}/app`, 'site-app'), run('3', nested)],
+        gone,
+      )
+      assert.deepEqual(
+        scoped.runs.map((r) => r.id),
+        ['1', '2'],
+      )
+      // The folded run's name is its repository's now.
+      assert.deepEqual(scoped.own.get('2'), { key: gone, name: 'site-app' })
+      assert.deepEqual(scoped.own.get('1'), { key: gone, name: 'site-app' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
     }
   })
 
@@ -319,6 +424,7 @@ describe('repositories', () => {
         repoNames([
           '/w/同梱題材',
           `/w/${REPO.unknown}`,
+          `/w/${REPO.all}`,
           `/${REPO.subject}`,
           SUBJECT_REPO,
           UNKNOWN_REPO,
@@ -327,6 +433,7 @@ describe('repositories', () => {
       {
         '/w/同梱題材': 'w/同梱題材',
         [`/w/${REPO.unknown}`]: `w/${REPO.unknown}`,
+        [`/w/${REPO.all}`]: `w/${REPO.all}`,
         [`/${REPO.subject}`]: `/${REPO.subject}`,
         [SUBJECT_REPO]: REPO.subject,
         [UNKNOWN_REPO]: REPO.unknown,
@@ -336,6 +443,88 @@ describe('repositories', () => {
     assert.deepEqual(
       Object.fromEntries(repoNames(['/a/public', '/b/public', '/c/site'])),
       { '/a/public': 'a/public', '/b/public': 'b/public', '/c/site': 'site' },
+    )
+    assert.equal(REPO.all, 'すべて')
+  })
+
+  it("names a repository by its factory.json name, told apart like a directory's", () => {
+    const configured = new Map([
+      ['/w/artifactshare/public', 'artifactshare'],
+      ['/a/x/one', 'twin'],
+      ['/b/y/two', 'twin'],
+      ['/p/q/clash', 'site'],
+      ['/r/all', REPO.all],
+      ['/s/sample', REPO.subject],
+      ['/t/none', REPO.unknown],
+      ['/u', 'same'],
+      ['/v', 'same'],
+    ])
+    assert.deepEqual(
+      Object.fromEntries(
+        repoNames(
+          [...configured.keys(), '/c/site', '/w/plain', SUBJECT_REPO],
+          configured,
+        ),
+      ),
+      {
+        '/w/artifactshare/public': 'artifactshare',
+        // Two that are given one name grow by their parents.
+        '/a/x/one': 'x/twin',
+        '/b/y/two': 'y/twin',
+        // So does one named as another repository's directory.
+        '/p/q/clash': 'q/site',
+        '/c/site': 'c/site',
+        // A reserved name is never a repository's.
+        '/r/all': `r/${REPO.all}`,
+        '/s/sample': `s/${REPO.subject}`,
+        '/t/none': `t/${REPO.unknown}`,
+        // Names that cannot grow apart are their paths.
+        '/u': '/u',
+        '/v': '/v',
+        '/w/plain': 'plain',
+        [SUBJECT_REPO]: REPO.subject,
+      },
+    )
+  })
+
+  it("takes a repository's name from its newest run that has one, and keeps ?repo= its path", () => {
+    const run = (id: string, createdAt: string, name?: string) => ({
+      id,
+      createdAt,
+      input: {
+        target: {
+          kind: 'repo',
+          task: 't',
+          repoPath: '/w/public',
+          ...(name ? { name } : {}),
+        },
+      },
+    })
+    const runs = [
+      run('newest', '2026-11-03T00:00:00Z'),
+      run('old', '2026-11-01T00:00:00Z', 'old-name'),
+      run('named', '2026-11-02T00:00:00Z', ' artifactshare '),
+      run('older', '2026-10-01T00:00:00Z'),
+      { id: 'sample', input: { target: { kind: 'subject' } } },
+    ]
+    const { scope, own } = scopeRuns(runs, '/w/public')
+    assert.deepEqual(scope, {
+      repos: [
+        { key: '/w/public', name: 'artifactshare' },
+        { key: SUBJECT_REPO, name: REPO.subject },
+      ],
+      repo: '/w/public',
+    })
+    // A run stored before names existed takes its repository's.
+    assert.equal(own.get('newest')?.name, 'artifactshare')
+    assert.equal(own.get('older')?.name, 'artifactshare')
+    // The name is never a key.
+    assert.equal(scopeRuns(runs, 'artifactshare').scope.repo, null)
+    // Without any name, the directory's.
+    assert.equal(
+      scopeRuns([run('plain', '2026-11-03T00:00:00Z')], null).own.get('plain')
+        ?.name,
+      'public',
     )
   })
 
@@ -395,7 +584,7 @@ describe('repositories', () => {
     // Each run is still named by its own input; the switch offers only the
     // repositories tasks count under.
     const lone = scopeRuns(runs.slice(0, 3), null)
-    assert.equal(lone.names.get(repoKeyOf(runs[1]?.input)), 'b/site')
+    assert.deepEqual(lone.own.get('fix'), { key: '/b/site', name: 'b/site' })
     assert.deepEqual(
       lone.scope.repos.map((r) => r.key),
       ['/a/site'],
@@ -3404,7 +3593,7 @@ describe('repositories on the page', { timeout: 120000 }, () => {
       const durably = createAgentDurably({ stateRoot })
       await durably.migrate()
       const base = repairChildInput(home, 'unused')
-      const inRepo = async (repoPath: string, task: string) =>
+      const inRepo = async (repoPath: string, task: string, name?: string) =>
         (
           await durably.jobs.agentLoop.trigger({
             provider: base.provider,
@@ -3412,7 +3601,12 @@ describe('repositories on the page', { timeout: 120000 }, () => {
             context: base.context,
             checkTimeoutMs: base.checkTimeoutMs,
             agentTimeoutMs: base.agentTimeoutMs,
-            target: { ...base.target, repoPath, task },
+            target: {
+              ...base.target,
+              repoPath,
+              task,
+              ...(name ? { name } : {}),
+            },
           })
         ).id
       const a = join(home, 'a', 'public')
@@ -3422,7 +3616,8 @@ describe('repositories on the page', { timeout: 120000 }, () => {
         aDone: await inRepo(a, 'Alpha done'),
         aOpen: await inRepo(a, 'Alpha open'),
         bStop: await inRepo(b, 'Beta stopped'),
-        siteDone: await inRepo(site, 'Site done'),
+        // Named by its factory.json, so the page shows that name.
+        siteDone: await inRepo(site, 'Site done', 'website'),
         subject: (
           await durably.jobs.agentLoop.trigger({
             provider: 'fake',
@@ -3448,7 +3643,7 @@ describe('repositories on the page', { timeout: 120000 }, () => {
       assert.deepEqual(all.repos, [
         { key: a, name: 'a/public' },
         { key: b, name: 'b/public' },
-        { key: site, name: 'site' },
+        { key: site, name: 'website' },
         { key: SUBJECT_REPO, name: REPO.subject },
       ])
       assert.deepEqual(
@@ -3457,7 +3652,7 @@ describe('repositories on the page', { timeout: 120000 }, () => {
           [ids.aDone]: 'a/public',
           [ids.aOpen]: 'a/public',
           [ids.bStop]: 'b/public',
-          [ids.siteDone]: 'site',
+          [ids.siteDone]: 'website',
           [ids.subject]: REPO.subject,
         },
       )
@@ -3501,6 +3696,7 @@ describe('repositories on the page', { timeout: 120000 }, () => {
       )
       const comparedA = await compared(a)
       assert.equal(comparedA.repo, a)
+      assert.deepEqual(comparedA.repos, all.repos)
       assert.deepEqual(comparedA.runIds, [ids.aDone])
       const trend = (key?: string) =>
         api<TrendResponse>(port, `/api/trend${key ? query(key) : ''}`)
@@ -3529,6 +3725,12 @@ describe('repositories on the page', { timeout: 120000 }, () => {
         `/api/runs/${ids.subject}`,
       )
       assert.deepEqual(sample.repo, { name: REPO.subject, path: null })
+      // The name is shown; the path stays the key.
+      const named = await api<RunDetailResponse>(
+        port,
+        `/api/runs/${ids.siteDone}`,
+      )
+      assert.deepEqual(named.repo, { name: 'website', path: site })
     } finally {
       ui.child.kill('SIGTERM')
     }

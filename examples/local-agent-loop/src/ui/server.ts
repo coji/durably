@@ -20,7 +20,7 @@
  *   agent log, or its check's stdout or stderr, from a path the attempt
  *   recorded, and only inside the run's own directory.
  */
-import { execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { open, realpath } from 'node:fs/promises'
@@ -306,43 +306,98 @@ export const SUBJECT_REPO = 'subject'
 /** The key of a repository run whose input names no path. */
 export const UNKNOWN_REPO = 'unknown'
 
-/** Each path's repository top level, asked of git once per path. */
+/** Each path's repository top level, as git answered it. */
 const topLevels = new Map<string, string>()
+/** Every top level git answered with, so such a key is never folded. */
+const answeredTops = new Set<string>()
 /** When git last could not say a path's top level, so it is asked again later. */
 const unanswered = new Map<string, number>()
+/** The question git is answering now for a path, shared by every asker. */
+const asking = new Map<string, Promise<string>>()
 /** How long a path git could not answer for keeps its fallback key. */
 export const TOP_LEVEL_RETRY_MS = 60_000
 
 /**
- * The repository a path is in, by git's name for its top level, so a
+ * The repository a path is in, as far as git has said: its top level, so a
  * trailing slash, a `..` or a directory inside it all name one repository;
- * the path itself, resolved, when git can't say, as for a repository that
- * is gone or not mounted yet. Git is asked once per path, since the page
- * polls; a path it could not answer for is asked again after
+ * the path itself, resolved, before git has answered or when it can't, as
+ * for a repository that is gone or not mounted yet. Only reads what
+ * `askRepoTopLevel` learned, so a poll never waits on git here.
+ */
+export function repoTopLevel(path: string): string {
+  const resolved = resolve(path)
+  return topLevels.get(resolved) ?? resolved
+}
+
+/**
+ * Ask git for a path's top level without holding up other requests, and
+ * resolve to `repoTopLevel`'s answer afterwards. Git is asked once per path,
+ * since the page polls, and asks made while it answers share its answer; a
+ * path it could not answer for is asked again only after
  * `TOP_LEVEL_RETRY_MS`, so a repository that comes back is grouped again.
  */
-export function repoTopLevel(path: string, now = Date.now()): string {
+export function askRepoTopLevel(
+  path: string,
+  now = Date.now(),
+): Promise<string> {
   const resolved = resolve(path)
   const known = topLevels.get(resolved)
-  if (known !== undefined) return known
+  if (known !== undefined) return Promise.resolve(known)
   const failedAt = unanswered.get(resolved)
   if (failedAt !== undefined && now - failedAt < TOP_LEVEL_RETRY_MS)
-    return resolved
-  try {
-    const top =
-      execFileSync('git', ['rev-parse', '--show-toplevel'], {
-        cwd: resolved,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 5000,
-      }).trim() || resolved
-    topLevels.set(resolved, top)
-    unanswered.delete(resolved)
-    return top
-  } catch {
-    unanswered.set(resolved, now)
-    return resolved
+    return Promise.resolve(resolved)
+  const pending = asking.get(resolved)
+  if (pending) return pending
+  const asked = new Promise<string>((done) => {
+    // Git reads nothing, so its input is closed at once.
+    execFile(
+      'git',
+      ['rev-parse', '--show-toplevel'],
+      { cwd: resolved, encoding: 'utf8', timeout: 5000 },
+      (error, stdout) => {
+        asking.delete(resolved)
+        if (error) {
+          unanswered.set(resolved, now)
+          done(resolved)
+          return
+        }
+        const top = stdout.trim() || resolved
+        topLevels.set(resolved, top)
+        answeredTops.add(top)
+        unanswered.delete(resolved)
+        done(top)
+      },
+    ).stdin?.end()
+  })
+  asking.set(resolved, asked)
+  return asked
+}
+
+/** The repository path a stored input names; null for any other input. */
+function repoPathOf(input: unknown): string | null {
+  const target = (input as { target?: { kind?: string; repoPath?: unknown } })
+    ?.target
+  return target?.kind === 'repo' &&
+    typeof target.repoPath === 'string' &&
+    target.repoPath.length > 0
+    ? target.repoPath
+    : null
+}
+
+/**
+ * Ask git about every repository path `inputs` name, side by side, so a
+ * view's keys are settled before it scopes its runs.
+ */
+export async function askRepoTopLevels(
+  inputs: Iterable<unknown>,
+  now = Date.now(),
+): Promise<void> {
+  const paths = new Set<string>()
+  for (const input of inputs) {
+    const path = repoPathOf(input)
+    if (path !== null) paths.add(resolve(path))
   }
+  await Promise.all([...paths].map((path) => askRepoTopLevel(path, now)))
 }
 
 /**
@@ -352,41 +407,92 @@ export function repoTopLevel(path: string, now = Date.now()): string {
  * path always starts with `/`, so it is never mistaken for either.
  */
 export function repoKeyOf(input: unknown): string {
-  const target = (input as { target?: { kind?: string; repoPath?: unknown } })
-    ?.target
-  if (target?.kind === 'subject') return SUBJECT_REPO
-  return target?.kind === 'repo' &&
-    typeof target.repoPath === 'string' &&
-    target.repoPath.length > 0
-    ? repoTopLevel(target.repoPath)
-    : UNKNOWN_REPO
+  if ((input as { target?: { kind?: string } })?.target?.kind === 'subject')
+    return SUBJECT_REPO
+  const path = repoPathOf(input)
+  return path === null ? UNKNOWN_REPO : repoTopLevel(path)
 }
 
 /**
- * A short name for each repository key: the directory's own name, with as
- * many parent directories before it as it takes to tell apart repositories
- * whose names are the same, or the same as the names the bundled sample and
- * a run without a path always have. A path that can't grow past such a name
- * is named by itself.
+ * Each key, with a path git gave no top level for folded into the nearest
+ * other key above it, and so on up, so a run in a directory of a repository
+ * that is gone counts under that repository. A top level git answered with,
+ * such as a repository nested in another, keeps its own key.
  */
-export function repoNames(keys: Iterable<string>): Map<string, string> {
+export function foldRepoKeys(keys: Iterable<string>): Map<string, string> {
+  const all = [...new Set(keys)]
+  const paths = all.filter((key) => key.startsWith('/'))
+  const folded = new Map<string, string>()
+  const fold = (key: string): string => {
+    const known = folded.get(key)
+    if (known !== undefined) return known
+    let into = key
+    if (key.startsWith('/') && !answeredTops.has(key)) {
+      const above = paths
+        .filter(
+          (p) => p !== key && key.startsWith(p.endsWith('/') ? p : `${p}/`),
+        )
+        .sort((x, y) => y.length - x.length)[0]
+      if (above !== undefined) into = fold(above)
+    }
+    folded.set(key, into)
+    return into
+  }
+  for (const key of all) fold(key)
+  return folded
+}
+
+/**
+ * The display name a stored input carries from its `factory.json`; null
+ * for an input without one, as on a run stored before it existed.
+ */
+function configuredNameOf(input: unknown): string | null {
+  const target = (input as { target?: { kind?: string; name?: unknown } })
+    ?.target
+  return target?.kind === 'repo' &&
+    typeof target.name === 'string' &&
+    target.name.trim().length > 0
+    ? target.name.trim()
+    : null
+}
+
+/**
+ * A short name for each repository key: the name its `factory.json` gave,
+ * or else the directory's own name, with as many parent directories before
+ * it as it takes to tell apart repositories whose names are the same, or the
+ * same as the names the switch's every-repository choice, the bundled sample
+ * and a run without a path always have. A path that can't grow past such a
+ * name is named by itself. A configured name stands where the directory's
+ * name would, so it grows the same way.
+ */
+export function repoNames(
+  keys: Iterable<string>,
+  configured: ReadonlyMap<string, string> = new Map(),
+): Map<string, string> {
   const names = new Map<string, string>()
-  const taken = new Set<string>([REPO.subject, REPO.unknown])
+  const taken = new Set<string>([REPO.all, REPO.subject, REPO.unknown])
   const parts = new Map<string, string[]>()
   for (const key of new Set(keys)) {
     if (key === SUBJECT_REPO) names.set(key, REPO.subject)
     else if (key === UNKNOWN_REPO) names.set(key, REPO.unknown)
-    else parts.set(key, key.split('/').filter(Boolean))
+    else {
+      const dirs = key.split('/').filter(Boolean)
+      const name = configured.get(key)
+      parts.set(key, name === undefined ? dirs : [...dirs.slice(0, -1), name])
+    }
   }
   const depth = new Map([...parts.keys()].map((key) => [key, 1]))
   const nameOf = (key: string) =>
     (parts.get(key) ?? []).slice(-(depth.get(key) ?? 1)).join('/') || key
+  const byName = () => {
+    const by = new Map<string, string[]>()
+    for (const key of parts.keys())
+      by.set(nameOf(key), [...(by.get(nameOf(key)) ?? []), key])
+    return by
+  }
   for (let grew = true; grew;) {
     grew = false
-    const byName = new Map<string, string[]>()
-    for (const key of parts.keys())
-      byName.set(nameOf(key), [...(byName.get(nameOf(key)) ?? []), key])
-    for (const [name, same] of byName)
+    for (const [name, same] of byName())
       if (same.length > 1 || taken.has(name))
         for (const key of same) {
           const d = depth.get(key) ?? 1
@@ -396,9 +502,32 @@ export function repoNames(keys: Iterable<string>): Map<string, string> {
           }
         }
   }
-  for (const key of parts.keys())
-    names.set(key, taken.has(nameOf(key)) ? key : nameOf(key))
+  // Two configured names can be the same all the way up; each is then its
+  // path, as is a name still the same as one the page always has.
+  for (const [name, same] of byName())
+    for (const key of same)
+      names.set(key, same.length > 1 || taken.has(name) ? key : name)
   return names
+}
+
+/**
+ * The name each repository key's runs gave it: the newest run's that has
+ * one, so a run stored before names existed takes its repository's.
+ */
+function configuredNames(
+  all: Array<Pick<Run, 'id' | 'input'> & { createdAt?: string }>,
+  keyOf: ReadonlyMap<string, string>,
+): Map<string, string> {
+  const newest = new Map<string, { name: string; at: number }>()
+  for (const run of all) {
+    const name = configuredNameOf(run.input)
+    const key = keyOf.get(run.id)
+    if (name === null || !key?.startsWith('/')) continue
+    const at = run.createdAt ? Date.parse(run.createdAt) : -Infinity
+    const seen = newest.get(key)
+    if (!seen || at > seen.at) newest.set(key, { name, at })
+  }
+  return new Map([...newest].map(([key, { name }]) => [key, name]))
 }
 
 /**
@@ -406,24 +535,33 @@ export function repoNames(keys: Iterable<string>): Map<string, string> {
  * last, and the runs of the one `wanted` names: every run when it names
  * none of them. A run counts under its task's first run's repository, as
  * `groupTasks` finds that run, so a repair is never split from the run it
- * repairs. `names` holds the name of every run's own key.
+ * repairs. `own` holds each run's own repository, by run id. The keys are
+ * what git has said so far; see `askRepoTopLevels`.
  */
 export function scopeRuns<
-  R extends Pick<Run, 'id' | 'input'> & { labels?: Record<string, string> },
+  R extends Pick<Run, 'id' | 'input'> & {
+    createdAt?: string
+    labels?: Record<string, string>
+  },
 >(
   all: R[],
   wanted: string | null,
-): { scope: RepoScope; names: Map<string, string>; runs: R[] } {
-  const own = new Map(all.map((r) => [r.id, repoKeyOf(r.input)]))
+): { scope: RepoScope; own: Map<string, RepoOption>; runs: R[] } {
+  const raw = new Map(all.map((r) => [r.id, repoKeyOf(r.input)]))
+  const folded = foldRepoKeys(raw.values())
+  const ownKey = new Map(
+    [...raw].map(([id, key]) => [id, folded.get(key) ?? key]),
+  )
   const linked = all.map((r) => ({ id: r.id, parentId: repairParentId(r) }))
   const rootOf = taskRoots(linked)
   // A run is named by its own input; only the switch and the filter go by
   // its task's first run.
-  const keys = new Map(linked.map((r) => [r.id, own.get(rootOf(r)) ?? '']))
-  const names = repoNames(own.values())
+  const keys = new Map(linked.map((r) => [r.id, ownKey.get(rootOf(r)) ?? '']))
+  const names = repoNames(ownKey.values(), configuredNames(all, ownKey))
+  const option = (key: string) => ({ key, name: names.get(key) ?? key })
   const last = (key: string) => key === SUBJECT_REPO || key === UNKNOWN_REPO
   const repos = [...new Set(keys.values())]
-    .map((key) => ({ key, name: names.get(key) ?? key }))
+    .map(option)
     .sort(
       (x, y) =>
         Number(last(x.key)) - Number(last(y.key)) ||
@@ -435,7 +573,7 @@ export function scopeRuns<
   const repo = repos.some((r) => r.key === asked) ? asked : null
   return {
     scope: { repos, repo },
-    names,
+    own: new Map([...ownKey].map(([id, key]) => [id, option(key)])),
     runs: repo === null ? all : all.filter((r) => keys.get(r.id) === repo),
   }
 }
@@ -1729,7 +1867,11 @@ function createUiApi() {
     if (!db) return { ...base, ...NO_SCOPE, exists: false, runs: [], tasks: [] }
     const all = await orEmpty(allRuns(db), [])
     reports.keep(all)
-    const { scope, names, runs: picked } = scopeRuns(all, wanted)
+    await askRepoTopLevels(
+      all.map((r) => r.input),
+      now,
+    )
+    const { scope, own, runs: picked } = scopeRuns(all, wanted)
     const src = readOnce(db, picked)
     const archived = archivedRunIds(stateRoot)
     const built = await listedReports(reports, src, picked, all)
@@ -1738,7 +1880,7 @@ function createUiApi() {
         runRow(
           run,
           await inspect(src, run, now, report, fresh, archived),
-          names.get(repoKeyOf(run.input)) ?? REPO.unknown,
+          own.get(run.id)?.name ?? REPO.unknown,
         ),
       ),
     )
@@ -1768,7 +1910,13 @@ function createUiApi() {
       reports.get(src, found),
       orEmpty(allRuns(db), [found]),
     ])
-    const key = repoKeyOf(found.input)
+    // The run is named among every run, as the list names it.
+    const listed = all.some((r) => r.id === found.id) ? all : [...all, found]
+    await askRepoTopLevels(
+      listed.map((r) => r.input),
+      now,
+    )
+    const repo = scopeRuns(listed, null).own.get(found.id)
     const [seen, steps, baselineSource, lineage] = await Promise.all([
       inspect(src, found, now, report, fresh, archived),
       src.storage.getSteps(id),
@@ -1782,10 +1930,8 @@ function createUiApi() {
       now: new Date(now).toISOString(),
       ...seen,
       repo: {
-        name:
-          repoNames(all.map((r) => repoKeyOf(r.input))).get(key) ??
-          REPO.unknown,
-        path: key.startsWith('/') ? key : null,
+        name: repo?.name ?? REPO.unknown,
+        path: repo?.key.startsWith('/') ? repo.key : null,
       },
       lineage,
       checkLogs: checkLogFiles(seen.diagnosis.failure?.details ?? []),
@@ -1872,6 +2018,7 @@ function createUiApi() {
     if (!db) return { ...NO_SCOPE, runIds: [], comparison: { groups: [] } }
     const all = await orEmpty(allRuns(db), [])
     reports.keep(all)
+    await askRepoTopLevels(all.map((r) => r.input))
     const { scope, runs: picked } = scopeRuns(all, wanted)
     const done = picked.filter((r) => TERMINAL_STATUSES.includes(r.status))
     const src = readOnce(db, done)
@@ -1891,6 +2038,10 @@ function createUiApi() {
     if (!db) return { ...trendOf([], { now }), ...NO_SCOPE }
     const all = await orEmpty(allRuns(db), [])
     reports.keep(all)
+    await askRepoTopLevels(
+      all.map((r) => r.input),
+      now,
+    )
     const { scope, runs: picked } = scopeRuns(all, wanted)
     // Only the runs of the window's tasks get a report, never the whole
     // history.
