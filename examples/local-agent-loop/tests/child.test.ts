@@ -8,6 +8,7 @@ import { describe, it } from 'node:test'
 
 import {
   childLogError,
+  childOutput,
   MAX_TIMEOUT_MS,
   ownedChildPids,
   runChild,
@@ -215,6 +216,23 @@ describe('full-output log files', () => {
         /timed out/.test((error as Error).message) &&
         /ENOENT/.test(childLogError(error) ?? ''),
     )
+  })
+
+  it('keeps what the child printed before a timeout killed it', async () => {
+    await assert.rejects(
+      runChild('sh', ['-c', 'echo out; echo err >&2; sleep 5'], {
+        timeoutMs: 1000,
+      }),
+      (error: unknown) => {
+        assert.match((error as Error).message, /timed out/)
+        assert.deepEqual(childOutput(error), {
+          stdout: 'out\n',
+          stderr: 'err\n',
+        })
+        return true
+      },
+    )
+    assert.deepEqual(childOutput(new Error('x')), { stdout: '', stderr: '' })
   })
 
   it('keeps a timeout past the timer limit from firing at once', async () => {

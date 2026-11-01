@@ -4012,6 +4012,11 @@ describe('the test probe', { timeout: 300000 }, () => {
       { glob: 'test/**/*.test.js', command: ['node', '--test', '{files}'] },
       // A command that cannot start, on both sides.
       { glob: 'probe/**', command: ['no-such-probe-command', '{files}'] },
+      // One that fails on both sides.
+      {
+        glob: 'fails/**',
+        command: ['node', '-e', 'process.exit(1)', '{files}'],
+      },
     ]
     const recording = recordFakeReviewCalls()
     try {
@@ -4021,6 +4026,7 @@ describe('the test probe', { timeout: 300000 }, () => {
           'test/decimal.test.js': DECIMAL_TEST,
           'test/integer.test.js': INTEGER_TEST,
           'probe/case.txt': 'x\n',
+          'fails/case.txt': 'x\n',
         },
       })
       // The base cannot be set up: its side could not run, and the
@@ -4093,7 +4099,8 @@ describe('the test probe', { timeout: 300000 }, () => {
         assert.match(text, /## probe\/case\.txt: could not run/)
         assert.match(text, /base: could not run: .*no-such-probe-command/)
         assert.match(text, /base: exit code 1 /)
-        assert.match(text, /3 test file\(s\)/)
+        assert.match(text, /## fails\/case\.txt: failed on the candidate/)
+        assert.match(text, /4 test file\(s\)/)
         // Trusted for what the factory ran and recorded; the output is data.
         assert.match(
           text,
@@ -4122,7 +4129,8 @@ describe('the test probe', { timeout: 300000 }, () => {
       const report = await buildReport(durably, all.id)
       assert.equal(report.testProbes?.length, 1)
       const probe = report.testProbes?.[0]
-      assert.equal(probe?.targets, 3)
+      assert.equal(probe?.targets, 4)
+      // The file that failed on the candidate too is not counted.
       assert.equal(probe?.failedOnBase, 1)
       assert.deepEqual(
         probe?.couldNotRun.map((line) => line.split(':')[0]),
@@ -4133,7 +4141,7 @@ describe('the test probe', { timeout: 300000 }, () => {
       const markdown = reportToMarkdown(report)
       assert.match(
         markdown,
-        /## Test probe[^\n]*\n\n- candidate-1-[0-9a-f]+: 3 test file\(s\), 1 failed on the base, 2 side\(s\) could not run, /,
+        /## Test probe[^\n]*\n\n- candidate-1-[0-9a-f]+: 4 test file\(s\), 1 failed on the base and passed on the candidate, 2 side\(s\) could not run, /,
       )
       assert.ok(markdown.includes('no-such-probe-command'))
       const noBaseReport = await buildReport(durably, noBase.id)

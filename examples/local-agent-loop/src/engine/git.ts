@@ -561,6 +561,44 @@ export async function cleanUntracked(
   await git(cwd, ['clean', '-ffd'], signal ? { signal } : {})
 }
 
+/**
+ * The nested repositories `commit` records as gitlinks, each with the commit
+ * it records, that the worktree `dir` reports as changed: a file edited, or
+ * a commit made, inside one. Run it after `resetHard` to `commit`, which
+ * puts back everything else but leaves what is inside a nested repository.
+ */
+export async function changedGitlinks(
+  dir: string,
+  commit: string,
+  signal?: AbortSignal,
+): Promise<{ path: string; commit: string }[]> {
+  const pass = signal ? { signal } : {}
+  const status = await git(
+    dir,
+    [
+      'status',
+      '--porcelain=v1',
+      '-z',
+      '--untracked-files=no',
+      '--ignore-submodules=none',
+    ],
+    pass,
+  )
+  const paths = status
+    .split('\0')
+    .filter((entry) => entry.length > 3)
+    .map((entry) => entry.slice(3))
+  if (paths.length === 0) return []
+  const listed = await git(dir, ['ls-tree', '-z', commit, '--', ...paths], {
+    env: { GIT_LITERAL_PATHSPECS: '1' },
+    ...pass,
+  })
+  return listed.split('\0').flatMap((entry) => {
+    const found = /^160000 commit ([0-9a-f]+)\t(.+)$/s.exec(entry)
+    return found?.[1] && found[2] ? [{ path: found[2], commit: found[1] }] : []
+  })
+}
+
 /** The longest `untrackedPaths` listing read, in characters. */
 const UNTRACKED_LIST_CHARS = 10_000_000
 
@@ -592,23 +630,25 @@ export async function untrackedPaths(
  * itself reports them in a dry run. Using the same command keeps this check
  * and the clean in step: an empty directory counts, a directory holding only
  * ignored files does not, and a nested repository does. Empty when the clean
- * would remove nothing; only that and the first few names matter, so a long
- * listing is not read in full.
+ * would remove nothing; for a finite `limit` only that and the first few
+ * names matter, so a long listing is not read in full, while an infinite
+ * one reads it all.
  */
 export async function someUntracked(
   cwd: string,
   limit: number,
   signal?: AbortSignal,
 ): Promise<string[]> {
+  const cap = Number.isFinite(limit) ? 100_000 : Number.POSITIVE_INFINITY
   const out = await git(cwd, ['clean', '-ffdn'], {
     // The dry run's "Would remove" wording is translated in other locales.
     env: { LC_ALL: 'C' },
-    maxOutputChars: 100_000,
+    maxOutputChars: cap,
     ...(signal ? { signal } : {}),
   })
   const lines = out.split('\n')
   // A capped listing keeps its end, so its first line may be cut short.
-  if (out.length >= 100_000) lines.shift()
+  if (out.length >= cap) lines.shift()
   return lines
     .map((line) => /^Would remove (.+)$/.exec(line)?.[1])
     .filter((path): path is string => path !== undefined)
