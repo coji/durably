@@ -7155,12 +7155,10 @@ describe('the test probe', { timeout: 300000 }, () => {
     const reader = [
       "const fs = require('node:fs')",
       "console.log('o'.repeat(5000))",
-      "console.log(`STDOUT-END empty=${fs.existsSync('empty')} named=${fs.existsSync('空き')}`)",
+      "console.log(`STDOUT-END empty=${fs.existsSync('empty')}`)",
       "console.error('w'.repeat(5000))",
       "console.error('STDERR-END')",
       "fs.mkdirSync('empty/deeper', { recursive: true })",
-      // Names git quotes unless told not to.
-      "fs.mkdirSync('空き/ü', { recursive: true })",
     ].join('\n')
     const config = await prepareRepoTarget({
       repoPath: repo,
@@ -7217,20 +7215,75 @@ describe('the test probe', { timeout: 300000 }, () => {
     )
     assert.equal(first['locked/b.test.js']?.candidate.ran, true)
     assert.equal(existsSync(join(base, 'empty', 'deeper')), true)
-    assert.equal(existsSync(join(base, '空き', 'ü')), true)
     // Each stream's end is kept, within the tail's length.
     const tail = first['test/a.test.js']?.baseOutputTail ?? ''
     assert.equal(tail.length, 2000)
-    assert.match(tail, /STDOUT-END empty=false named=false\n/)
+    assert.match(tail, /STDOUT-END empty=false\n/)
     assert.match(tail, /STDERR-END$/)
     // The next candidate's base has no empty directory left when its first
     // file runs.
     const two = await probeWith(2)
     assert.equal(two.files[0]?.base.ran, true)
-    assert.match(
-      two.files[0]?.baseOutputTail ?? '',
-      /STDOUT-END empty=false named=false\n/,
-    )
+    assert.match(two.files[0]?.baseOutputTail ?? '', /STDOUT-END empty=false\n/)
+  })
+
+  it('removes empty directories with names git quotes that a test made on the base', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-test-probe-quoted-'))
+    const repo = await seedRepo(root)
+    const runRoot = join(root, 'state', 'runs', 'run-1')
+    const base = join(runRoot, 'base-work')
+    // Says whether an earlier run left its directories, then makes them:
+    // non-ASCII names, which `git clean -n` quotes unless told not to, one
+    // inside another.
+    const reader = [
+      "const fs = require('node:fs')",
+      "console.log(`left=${fs.existsSync('空き')}`)",
+      "fs.mkdirSync('空き/ü', { recursive: true })",
+    ].join('\n')
+    const config = await prepareRepoTarget({
+      repoPath: repo,
+      baseRef: 'HEAD',
+      branch: `factory/probe-${randomUUID()}`,
+      root: runRoot,
+      task: 'x',
+      spec: null,
+      dispositions: null,
+      issue: null,
+      checkCommand: ['node', '--test'],
+      setupCommand: null,
+      testProbe: [
+        { glob: '**/*.test.js', command: ['node', '-e', reader, '{files}'] },
+      ],
+      checkTimeoutMs: 10000,
+      publish: false,
+      commit: DEFAULT_COMMIT_SETTINGS,
+    })
+    const target = createTarget(config)
+    const probeWith = async (iteration: number) => {
+      await writeFile(
+        join(config.workdir, 'test', 'a.test.js'),
+        `// ${iteration}\n`,
+      )
+      const candidate = await target.seal({
+        iteration,
+        runId: 'run-1',
+        attemptId: 'a',
+        signal: new AbortController().signal,
+      })
+      return runTestProbe({
+        config,
+        candidate,
+        runRoot,
+        assertIntact: () => target.assertIntact(candidate),
+        signal: new AbortController().signal,
+      })
+    }
+    const one = await probeWith(1)
+    assert.match(one.files[0]?.baseOutputTail ?? '', /left=false/)
+    assert.equal(existsSync(join(base, '空き', 'ü')), true)
+    // The next candidate's base has neither left when its file runs.
+    const two = await probeWith(2)
+    assert.match(two.files[0]?.baseOutputTail ?? '', /left=false/)
   })
 
   it('prunes the registration of a base worktree whose directory a dying worker had already removed, also of a run no longer recorded', async () => {
