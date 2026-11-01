@@ -91,7 +91,7 @@ export async function prepareRepoTarget(
   // Setup is a durable step, so a worker killed part way through re-runs it.
   // `git worktree add -b` refuses an existing directory or branch, so clear
   // both first. Nothing has been sealed yet, and the branch carries the run id.
-  await discardWorktree(repo, workdir, args.branch)
+  await discardWorktree(repo, workdir, args.branch, args.signal)
   await args.beforeCreate?.(repo)
   const baseCommit = await resolveCommit(repo, args.baseRef)
   await addWorktree({

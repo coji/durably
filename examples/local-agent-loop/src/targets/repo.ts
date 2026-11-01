@@ -62,6 +62,7 @@ import {
   someUntracked,
   treeOf,
   type CommitAuthor,
+  type RemoveFailure,
 } from '../engine/git.js'
 import type {
   CandidateChanges,
@@ -949,7 +950,9 @@ export class RepoTarget implements Target {
         this.config.repoPath,
         this.runRoot,
       )
-      return warnings.length > 0 ? warnings.join('; ') : null
+      return warnings.length > 0
+        ? warnings.map((w) => w.message).join('; ')
+        : null
     } catch (error) {
       return error instanceof Error ? error.message : String(error)
     }
@@ -961,23 +964,28 @@ export class RepoTarget implements Target {
  * git's registration of it: the agent's with `git worktree remove --force`
  * and a prune, the test probe's base with its record (`removeTestProbeBase`),
  * and then its other directories. Asking again after a removal succeeds and
- * does nothing. Returns `<path>: <why>` for each worktree git could not
- * remove; empty when none.
+ * does nothing. Returns, for each worktree git could not remove, why as
+ * `<path>: <why>` and whether only a person can remove it; empty when none.
  */
 export async function removeRunWorktree(
   repoPath: string,
   runRoot: string,
-): Promise<string[]> {
+): Promise<RemoveFailure[]> {
   const paths = removableRunPathsOf(runRoot)
   await Promise.all(paths.dirs.map(removeQuietly))
-  const warnings: string[] = []
+  const warnings: RemoveFailure[] = []
   // One at a time, since each runs git in the same repository.
   for (const dir of paths.worktrees) {
-    const warning =
-      dir === baseWorkdirOf(runRoot)
-        ? await removeTestProbeBase(repoPath, dir)
-        : await forceRemoveWorktree(repoPath, dir)
-    if (warning) warnings.push(`${dir}: ${warning}`)
+    if (dir === baseWorkdirOf(runRoot)) {
+      // Removed outright when git refuses it, so never left for a person.
+      const message = await removeTestProbeBase(repoPath, dir)
+      if (message)
+        warnings.push({ message: `${dir}: ${message}`, byHand: false })
+      continue
+    }
+    const failure = await forceRemoveWorktree(repoPath, dir)
+    if (failure)
+      warnings.push({ ...failure, message: `${dir}: ${failure.message}` })
   }
   return warnings
 }

@@ -2388,6 +2388,7 @@ describe('worktrees of finished runs', { timeout: 300000 }, () => {
       assert.equal(refused.changed, true)
       assert.equal(refused.worktreeRemoved, false)
       assert.match(refused.warnings.join('\n'), /locked/)
+      assert.equal(refused.retryable, true)
       assert.ok(existsSync(await work(archived.id)))
       // `status` then offers the forced removal `demo prune --apply` makes;
       // a stop nobody archived keeps the git removal a change refuses.
@@ -2416,6 +2417,7 @@ describe('worktrees of finished runs', { timeout: 300000 }, () => {
         worktreeRemoved: true,
         deletedBranches: [],
         warnings: [],
+        retryable: false,
       })
       assert.equal(existsSync(await work(archived.id)), false)
       assert.equal(
@@ -2555,6 +2557,7 @@ describe('worktrees of finished runs', { timeout: 300000 }, () => {
           worktreeRemoved: false,
           deletedBranches: [`factory/${gone.id}`],
           warnings: [],
+          retryable: false,
         },
       )
       assert.doesNotMatch(
@@ -2573,6 +2576,215 @@ describe('worktrees of finished runs', { timeout: 300000 }, () => {
     }
   })
 })
+
+describe(
+  'worktrees of runs whose setup never completed',
+  { timeout: 300000 },
+  () => {
+    /** A fake repository run whose setup fails, by its command or its ref. */
+    const failSetup = (
+      durably: Durably,
+      repo: string,
+      how: { setupCommand?: string[]; baseRef?: string },
+    ) =>
+      durably.jobs.agentLoop.trigger({
+        provider: 'fake',
+        target: {
+          kind: 'repo' as const,
+          repoPath: repo,
+          baseRef: how.baseRef ?? 'HEAD',
+          task: 'Fix add() so decimal inputs are not truncated.',
+          spec: null,
+          dispositions: null,
+          inputFiles: NO_FILES,
+          issue: null,
+          checkCommand: ['node', '--test', 'test/**/*.test.js'],
+          setupCommand: how.setupCommand ?? null,
+          publish: false,
+        },
+        maxIterations: 1,
+        context: 'reuse',
+        checkTimeoutMs: 120000,
+        agentTimeoutMs: 600000,
+        codexPath: null,
+      })
+
+    it("finds the worktree by git's registration, removes it when archived or pruned, and says when only a person can", async () => {
+      const root = await mkdtemp(join(tmpdir(), 'repo-setup-failed-'))
+      const repo = await seedRepo(root)
+      const stateRoot = join(root, 'state')
+      const durably = createAgentDurably({ stateRoot })
+      await durably.init()
+      const path = process.env.PATH
+      try {
+        const failing = { setupCommand: ['sh', '-c', 'exit 1'] }
+        const runs = {
+          archived: await failSetup(durably, repo, failing),
+          pruned: await failSetup(durably, repo, failing),
+          locked: await failSetup(durably, repo, failing),
+          orphan: await failSetup(durably, repo, failing),
+          deleted: await failSetup(durably, repo, failing),
+          gone: await failSetup(durably, repo, failing),
+          stopped: await failSetup(durably, repo, failing),
+          unmade: await failSetup(durably, repo, { baseRef: 'no-such-ref' }),
+        }
+        const all = Object.values(runs)
+        await waitFor(
+          async () => {
+            for (const run of all)
+              if ((await durably.getRun(run.id))?.status !== 'failed')
+                return false
+            return true
+          },
+          150000,
+          'setups fail',
+        )
+        const work = (id: string) => join(stateRoot, 'runs', id, 'work')
+        const listed = async () =>
+          await git(repo, ['worktree', 'list', '--porcelain'])
+        for (const run of all) {
+          assert.equal(
+            await durably.storage.getCompletedStep(run.id, 'setup'),
+            null,
+          )
+          // Failed after `git worktree add`, the worktree is registered with
+          // its branch; failed before it, nothing is.
+          if (run === runs.unmade) {
+            assert.equal(existsSync(work(run.id)), false)
+            assert.doesNotMatch(await listed(), new RegExp(run.id))
+          } else {
+            assert.ok(existsSync(work(run.id)), run.id)
+            assert.match(
+              await listed(),
+              new RegExp(`branch refs/heads/factory/${run.id}`),
+            )
+          }
+        }
+
+        // Archived, its worktree and registration go; with --delete-branch,
+        // the branch git had checked out in it too.
+        assert.deepEqual(
+          await archiveRun(durably, runs.archived.id, { deleteBranches: true }),
+          {
+            changed: true,
+            worktreeRemoved: true,
+            deletedBranches: [`factory/${runs.archived.id}`],
+            warnings: [],
+            retryable: false,
+          },
+        )
+        assert.equal(existsSync(work(runs.archived.id)), false)
+        assert.doesNotMatch(await listed(), new RegExp(runs.archived.id))
+        assert.equal(
+          await branchCommit(repo, `factory/${runs.archived.id}`),
+          null,
+        )
+
+        // Failed before `git worktree add`: nothing to remove, and no warning.
+        assert.deepEqual(await archiveRun(durably, runs.unmade.id), {
+          changed: true,
+          worktreeRemoved: false,
+          deletedBranches: [],
+          warnings: [],
+          retryable: false,
+        })
+
+        // An archived one is offered by `demo prune` and removed by --apply.
+        await writeFile(archiveMarkerOf(stateRoot, runs.pruned.id), '{}\n')
+        const plan = await planPrune(durably, { deleteBranches: true })
+        assert.deepEqual(
+          plan.worktrees.map((w) => [w.runId, w.path, w.reason]),
+          [[runs.pruned.id, work(runs.pruned.id), 'archived']],
+        )
+        assert.deepEqual(plan.branches, [
+          { runId: runs.pruned.id, branches: [`factory/${runs.pruned.id}`] },
+        ])
+        const applied = await applyPrune(durably, plan)
+        assert.deepEqual(applied.warnings, [])
+        assert.deepEqual(applied.deletedBranches, [`factory/${runs.pruned.id}`])
+        assert.equal(existsSync(work(runs.pruned.id)), false)
+
+        // A worktree git refuses: a warning that asking again may clear.
+        await git(repo, ['worktree', 'lock', work(runs.locked.id)])
+        const locked = await archiveRun(durably, runs.locked.id)
+        assert.equal(locked.worktreeRemoved, false)
+        assert.equal(locked.retryable, true)
+        assert.match(locked.warnings.join('\n'), /locked/)
+        await git(repo, ['worktree', 'unlock', work(runs.locked.id)])
+        assert.equal(
+          (await archiveRun(durably, runs.locked.id)).worktreeRemoved,
+          true,
+        )
+
+        // A directory git no longer lists: the warning says a person removes
+        // it, and asking again cannot.
+        await rm(join(work(runs.orphan.id), '.git'))
+        await git(repo, ['worktree', 'prune'])
+        const orphan = await archiveRun(durably, runs.orphan.id)
+        assert.equal(orphan.worktreeRemoved, false)
+        assert.equal(orphan.retryable, false)
+        assert.equal(orphan.warnings.length, 1)
+        assert.match(
+          orphan.warnings[0] ?? '',
+          /^worktree \S+\/work: .*git no longer lists \S+ as a worktree, so neither archive nor pnpm --filter example-local-agent-loop demo prune --apply can remove it: remove the directory by hand$/,
+        )
+        assert.ok(existsSync(work(runs.orphan.id)))
+
+        // Deleted outside git with its registration left: pruned, no warning.
+        await rm(work(runs.deleted.id), { recursive: true, force: true })
+        assert.deepEqual(await archiveRun(durably, runs.deleted.id), {
+          changed: true,
+          worktreeRemoved: false,
+          deletedBranches: [],
+          warnings: [],
+          retryable: false,
+        })
+        assert.doesNotMatch(await listed(), new RegExp(runs.deleted.id))
+
+        // Directory and registration both gone before the archive: nothing to
+        // remove, and no warning.
+        await rm(work(runs.gone.id), { recursive: true, force: true })
+        await git(repo, ['worktree', 'prune'])
+        assert.deepEqual(await archiveRun(durably, runs.gone.id), {
+          changed: true,
+          worktreeRemoved: false,
+          deletedBranches: [],
+          warnings: [],
+          retryable: false,
+        })
+
+        // git removes the worktree but reports a failure, as a removal
+        // stopped right after it finished: nothing is left, so no warning.
+        const bin = join(root, 'bin')
+        await mkdir(bin)
+        const realGit = (
+          await runChild('sh', ['-c', 'command -v git'], { timeoutMs: 10000 })
+        ).stdout.trim()
+        await writeFile(
+          join(bin, 'git'),
+          `#!/bin/sh\nif [ "$1" = worktree ] && [ "$2" = remove ]; then\n  '${realGit}' "$@"\n  touch '${bin}/refused'\n  exit 1\nfi\nexec '${realGit}' "$@"\n`,
+        )
+        await chmod(join(bin, 'git'), 0o755)
+        process.env.PATH = `${bin}:${path ?? ''}`
+        assert.deepEqual(await archiveRun(durably, runs.stopped.id), {
+          changed: true,
+          worktreeRemoved: true,
+          deletedBranches: [],
+          warnings: [],
+          retryable: false,
+        })
+        process.env.PATH = path
+        assert.ok(existsSync(join(bin, 'refused')))
+        assert.equal(existsSync(work(runs.stopped.id)), false)
+        assert.doesNotMatch(await listed(), new RegExp(runs.stopped.id))
+      } finally {
+        process.env.PATH = path
+        await durably.stop()
+        await durably.db.destroy()
+      }
+    })
+  },
+)
 
 describe('worktrees of manually approved runs', { timeout: 300000 }, () => {
   it('removes the worktree after a person approves, and a replay neither delivers nor removes again', async () => {

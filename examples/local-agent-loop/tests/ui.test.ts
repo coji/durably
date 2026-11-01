@@ -117,6 +117,12 @@ import {
   stageName,
   stopName,
 } from '../src/ui/labels.js'
+import {
+  noticesOn,
+  withNotice,
+  withoutNotice,
+  type NoticeEntry,
+} from '../src/ui/notices.js'
 import { seriesCommand } from '../src/ui/screens/list/BulkBar.js'
 import { STOP_PAGE } from '../src/ui/screens/list/StopTasks.js'
 import { TaskRuns } from '../src/ui/screens/list/TaskRuns.js'
@@ -4127,6 +4133,70 @@ describe('numbers on the screens', () => {
     assert.ok(!shown('unarchive', 2).includes(BULK.archivingNote))
   })
 
+  it('keeps each bulk action and the last single-run action in a notice of its own', () => {
+    const one = (runId: string, page = 'runs'): NoticeEntry => ({
+      id: Number(runId.slice(1)),
+      page,
+      outcome: {
+        kind: 'one',
+        outcome: {
+          request: { runId, name: runId, action: 'archive', label: 'x' },
+          result: { changed: true },
+        },
+      },
+    })
+    const progress = (
+      id: number,
+      done: number,
+      page = 'runs',
+    ): NoticeEntry => ({
+      id,
+      page,
+      outcome: { kind: 'progress', action: 'archive-series', done, total: 3 },
+    })
+    const answered = (id: number, page = 'runs'): NoticeEntry => ({
+      id,
+      page,
+      outcome: {
+        kind: 'bulk',
+        outcome: { action: 'archive-series', done: [], failed: [] },
+      },
+    })
+    // Two bulk actions at once, and a single-run action during them.
+    let entries: NoticeEntry[] = []
+    entries = withNotice(entries, progress(1, 0))
+    entries = withNotice(entries, progress(2, 0))
+    entries = withNotice(entries, one('r3'))
+    const single = entries[2]
+    // Each one's progress and answer change only its own notice.
+    entries = withNotice(entries, progress(1, 1))
+    entries = withNotice(entries, progress(2, 2))
+    assert.deepEqual(entries, [progress(1, 1), progress(2, 2), single])
+    entries = withNotice(entries, answered(1))
+    assert.deepEqual(entries, [answered(1), progress(2, 2), single])
+    entries = withNotice(entries, progress(2, 3))
+    entries = withNotice(entries, answered(2))
+    assert.deepEqual(entries, [answered(1), answered(2), single])
+    // A later single-run action replaces only the single-run notice.
+    entries = withNotice(entries, one('r4'))
+    assert.deepEqual(entries, [answered(1), answered(2), one('r4')])
+    // An undo shows its progress in the notice it came from.
+    entries = withNotice(entries, progress(1, 0))
+    assert.deepEqual(entries, [progress(1, 0), answered(2), one('r4')])
+    // Closing one leaves the others.
+    entries = withoutNotice(entries, 2)
+    assert.deepEqual(entries, [progress(1, 0), one('r4')])
+    // Only the page a notice was made on shows it. A new notice elsewhere
+    // drops the answered ones left behind, but not one still running.
+    entries = withNotice(entries, answered(5))
+    entries = withNotice(entries, one('r6', 'summary'))
+    assert.deepEqual(noticesOn(entries, 'summary'), [one('r6', 'summary')])
+    assert.deepEqual(noticesOn(entries, 'runs'), [progress(1, 0)])
+    entries = withNotice(entries, progress(1, 1))
+    assert.deepEqual(noticesOn(entries, 'runs'), [progress(1, 1)])
+    assert.deepEqual(noticesOn(entries, 'summary'), [one('r6', 'summary')])
+  })
+
   it('shows the newest stopped tasks and asks before showing the rest', () => {
     const stops = Array.from({ length: STOP_PAGE + 2 }, (_, i) =>
       row({
@@ -5159,6 +5229,7 @@ describe('web UI actions', { timeout: 300000 }, () => {
         worktreeRemoved: false,
         deletedBranches: [],
         warnings: [],
+        retryable: false,
       })
       assert.ok(archived(cancelled))
       assert.equal(snapshot(dbPath(stateRoot)), before)
@@ -5407,9 +5478,11 @@ describe('worktree cleanup on the page', { timeout: 300000 }, () => {
         changed: boolean
         worktreeRemoved: boolean
         warnings: string[]
+        retryable: boolean
       }
       assert.equal(result.changed, true)
       assert.equal(result.worktreeRemoved, false)
+      assert.equal(result.retryable, true)
       assert.equal(result.warnings.length, 1)
       assert.match(result.warnings[0] ?? '', /locked/)
       assert.ok(existsSync(workdir))
@@ -5471,6 +5544,7 @@ describe('worktree cleanup on the page', { timeout: 300000 }, () => {
         worktreeRemoved: true,
         deletedBranches: [],
         warnings: [],
+        retryable: false,
       })
       assert.equal(existsSync(workdir), false)
       assert.ok(existsSync(join(stateRoot, 'runs', id, 'candidates')))

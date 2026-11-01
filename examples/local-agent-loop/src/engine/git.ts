@@ -123,13 +123,22 @@ export async function addWorktree(spec: WorktreeSpec): Promise<void> {
   await git(spec.repo, args, spec.signal ? { signal: spec.signal } : {})
 }
 
-/** Remove a worktree. Never throws: cleanup must not fail a finished run. */
+/**
+ * Remove a worktree. Never throws: cleanup must not fail a finished run.
+ * It gets the same limit as every other worktree removal, since the
+ * worktree an earlier setup left may hold installed dependencies, and
+ * `signal` stops it sooner.
+ */
 export async function removeWorktree(
   repo: string,
   dir: string,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   try {
-    await git(repo, ['worktree', 'remove', '--force', dir])
+    await git(repo, ['worktree', 'remove', '--force', dir], {
+      timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS,
+      ...(signal ? { signal } : {}),
+    })
     return true
   } catch {
     return false
@@ -145,15 +154,14 @@ export function describeGitFailure(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/** How a warning ends when no retry can remove the directory it names. */
-const REMOVE_BY_HAND = 'remove the directory by hand'
-
 /**
- * Whether `warning` says no retry can remove its directory, so asking again
- * would only repeat it (`describeRemoveFailure`).
+ * Why git could not remove a worktree. `byHand` says no retry can remove
+ * it, so asking again would only repeat the warning: git no longer lists
+ * the directory, and it is not removed any other way (ADR-0028).
  */
-export function needsRemovalByHand(warning: string): boolean {
-  return warning.endsWith(`: ${REMOVE_BY_HAND}`)
+export interface RemoveFailure {
+  message: string
+  byHand: boolean
 }
 
 /**
@@ -168,18 +176,25 @@ function describeRemoveFailure(
   error: unknown,
   dir: string,
   listed: boolean | null,
-): string {
+): RemoveFailure {
   const failure =
     error instanceof SpawnTimeoutError
       ? `git worktree remove was stopped at its ${formatDuration(error.timeoutMs, 'en')} limit before it finished; ${dir} may be partly removed`
       : describeGitFailure(error)
   if (listed === false)
-    return `${failure}. git no longer lists ${dir} as a worktree, so neither archive nor ${DEMO} prune --apply can remove it: ${REMOVE_BY_HAND}`
+    return {
+      message: `${failure}. git no longer lists ${dir} as a worktree, so neither archive nor ${DEMO} prune --apply can remove it: remove the directory by hand`,
+      byHand: true,
+    }
+  // Not by hand while git may still list it: a retry can still finish it.
   if (error instanceof SpawnTimeoutError)
-    return listed
-      ? `${failure}. git still lists it, so ${DEMO} prune --apply continues the removal`
-      : `${failure}. If git worktree list in the run's repository still names it, ${DEMO} prune --apply continues the removal; otherwise remove the directory by hand`
-  return failure
+    return {
+      message: listed
+        ? `${failure}. git still lists it, so ${DEMO} prune --apply continues the removal`
+        : `${failure}. If git worktree list in the run's repository still names it, ${DEMO} prune --apply continues the removal; otherwise remove the directory by hand`,
+      byHand: false,
+    }
+  return { message: failure, byHand: false }
 }
 
 /**
@@ -196,7 +211,7 @@ export async function forceRemoveWorktree(
   repo: string,
   dir: string,
   timeoutMs = WORKTREE_REMOVE_TIMEOUT_MS,
-): Promise<string | null> {
+): Promise<RemoveFailure | null> {
   let refused: unknown = null
   if (existsSync(dir)) {
     try {
@@ -210,7 +225,7 @@ export async function forceRemoveWorktree(
   } catch (error) {
     return refused
       ? describeRemoveFailure(refused, dir, null)
-      : describeGitFailure(error)
+      : { message: describeGitFailure(error), byHand: false }
   }
   if (!refused) return null
   // Whether a retry can still finish it: git refuses a directory it no
@@ -244,7 +259,7 @@ export async function removeWorktreeRegistration(
   } catch (error) {
     // Also refused when git never registered it, which the list tells; the
     // failure is answered only while git still lists it.
-    failure = describeRemoveFailure(error, dir, true)
+    failure = describeRemoveFailure(error, dir, true).message
   }
   try {
     await git(repo, ['worktree', 'prune'])
@@ -262,6 +277,16 @@ export async function removeWorktreeRegistration(
  * `dir` may be gone. Throws when git cannot list them.
  */
 async function worktreeRegistered(repo: string, dir: string): Promise<boolean> {
+  const wanted = await pathsGitMayRecord(dir)
+  const out = await git(repo, ['worktree', 'list', '--porcelain'])
+  return porcelainWorktreePaths(out).some((path) => wanted.has(path))
+}
+
+/**
+ * `dir` as given and through the real path of its nearest existing
+ * ancestor: git records real paths, and `dir` may be gone.
+ */
+async function pathsGitMayRecord(dir: string): Promise<Set<string>> {
   const wanted = new Set([resolve(dir)])
   let rest = ''
   for (let at = resolve(dir); ; at = dirname(at)) {
@@ -273,8 +298,27 @@ async function worktreeRegistered(repo: string, dir: string): Promise<boolean> {
     if (dirname(at) === at) break
     rest = rest ? join(basename(at), rest) : basename(at)
   }
+  return wanted
+}
+
+/**
+ * Of `dirs`, the ones `git worktree list` in `repo` names, each with the
+ * branch git has checked out there, or null when it is detached. Compared
+ * like `worktreeRegistered`. Throws when git cannot list them.
+ */
+export async function registeredWorktrees(
+  repo: string,
+  dirs: string[],
+): Promise<Map<string, string | null>> {
   const out = await git(repo, ['worktree', 'list', '--porcelain'])
-  return porcelainWorktreePaths(out).some((path) => wanted.has(path))
+  const entries = porcelainWorktreeEntries(out)
+  const found = new Map<string, string | null>()
+  for (const dir of dirs) {
+    const wanted = await pathsGitMayRecord(dir)
+    const entry = entries.find((e) => wanted.has(e.path))
+    if (entry) found.set(dir, entry.branch)
+  }
+  return found
 }
 
 /**
@@ -284,10 +328,28 @@ async function worktreeRegistered(repo: string, dir: string): Promise<boolean> {
  * such a path is not supported and never matches.
  */
 export function porcelainWorktreePaths(out: string): string[] {
-  return out
-    .split('\n')
-    .filter((line) => line.startsWith('worktree '))
-    .map((line) => line.slice(9))
+  return porcelainWorktreeEntries(out).map((entry) => entry.path)
+}
+
+/**
+ * Each worktree a `git worktree list --porcelain` output names, with the
+ * branch of its `branch refs/heads/<name>` line, or null when it has none,
+ * as a detached one. A path that holds a newline is not supported, as
+ * `porcelainWorktreePaths` says.
+ */
+export function porcelainWorktreeEntries(
+  out: string,
+): { path: string; branch: string | null }[] {
+  const entries: { path: string; branch: string | null }[] = []
+  for (const line of out.split('\n')) {
+    if (line.startsWith('worktree '))
+      entries.push({ path: line.slice(9), branch: null })
+    else if (line.startsWith('branch refs/heads/')) {
+      const last = entries.at(-1)
+      if (last) last.branch = line.slice(18)
+    }
+  }
+  return entries
 }
 
 /**
@@ -557,19 +619,21 @@ export async function writePatch(
  * `git worktree add -b` refuses a directory or branch that already exists.
  * Clearing both first makes preparation replayable. Safe because no candidate
  * has been sealed yet at that point, and the branch name carries the run id.
+ * `signal`, the setup's, stops it on a cancel or a lost lease.
  */
 export async function discardWorktree(
   repo: string,
   dir: string,
   branch: string,
+  signal?: AbortSignal,
 ): Promise<void> {
-  await removeWorktree(repo, dir)
+  await removeWorktree(repo, dir, signal)
   for (const args of [
     ['worktree', 'prune'],
     ['branch', '-D', branch],
   ]) {
     try {
-      await git(repo, args)
+      await git(repo, args, signal ? { signal } : {})
     } catch {
       // Nothing to remove; a fresh run takes this path every time.
     }
