@@ -1634,10 +1634,15 @@ export function reportToMarkdown(r: LoopReport): string {
     lines.push(
       `- agent call limits: total ${formatDuration(r.agentTimeouts.totalMs)}, idle ${r.agentTimeouts.idleMs === null ? 'none' : formatDuration(r.agentTimeouts.idleMs)}`,
     )
-  if (r.reviewBlockerThreshold != null)
+  if (r.reviewBlockerThreshold != null) {
+    const rule =
+      r.reviewBlockerThreshold === 0
+        ? 'no likelihood × impact rule'
+        : 'a product-behavior finding whose likelihood × impact is below it is a non-blocker'
     lines.push(
-      `- review blocker threshold: ${r.reviewBlockerThreshold === 0 ? '0 (no likelihood × impact rule)' : `${r.reviewBlockerThreshold} (a product-behavior finding whose likelihood × impact is below it is a non-blocker)`}`,
+      `- review blocker threshold: ${r.reviewBlockerThreshold} (${rule})`,
     )
+  }
   if (r.repairSession) {
     const { setup, confirmed } = r.repairSession
     lines.push(
