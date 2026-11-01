@@ -169,6 +169,8 @@ import {
   readOnce,
   repoKeyOf,
   repoNames,
+  repoTopLevel,
+  TOP_LEVEL_RETRY_MS,
   runName,
   scopeRuns,
   SUBJECT_REPO,
@@ -272,6 +274,23 @@ describe('repositories', () => {
       assert.equal(repoKeyOf(repo(`${dir}/`)), top)
     } finally {
       await rm(dir, { recursive: true, force: true })
+    }
+    // A directory git can't answer for keeps its own path for a while, then
+    // is asked again, so a repository that comes back is grouped again.
+    const late = await mkdtemp(join(tmpdir(), 'repo-late-'))
+    try {
+      const sub = join(late, 'app')
+      const now = Date.now()
+      assert.equal(repoTopLevel(sub, now), sub)
+      execFileSync('git', ['init', '-q'], { cwd: late })
+      await mkdir(sub)
+      assert.equal(repoTopLevel(sub, now + 1), sub)
+      assert.equal(
+        repoTopLevel(sub, now + TOP_LEVEL_RETRY_MS),
+        await realpath(late),
+      )
+    } finally {
+      await rm(late, { recursive: true, force: true })
     }
   })
 

@@ -308,31 +308,41 @@ export const UNKNOWN_REPO = 'unknown'
 
 /** Each path's repository top level, asked of git once per path. */
 const topLevels = new Map<string, string>()
+/** When git last could not say a path's top level, so it is asked again later. */
+const unanswered = new Map<string, number>()
+/** How long a path git could not answer for keeps its fallback key. */
+export const TOP_LEVEL_RETRY_MS = 60_000
 
 /**
  * The repository a path is in, by git's name for its top level, so a
  * trailing slash, a `..` or a directory inside it all name one repository;
  * the path itself, resolved, when git can't say, as for a repository that
- * is gone. Git is asked once per path, since the page polls.
+ * is gone or not mounted yet. Git is asked once per path, since the page
+ * polls; a path it could not answer for is asked again after
+ * `TOP_LEVEL_RETRY_MS`, so a repository that comes back is grouped again.
  */
-export function repoTopLevel(path: string): string {
+export function repoTopLevel(path: string, now = Date.now()): string {
   const resolved = resolve(path)
-  let top = topLevels.get(resolved)
-  if (top === undefined) {
-    try {
-      top =
-        execFileSync('git', ['rev-parse', '--show-toplevel'], {
-          cwd: resolved,
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'ignore'],
-          timeout: 5000,
-        }).trim() || resolved
-    } catch {
-      top = resolved
-    }
+  const known = topLevels.get(resolved)
+  if (known !== undefined) return known
+  const failedAt = unanswered.get(resolved)
+  if (failedAt !== undefined && now - failedAt < TOP_LEVEL_RETRY_MS)
+    return resolved
+  try {
+    const top =
+      execFileSync('git', ['rev-parse', '--show-toplevel'], {
+        cwd: resolved,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 5000,
+      }).trim() || resolved
     topLevels.set(resolved, top)
+    unanswered.delete(resolved)
+    return top
+  } catch {
+    unanswered.set(resolved, now)
+    return resolved
   }
-  return top
 }
 
 /**
