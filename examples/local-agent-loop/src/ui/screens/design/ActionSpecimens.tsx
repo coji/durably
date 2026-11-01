@@ -73,15 +73,15 @@ const approvalRun = target(approval, {
     lastPasses: [],
     earlier: {
       count: 1,
-      titles: ['The cost column still prints six decimals'],
+      kept: [{ title: 'The cost column still prints six decimals' }],
       verdicts: [],
     },
     left: {
       count: 1,
-      titles: ['Name the rounding rule in the README'],
+      kept: [{ title: 'Name the rounding rule in the README' }],
       verdicts: [],
     },
-    open: { count: 0, titles: [], verdicts: [] },
+    open: { count: 0, kept: [], verdicts: [] },
   },
 })
 

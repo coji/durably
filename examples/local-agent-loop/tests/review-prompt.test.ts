@@ -10,6 +10,7 @@ import {
   decideToolPermission,
 } from '../src/engine/providers/claude.js'
 import {
+  blockerThresholdRules,
   CHANGED_PATHS_INLINE_LIMIT,
   changedPathsLine,
   codePrompt,
@@ -1754,6 +1755,16 @@ describe('the blocker threshold of a findings-json code review', () => {
       output,
       ...(threshold !== undefined ? { blockerThreshold: threshold } : {}),
     })
+  /** Every line of the rule, whatever its threshold. */
+  const RULE_LINES = blockerThresholdRules('findings-json', 7).map(
+    (line) =>
+      new RegExp(
+        line.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replaceAll('7', '\\d+'),
+      ),
+  )
+  const noRuleLine = (prompt: string) => {
+    for (const line of RULE_LINES) assert.doesNotMatch(prompt, line)
+  }
 
   it('asks for both scores of a product-behavior finding, with the boundary and the findings it does not cover', () => {
     const prompt = review('findings-json', 5)
@@ -1779,6 +1790,9 @@ describe('the blocker threshold of a findings-json code review', () => {
       check,
       /A finding that the change does not do something the task, the spec or the owner's confirmed context explicitly asks for is also judged as you otherwise would, however rarely the case it asks about happens\./,
     )
+    // Every line of the rule, the one an exclusion test also checks.
+    assert.equal(RULE_LINES.length, 3)
+    for (const line of RULE_LINES) assert.match(check, line)
     // The threshold the run fixed is the one named, at either end.
     assert.match(review('findings-json', 1), /below 1, .* 1 or more/)
     assert.match(review('findings-json', 100), /below 100, .* 100 or more/)
@@ -1787,10 +1801,27 @@ describe('the blocker threshold of a findings-json code review', () => {
   it('adds nothing at 0, without a threshold, or to a verdict review', () => {
     const plain = review('findings-json')
     assert.equal(review('findings-json', 0), plain)
-    assert.doesNotMatch(plain, /likelihood/)
+    noRuleLine(plain)
     const verdict = review('verdict')
     assert.equal(review('verdict', 5), verdict)
-    assert.doesNotMatch(verdict, /likelihood/)
+    noRuleLine(verdict)
+    assert.doesNotMatch(verdict, /likelihood|impact/)
+  })
+
+  it('shows the scores in the findings-json reply shape as optional fields never written as null', () => {
+    for (const prompt of [
+      review('findings-json'),
+      review('findings-json', 5),
+    ]) {
+      assert.match(
+        prompt,
+        /"line": <line number, optional>, "likelihood": <integer from 1 to 10, optional>, "impact": <integer from 1 to 10, optional>\}/,
+      )
+      assert.match(
+        prompt,
+        /Leave out an optional field you have no value for; never write null in it\./,
+      )
+    }
   })
 
   it('leaves the spec review blocker instruction as it was', () => {
@@ -1802,7 +1833,9 @@ describe('the blocker threshold of a findings-json code review', () => {
       untrusted: [],
       output: 'findings-json',
     })
-    assert.doesNotMatch(spec, /likelihood|impact/)
+    // The reply shape it shares names the scores; the rule is not there.
+    noRuleLine(spec)
+    assert.doesNotMatch(spec, /likelihood × impact/)
     assert.match(
       spec,
       /A finding that an implementer could not work without fixing is a blocker; anything else is advice\./,

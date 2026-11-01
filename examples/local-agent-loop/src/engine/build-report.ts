@@ -100,6 +100,7 @@ interface PersistedInput {
     inputFiles?: Record<string, { path?: string } | null>
     reviewBlockerThreshold?: number | null
   }
+  review?: Partial<Record<string, { output?: string }>>
   repairOf?: {
     runId?: string
     candidateCommit?: string
@@ -1316,6 +1317,7 @@ export async function buildReport(
   )?.output as {
     target?: { kind?: string; workdir?: string }
     parallelReview?: unknown
+    review?: Partial<Record<string, { output?: string }>>
     reviewBlockerThreshold?: number | null
     agentTimeoutMs?: number
     agentIdleTimeoutMs?: number
@@ -1337,6 +1339,14 @@ export async function buildReport(
     (setupOutput
       ? setupOutput.reviewBlockerThreshold
       : input?.target?.reviewBlockerThreshold) ?? null
+  // The rule is told only to a findings-json code review (ADR-0040).
+  const reviewInvocations = setupOutput ? setupOutput.review : input?.review
+  const reviewBlockerRuleLenses =
+    reviewBlockerThreshold != null && reviewBlockerThreshold > 0
+      ? REVIEW_LENSES.filter(
+          (lens) => reviewInvocations?.[lens]?.output === 'findings-json',
+        )
+      : []
   const setupTarget = setupOutput?.target
   const candidates = sealedCandidates(steps)
   const candidate = lastCandidate(output, candidates)
@@ -1382,6 +1392,7 @@ export async function buildReport(
     configVersion,
     agentTimeouts,
     reviewBlockerThreshold,
+    reviewBlockerRuleLenses,
     summary: summarizeRun({
       status: run.status,
       output: run.output,

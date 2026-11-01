@@ -53,7 +53,11 @@ import {
   validReusable,
 } from '../src/factory/baseline-reuse.js'
 import { resolveTimeouts } from '../src/factory/job.js'
-import { codePrompt, TIMED_OUT_CANDIDATE_LINE } from '../src/factory/prompts.js'
+import {
+  blockerThresholdRules,
+  codePrompt,
+  TIMED_OUT_CANDIDATE_LINE,
+} from '../src/factory/prompts.js'
 import { codeStage } from '../src/factory/stages.js'
 import {
   EFFORT_RESUME_POLICY,
@@ -4151,6 +4155,13 @@ describe('the review blocker threshold', { timeout: 300000 }, () => {
   }
   const RULE =
     /If likelihood × impact is below (\d+), the finding is a non-blocker/
+  /** Every line of the rule, whatever its threshold. */
+  const RULE_LINES = blockerThresholdRules('findings-json', 7).map(
+    (line) =>
+      new RegExp(
+        line.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replaceAll('7', '\\d+'),
+      ),
+  )
 
   /** A one-file repository whose check always passes. */
   async function plainRepo(root: string): Promise<string> {
@@ -4347,8 +4358,10 @@ describe('the review blocker threshold', { timeout: 300000 }, () => {
       for (const name of ['low', 'high', 'tests']) {
         const contexts = contextsOf(name)
         assert.equal(contexts.length, 2, name)
-        for (const context of contexts)
+        for (const context of contexts) {
           assert.equal(RULE.exec(context)?.[1], '5')
+          for (const line of RULE_LINES) assert.match(context, line, name)
+        }
       }
       assert.ok(
         contextsOf('low').some((c) => c.startsWith('/review ')),
@@ -4359,7 +4372,10 @@ describe('the review blocker threshold', { timeout: 300000 }, () => {
         assert.equal(contexts.length, 2, name)
         for (const context of contexts) {
           assert.ok(context.includes('You are an independent'), name)
-          assert.doesNotMatch(context, /likelihood/, name)
+          assert.doesNotMatch(context, /likelihood × impact/, name)
+          // No line of the rule, the exclusions included.
+          for (const line of RULE_LINES)
+            assert.doesNotMatch(context, line, name)
         }
       }
 
@@ -4387,7 +4403,21 @@ describe('the review blocker threshold', { timeout: 300000 }, () => {
         ],
       )
       const markdown = reportToMarkdown(low)
-      assert.match(markdown, /- review blocker threshold: 5 /)
+      assert.deepEqual(low.reviewBlockerRuleLenses, [
+        'correctness',
+        'edge-cases',
+      ])
+      assert.match(
+        markdown,
+        /- review blocker threshold: 5 \(the correctness and edge-cases reviews are told that .* unless the task, the spec or the confirmed context explicitly asks for what it finds missing\)$/m,
+      )
+      // A threshold no review was told reads as such.
+      const verdict = await buildReport(durably, ids['verdict'] ?? '')
+      assert.deepEqual(verdict.reviewBlockerRuleLenses, [])
+      assert.match(
+        reportToMarkdown(verdict),
+        /- review blocker threshold: 5 \(no review is told it: every code review is a verdict review\)$/m,
+      )
       assert.match(markdown, /- LOW-PRODUCT \(likelihood 1, impact 4\)$/m)
       assert.match(markdown, /- UNSCORED$/m)
       const tests = await buildReport(durably, ids['tests'] ?? '')

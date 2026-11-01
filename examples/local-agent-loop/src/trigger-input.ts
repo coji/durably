@@ -182,7 +182,9 @@ const factoryConfigSchema = z
     /**
      * How the code reviews decide a blocker: a product-behavior finding of
      * a findings-json review whose likelihood × impact is below
-     * `blockerThreshold` is a non-blocker; 0 adds no such rule (ADR-0040).
+     * `blockerThreshold` is a non-blocker, unless it is a missed requirement
+     * the task, spec or confirmed context explicitly asks for; 0 adds no
+     * such rule (ADR-0040).
      */
     review: z
       .object({ blockerThreshold: reviewBlockerThresholdSchema.optional() })

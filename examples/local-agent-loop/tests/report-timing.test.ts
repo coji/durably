@@ -13,6 +13,7 @@ import {
   type AttemptRow,
   type LoopReport,
   type ReportReview,
+  type ReportReviewFindings,
   type ReportReviewRound,
   type RunSummary,
 } from '../src/engine/report.js'
@@ -337,7 +338,7 @@ describe('review highlights', () => {
   const review = (
     lens: string,
     decision: string,
-    f: ReturnType<typeof findings> | null,
+    f: ReportReviewFindings | null,
     notes = 'first line\nmore',
   ): ReportReview => ({ lens, decision, notes, findings: f })
   const round = (n: number, reviews: ReportReview[]): ReportReviewRound => ({
@@ -348,6 +349,8 @@ describe('review highlights', () => {
   })
 
   const LENSES = ['correctness', 'edge-cases']
+  const titles = (g: { kept: { title: string }[] }) =>
+    g.kept.map((f) => f.title)
 
   it('takes the blockers before the last round as earlier and the last non-blockers as left', () => {
     const h = reviewHighlights(
@@ -366,8 +369,8 @@ describe('review highlights', () => {
     )
     assert.equal(h.rounds, 2)
     assert.equal(h.last, 'passed')
-    assert.deepEqual([h.earlier.count, h.earlier.titles], [3, ['A', 'B', 'C']])
-    assert.deepEqual([h.left.count, h.left.titles], [3, ['D', 'E', 'F']])
+    assert.deepEqual([h.earlier.count, titles(h.earlier)], [3, ['A', 'B', 'C']])
+    assert.deepEqual([h.left.count, titles(h.left)], [3, ['D', 'E', 'F']])
     assert.equal(h.open.count, 0)
   })
 
@@ -387,9 +390,9 @@ describe('review highlights', () => {
       LENSES,
     )
     assert.equal(h.last, 'blocked')
-    assert.deepEqual(h.earlier.titles, ['A'])
-    assert.deepEqual(h.open.titles, ['G'])
-    assert.deepEqual(h.left.titles, ['H'])
+    assert.deepEqual(titles(h.earlier), ['A'])
+    assert.deepEqual(titles(h.open), ['G'])
+    assert.deepEqual(titles(h.left), ['H'])
   })
 
   it('does not call a last round passed while a reviewer has no verdict', () => {
@@ -406,9 +409,9 @@ describe('review highlights', () => {
       LENSES,
     )
     assert.equal(h.last, 'incomplete')
-    assert.deepEqual(h.earlier.titles, ['A'])
-    assert.deepEqual(h.open.titles, ['G'])
-    assert.deepEqual(h.left.titles, ['H'])
+    assert.deepEqual(titles(h.earlier), ['A'])
+    assert.deepEqual(titles(h.open), ['G'])
+    assert.deepEqual(titles(h.left), ['H'])
   })
 
   it('shows a verdict review by its decision and the first line of its notes', () => {
@@ -490,9 +493,82 @@ describe('review highlights', () => {
       [review('correctness', 'pass', findings([], ['Z']))],
       ['correctness'],
     )
-    assert.deepEqual([h.rounds, h.last, h.left.titles], [1, 'passed', ['Z']])
+    assert.deepEqual([h.rounds, h.last, titles(h.left)], [1, 'passed', ['Z']])
     const none = reviewHighlights([], [], LENSES)
     assert.deepEqual([none.rounds, none.last], [0, null])
+  })
+
+  it('keeps the scores a left non-blocker was given, and adds none to a finding without them', () => {
+    const advice = (title: string, scores: object) => ({
+      severity: 'non-blocker' as const,
+      title,
+      body: 'b',
+      ...scores,
+    })
+    const scored: ReportReviewFindings = {
+      blocker: [],
+      nonBlocker: [
+        advice('BOTH', { likelihood: 2, impact: 3 }),
+        advice('ONE', { impact: 4 }),
+        advice('NONE', {}),
+      ],
+      counts: { blocker: 0, nonBlocker: 3 },
+    }
+    const h = reviewHighlights(
+      [round(1, [review('correctness', 'pass', scored)])],
+      [],
+      ['correctness'],
+    )
+    assert.deepEqual(h.left.kept, [
+      { title: 'BOTH', likelihood: 2, impact: 3 },
+      { title: 'ONE', impact: 4 },
+      { title: 'NONE' },
+    ])
+    const md = reportToMarkdown({ ...baseReport(), reviewHighlights: h })
+    assert.match(
+      md,
+      /left \(non-blockers of the last round\): 3 finding\(s\)\n {2}- BOTH \(likelihood 2, impact 3\)\n {2}- ONE \(impact 4\)\n {2}- NONE\n/,
+    )
+  })
+})
+
+describe('the review blocker threshold in the Markdown header', () => {
+  const header = (
+    reviewBlockerThreshold: number | null,
+    reviewBlockerRuleLenses?: string[],
+  ) =>
+    reportToMarkdown({
+      ...baseReport(),
+      reviewBlockerThreshold,
+      ...(reviewBlockerRuleLenses ? { reviewBlockerRuleLenses } : {}),
+    })
+      .split('\n')
+      .find((l) => l.startsWith('- review blocker threshold:'))
+
+  it('names the rule and its exclusion only for the reviews it reached', () => {
+    assert.equal(
+      header(5, ['correctness', 'edge-cases']),
+      '- review blocker threshold: 5 (the correctness and edge-cases reviews are told that a product-behavior finding whose likelihood × impact is below it is a non-blocker, unless the task, the spec or the confirmed context explicitly asks for what it finds missing)',
+    )
+    assert.match(
+      header(5, ['edge-cases']) ?? '',
+      /\(the edge-cases review is told that /,
+    )
+  })
+
+  it('does not read as applied when no review got the rule', () => {
+    // Every code review a verdict review, or a report built before the
+    // lenses were kept.
+    for (const lenses of [[], undefined])
+      assert.equal(
+        header(5, lenses),
+        '- review blocker threshold: 5 (no review is told it: every code review is a verdict review)',
+      )
+    assert.equal(
+      header(0, []),
+      '- review blocker threshold: 0 (no likelihood × impact rule)',
+    )
+    assert.equal(header(null), undefined)
   })
 })
 

@@ -768,6 +768,12 @@ export const REVIEW = {
   failedLast: '最後のレビューで直すべき指摘が残った',
   incompleteLast: '最後のレビューは、全員の判定がそろっていない',
   more: (n: string) => `ほか ${n} 件`,
+  /** A finding's scores (ADR-0040), only those it has; empty without. */
+  scores: (f: { likelihood?: number; impact?: number }) =>
+    [
+      ...(f.likelihood !== undefined ? [`頻度 ${f.likelihood}`] : []),
+      ...(f.impact !== undefined ? [`深刻さ ${f.impact}`] : []),
+    ].join('、'),
   notes: 'メモを読む',
   roundOf: (n: number) => `${n}回目`,
   /** A verdict review that asked for changes a later round no longer asked for. */
