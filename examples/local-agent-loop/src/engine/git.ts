@@ -145,6 +145,17 @@ export function describeGitFailure(error: unknown): string {
 }
 
 /**
+ * A failed `git worktree remove` as one line: git's words, or, when it was
+ * stopped at its limit, that the directory may be partly removed and asking
+ * again continues.
+ */
+function describeRemoveFailure(error: unknown): string {
+  return error instanceof SpawnTimeoutError
+    ? `git worktree remove was stopped at its ${formatDuration(error.timeoutMs, 'en')} limit before it finished; the directory may be partly removed. Archive the run again or run demo prune --apply to continue`
+    : describeGitFailure(error)
+}
+
+/**
  * Force-remove a finished run's worktree, then prune git's registration of
  * it, so neither the directory nor a stale `git worktree list` entry stays.
  * A directory that is already gone is only pruned, so asking again after a
@@ -163,10 +174,7 @@ export async function forceRemoveWorktree(
     try {
       await git(repo, ['worktree', 'remove', '--force', dir], { timeoutMs })
     } catch (error) {
-      failure =
-        error instanceof SpawnTimeoutError
-          ? `git worktree remove was stopped at its ${formatDuration(error.timeoutMs, 'en')} limit before it finished; the directory may be partly removed. Archive the run again or run demo prune --apply to continue`
-          : describeGitFailure(error)
+      failure = describeRemoveFailure(error)
     }
   }
   try {
@@ -189,15 +197,16 @@ export async function forceRemoveWorktree(
 export async function removeWorktreeRegistration(
   repo: string,
   dir: string,
+  timeoutMs = WORKTREE_REMOVE_TIMEOUT_MS,
 ): Promise<string | null> {
   let failure: string | null = null
   try {
     await git(repo, ['worktree', 'remove', '--force', '--force', dir], {
-      timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS,
+      timeoutMs,
     })
   } catch (error) {
     // Also refused when git never registered it, which the list tells.
-    failure = describeGitFailure(error)
+    failure = describeRemoveFailure(error)
   }
   try {
     await git(repo, ['worktree', 'prune'])

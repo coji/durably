@@ -25,6 +25,7 @@ import {
   isDirty,
   discardWorktree,
   porcelainWorktreePaths,
+  removeWorktreeRegistration,
   writePatch,
   readFileAt,
   removeWorktree,
@@ -207,6 +208,13 @@ describe('git engine', () => {
     )
     await git(repo, ['worktree', 'unlock', wt])
     assert.equal(await forceRemoveWorktree(repo, wt), null)
+    // The same for the test probe's base, removed with -f -f.
+    await addWorktree({ repo, dir: wt, baseCommit: base })
+    assert.match(
+      (await removeWorktreeRegistration(repo, wt, 1)) ?? '',
+      /^git worktree remove was stopped at its <0\.1s limit before it finished; the directory may be partly removed\./,
+    )
+    assert.equal(await removeWorktreeRegistration(repo, wt), null)
   })
 
   it('counts a change by files and text lines, renames and binaries included', async () => {
