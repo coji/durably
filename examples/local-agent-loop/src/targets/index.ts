@@ -28,6 +28,7 @@ import type {
 } from '../factory/target.js'
 import type { TestProbeRule } from '../factory/types.js'
 import {
+  fingerprintPaths,
   RepoTarget,
   removeTestProbeBase,
   writeTestProbeBaseRecord,
@@ -173,7 +174,9 @@ async function runSetupCommand(
  * setup that runs again, or a probe that finds the worktree gone, starts
  * clean. Its record (`testProbeBaseRecordOf`) names the repository before
  * the worktree is made, and once setup has succeeded the untracked files
- * setup left, which the probe keeps when it puts the base back. A worktree
+ * setup left with their fingerprints (`fingerprintPaths`), which the probe
+ * keeps when it puts the base back and checks to tell a base a test
+ * changed. A worktree
  * that cannot be made or set up is removed again and its reason returned:
  * the probe records it, and nothing stops the run. A cancel or a lost lease
  * still throws, after removing what was made of it: a cancelled run never
@@ -201,7 +204,10 @@ export async function prepareTestProbeBase(args: {
     await runSetupCommand(args.setupCommand, workdir, args.signal)
     await writeTestProbeBaseRecord(args.root, {
       repoPath: args.repo,
-      setupUntracked: await untrackedPaths(workdir, args.signal),
+      setupUntracked: await fingerprintPaths(
+        workdir,
+        await untrackedPaths(workdir, args.signal),
+      ),
     })
     return { workdir, setupFailure: null }
   } catch (error) {

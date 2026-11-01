@@ -8,6 +8,8 @@
  * finished run's worktree and, when asked, its branches.
  */
 import { existsSync } from 'node:fs'
+import { realpath } from 'node:fs/promises'
+import { basename, dirname, join, resolve } from 'node:path'
 
 import { runChild } from './child.js'
 
@@ -160,6 +162,59 @@ export async function forceRemoveWorktree(
     failure ??= describeGitFailure(error)
   }
   return failure
+}
+
+/**
+ * Remove a worktree that holds nothing anyone works in, such as the test
+ * probe's base, and git's registration of it: `git worktree remove -f -f`,
+ * which also takes a registration left locked by a `git worktree add` that
+ * was killed, and a registration whose directory is already gone, then a
+ * prune. Returns null only once `git worktree list` no longer names `dir`,
+ * else why git could not tell or remove it. The directory itself is left
+ * to the caller when git refuses it.
+ */
+export async function removeWorktreeRegistration(
+  repo: string,
+  dir: string,
+): Promise<string | null> {
+  let failure: string | null = null
+  try {
+    await git(repo, ['worktree', 'remove', '--force', '--force', dir])
+  } catch (error) {
+    // Also refused when git never registered it, which the list tells.
+    failure = describeGitFailure(error)
+  }
+  try {
+    await git(repo, ['worktree', 'prune'])
+    return (await worktreeRegistered(repo, dir))
+      ? (failure ?? `${dir} is still a registered worktree`)
+      : null
+  } catch (error) {
+    return describeGitFailure(error)
+  }
+}
+
+/**
+ * Whether `git worktree list` names `dir`, compared also through the real
+ * path of its nearest existing ancestor, since git records real paths and
+ * `dir` may be gone. Throws when git cannot list them.
+ */
+async function worktreeRegistered(repo: string, dir: string): Promise<boolean> {
+  const wanted = new Set([resolve(dir)])
+  let rest = ''
+  for (let at = resolve(dir); ; at = dirname(at)) {
+    const real = await realpath(at).catch(() => null)
+    if (real) {
+      wanted.add(rest ? join(real, rest) : real)
+      break
+    }
+    if (dirname(at) === at) break
+    rest = rest ? join(basename(at), rest) : basename(at)
+  }
+  const out = await git(repo, ['worktree', 'list', '--porcelain', '-z'])
+  return out
+    .split('\0')
+    .some((line) => line.startsWith('worktree ') && wanted.has(line.slice(9)))
 }
 
 /**

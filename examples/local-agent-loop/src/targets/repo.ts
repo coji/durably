@@ -13,12 +13,15 @@
  * still be the candidate's commit. Like the directory-hash check on the sample
  * target, this detects an unintended change; it is not a sandbox.
  */
-import { constants as fsConstants, existsSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { createReadStream, constants as fsConstants, existsSync } from 'node:fs'
 import {
   copyFile,
+  lstat,
   mkdir,
   readdir,
   readFile,
+  readlink,
   realpath,
   rename,
   rm,
@@ -34,6 +37,7 @@ import {
   resolve,
   sep,
 } from 'node:path'
+import { pipeline } from 'node:stream/promises'
 
 import { runChild } from '../engine/child.js'
 import {
@@ -53,6 +57,7 @@ import {
   isDirty,
   writePatch,
   pushBranch,
+  removeWorktreeRegistration,
   resolveCommit,
   someUntracked,
   treeOf,
@@ -71,6 +76,7 @@ import {
   type GradeResult,
 } from '../engine/verification.js'
 import {
+  baseWorkdirOf,
   removableRunPathsOf,
   reviewBaseTreeOf,
   reviewHeadTreeOf,
@@ -923,11 +929,12 @@ export class RepoTarget implements Target {
 }
 
 /**
- * Remove each of a repository run's worktrees (`removableRunPathsOf`) with
- * `git worktree remove --force`, prune git's registration of it, and remove
- * its other directories. Nothing else of the run is touched. Asking again
- * after a removal succeeds and does nothing. Returns `<path>: <why>` for
- * each worktree git could not remove; empty when none.
+ * Remove each of a repository run's worktrees (`removableRunPathsOf`) and
+ * git's registration of it: the agent's with `git worktree remove --force`
+ * and a prune, the test probe's base with its record (`removeTestProbeBase`),
+ * and then its other directories. Asking again after a removal succeeds and
+ * does nothing. Returns `<path>: <why>` for each worktree git could not
+ * remove; empty when none.
  */
 export async function removeRunWorktree(
   repoPath: string,
@@ -938,10 +945,12 @@ export async function removeRunWorktree(
   const warnings: string[] = []
   // One at a time, since each runs git in the same repository.
   for (const dir of paths.worktrees) {
-    const warning = await forceRemoveWorktree(repoPath, dir)
+    const warning =
+      dir === baseWorkdirOf(runRoot)
+        ? await removeTestProbeBase(repoPath, dir)
+        : await forceRemoveWorktree(repoPath, dir)
     if (warning) warnings.push(`${dir}: ${warning}`)
   }
-  await Promise.all(paths.files.map(removeQuietly))
   return warnings
 }
 
@@ -951,10 +960,11 @@ export interface TestProbeBaseRecord {
   repoPath: string
   /**
    * The untracked paths `.gitignore` does not cover that its setup left
-   * (`untrackedPaths`), which the probe keeps when it puts the base back.
-   * Absent until setup has succeeded.
+   * (`untrackedPaths`), each with its fingerprint (`fingerprintPaths`): the
+   * probe keeps them when it puts the base back, and makes the base again
+   * when one is gone or changed. Absent until setup has succeeded.
    */
-  setupUntracked?: string[]
+  setupUntracked?: Record<string, string>
 }
 
 /** The base worktree's record of the run at `runRoot`, or null. */
@@ -968,8 +978,18 @@ export async function readTestProbeBaseRecord(
     if (typeof record?.repoPath !== 'string') return null
     return {
       repoPath: record.repoPath,
-      ...(Array.isArray(record.setupUntracked)
-        ? { setupUntracked: record.setupUntracked.map(String) }
+      // A list of paths alone, from before the fingerprints, counts as none.
+      ...(record.setupUntracked &&
+      typeof record.setupUntracked === 'object' &&
+      !Array.isArray(record.setupUntracked)
+        ? {
+            setupUntracked: Object.fromEntries(
+              Object.entries(record.setupUntracked).map(([path, print]) => [
+                path,
+                String(print),
+              ]),
+            ),
+          }
         : {}),
     }
   } catch {
@@ -988,24 +1008,57 @@ export async function writeTestProbeBaseRecord(
 }
 
 /**
- * Remove the test probe's base worktree, git's registration of it, and
- * then its record (`testProbeBaseRecordOf`), from the run directory `dir`
- * is in. `git worktree remove` takes the registration with the directory;
- * a directory git refuses, or never registered, is then removed outright,
- * since it holds nothing anyone works in, and pruned again. The record goes
- * last, so a worker that dies midway leaves it for the next cleanup to
- * find. Asking again does nothing, and it never throws.
+ * Each of `paths`, relative to `dir`, with what it holds: a file by the
+ * sha256 of its bytes, a symbolic link by its target, and a directory, such
+ * as a nested repository `untrackedPaths` names with a trailing `/`, by the
+ * sorted list of what is under it. A path that cannot be read is `missing`.
+ * One at a time, so a setup that left many files opens one at once.
+ */
+export async function fingerprintPaths(
+  dir: string,
+  paths: string[],
+): Promise<Record<string, string>> {
+  const prints: Record<string, string> = {}
+  for (const path of paths) {
+    const full = join(dir, path)
+    prints[path] = await lstat(full)
+      .then(async (info) => {
+        if (info.isSymbolicLink()) return `link:${await readlink(full)}`
+        if (info.isDirectory()) {
+          const names = (await readdir(full, { recursive: true })).sort()
+          return `dir:${createHash('sha256').update(names.join('\0')).digest('hex')}`
+        }
+        const hash = createHash('sha256')
+        await pipeline(createReadStream(full), hash)
+        return `file:${hash.digest('hex')}`
+      })
+      .catch(() => 'missing')
+  }
+  return prints
+}
+
+/**
+ * Remove the test probe's base worktree, git's registration of it
+ * (`removeWorktreeRegistration`), and then its record
+ * (`testProbeBaseRecordOf`), from the run directory `dir` is in. A
+ * directory git refuses, or never registered, is removed outright, since it
+ * holds nothing anyone works in, and its registration taken again. The
+ * record goes only once `git worktree list` no longer names the base, so a
+ * worker that dies midway, or a git that fails, leaves it for the next
+ * cleanup to find. Returns why git could not remove the registration, or
+ * null. Asking again does nothing, and it never throws.
  */
 export async function removeTestProbeBase(
   repoPath: string,
   dir: string,
-): Promise<void> {
-  await forceRemoveWorktree(repoPath, dir)
+): Promise<string | null> {
+  let failure = await removeWorktreeRegistration(repoPath, dir)
   if (existsSync(dir)) {
     await removeQuietly(dir)
-    await forceRemoveWorktree(repoPath, dir)
+    failure = await removeWorktreeRegistration(repoPath, dir)
   }
-  await removeQuietly(testProbeBaseRecordOf(dirname(dir)))
+  if (failure === null) await removeQuietly(testProbeBaseRecordOf(dirname(dir)))
+  return failure
 }
 
 /** Remove a directory, ignoring every failure; for best-effort cleanup. */

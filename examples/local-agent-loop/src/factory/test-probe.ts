@@ -43,7 +43,7 @@ import {
 import { fencedText } from '../engine/markdown.js'
 import type { CandidateRef } from '../engine/types.js'
 import { prepareTestProbeBase } from '../targets/index.js'
-import { readTestProbeBaseRecord } from '../targets/repo.js'
+import { fingerprintPaths, readTestProbeBaseRecord } from '../targets/repo.js'
 import { testProbeMarkerOf, testProbeResultOf } from './layout.js'
 import { MAX_CONTEXT_BYTES, type RepoTargetConfig } from './target.js'
 import type {
@@ -194,8 +194,9 @@ async function runSide(
  * it is gone, or when its record (`testProbeBaseRecordOf`) does not name
  * what its setup left, put back at the base commit with what an earlier
  * candidate's tests wrote removed and what setup wrote kept
- * (`restoreBase`), and given only those files from the candidate. Returns
- * its directory, or why it could not be made ready.
+ * (`restoreBase`), made again when a test changed or removed what setup
+ * wrote, and given only those files from the candidate. Returns its
+ * directory, or why it could not be made ready.
  */
 async function prepareBase(
   config: RepoTargetConfig,
@@ -209,12 +210,12 @@ async function prepareBase(
     return {
       failure: `the base worktree could not be set up: ${base.setupFailure}`,
     }
+  if (!candidate.commit) return { failure: `${candidate.id} has no commit` }
   // The run keeps it across its waits and removes it when it ends; one
   // removed since, by hand or by an earlier attempt's failure, is made
   // again, and so is one set up before its record named setup's files.
   const runRoot = dirname(base.workdir)
-  let record = await readTestProbeBaseRecord(runRoot)
-  if (!existsSync(base.workdir) || !record?.setupUntracked) {
+  const remake = async (): Promise<string | null> => {
     const made = await prepareTestProbeBase({
       repo: config.repoPath,
       root: runRoot,
@@ -222,20 +223,31 @@ async function prepareBase(
       setupCommand: config.setupCommand,
       signal,
     })
-    if (made.setupFailure)
-      return {
-        failure: `the base worktree could not be set up again: ${made.setupFailure}`,
-      }
-    record = await readTestProbeBaseRecord(runRoot)
+    return made.setupFailure
+      ? `the base worktree could not be set up again: ${made.setupFailure}`
+      : null
   }
-  if (!candidate.commit) return { failure: `${candidate.id} has no commit` }
+  const record = await readTestProbeBaseRecord(runRoot)
+  let fresh = false
+  if (!existsSync(base.workdir) || !record?.setupUntracked) {
+    const failure = await remake()
+    if (failure) return { failure }
+    fresh = true
+  }
   try {
-    await restoreBase(
-      base.workdir,
-      config.baseCommit,
-      record?.setupUntracked ?? [],
-      signal,
-    )
+    // A fresh base is as its setup left it already.
+    if (
+      !fresh &&
+      !(await restoreBase(
+        base.workdir,
+        config.baseCommit,
+        record?.setupUntracked ?? {},
+        signal,
+      ))
+    ) {
+      const failure = await remake()
+      if (failure) return { failure }
+    }
     await checkoutPathsFrom(base.workdir, candidate.commit, paths, signal)
     return { dir: base.workdir }
   } catch (error) {
@@ -268,17 +280,19 @@ async function restoreWorktree(
  * not cover removed unless setup left it (`setupUntracked`), with the
  * directories that removal empties. A fixture setup generates therefore
  * stays, as it does in the candidate, while what an earlier candidate's
- * tests wrote goes. Ignored files stay; an empty directory a test made, or
- * a change a test made to a file setup left, stays too.
+ * tests wrote goes. Returns false when a path setup left is gone or no
+ * longer matches its fingerprint (`fingerprintPaths`): a test changed it,
+ * and only setup can make it again. Ignored files stay, and so does an
+ * empty directory a test made.
  */
 async function restoreBase(
   dir: string,
   commit: string,
-  setupUntracked: string[],
+  setupUntracked: Record<string, string>,
   signal: AbortSignal,
-): Promise<void> {
+): Promise<boolean> {
   await resetHard(dir, commit, signal)
-  const keep = new Set(setupUntracked)
+  const keep = new Set(Object.keys(setupUntracked))
   for (const path of await untrackedPaths(dir, signal)) {
     if (keep.has(path)) continue
     await rm(join(dir, path), { recursive: true, force: true })
@@ -296,6 +310,8 @@ async function restoreBase(
       if (!removed) break
     }
   }
+  const now = await fingerprintPaths(dir, [...keep])
+  return [...keep].every((path) => now[path] === setupUntracked[path])
 }
 
 /** What one file came to, as the result and the report name it. */
@@ -393,7 +409,7 @@ export function testProbeText(args: {
       .join('; ')}.`,
     // How to read it, here rather than in the review rules, which hold for
     // any stage result.
-    'A test that failed on the base is not evidence by itself that it checks the changed behaviour: read its output tail. Failing only because a module, export or file it imports is missing on the base proves nothing about the behaviour; failing on an assertion about that behaviour does. The base has only the matched test files from the candidate, beside what its setupCommand produced, so a test that also needs a fixture, snapshot or helper the candidate added and no glob matches fails there for that reason alone, which its tail shows. A test that could not run is judged from the code.',
+    'A test that failed on the base is not evidence by itself that it checks the changed behaviour: read its output tail. Failing only because a module, export or file it imports is missing on the base proves nothing about the behaviour; failing on an assertion about that behaviour does. The base has only the matched test files from the candidate, beside what its setupCommand produced, which is made again when an earlier test changed or removed it, so a test that also needs a fixture, snapshot or helper the candidate added and no glob matches fails there for that reason alone, which its tail shows. A test that could not run is judged from the code.',
   ]
   const render = (chars: number, listed: number, globs = true) =>
     [

@@ -18,6 +18,7 @@ import {
   mkdtemp,
   readFile,
   realpath,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -104,6 +105,7 @@ import {
   assertCandidateUnmoved,
   extractCommit,
   removeRunWorktree,
+  removeTestProbeBase,
 } from '../src/targets/repo.js'
 import {
   buildRepairInput,
@@ -6259,14 +6261,95 @@ describe('the test probe', { timeout: 300000 }, () => {
     assert.equal(testProbeOutcomeOf(three.files[0]!), 'passed-on-both')
     assert.equal(three.files[0]?.baseOutputTail, clean)
     assert.deepEqual(
-      (
-        JSON.parse(await readFile(record, 'utf8')) as {
-          setupUntracked: string[]
-        }
-      ).setupUntracked.sort(),
+      Object.keys(
+        (
+          JSON.parse(await readFile(record, 'utf8')) as {
+            setupUntracked: Record<string, string>
+          }
+        ).setupUntracked,
+      ).sort(),
       ['fixtures/data.txt', 'gen/a.txt'],
     )
     await target.assertIntact(third)
+  })
+
+  it('makes the base worktree again when a test changed or removed a fixture its setup wrote', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-test-probe-fixture-'))
+    const repo = await seedRepo(root)
+    const runRoot = join(root, 'state', 'runs', 'run-1')
+    const setupLog = join(root, 'setup.log')
+    // A fixture setup generates and no .gitignore covers; each setup run is
+    // counted.
+    const setup = [
+      "const fs = require('node:fs')",
+      "fs.mkdirSync('fixtures', { recursive: true })",
+      "fs.writeFileSync('fixtures/data.txt', 'd')",
+      `fs.appendFileSync(${JSON.stringify(setupLog)}, 'x')`,
+    ].join('\n')
+    // Prints the fixture, then edits or removes it, as its test file says.
+    const reader = [
+      "const fs = require('node:fs')",
+      "const f = 'fixtures/data.txt'",
+      "console.log(`data=${fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : 'missing'}`)",
+      "const what = fs.readFileSync(process.argv[1], 'utf8')",
+      "if (what.includes('edit')) fs.writeFileSync(f, 'changed')",
+      "if (what.includes('delete')) fs.rmSync(f)",
+    ].join('\n')
+    const config = await prepareRepoTarget({
+      repoPath: repo,
+      baseRef: 'HEAD',
+      branch: `factory/probe-${randomUUID()}`,
+      root: runRoot,
+      task: 'x',
+      spec: null,
+      dispositions: null,
+      issue: null,
+      checkCommand: ['node', '--test'],
+      setupCommand: ['node', '-e', setup],
+      testProbe: [
+        {
+          glob: 'test/**/*.test.js',
+          command: ['node', '-e', reader, '{files}'],
+        },
+      ],
+      checkTimeoutMs: 10000,
+      publish: false,
+      commit: DEFAULT_COMMIT_SETTINGS,
+    })
+    const target = createTarget(config)
+    const setupRuns = async () => (await readFile(setupLog, 'utf8')).length
+    // The agent's worktree and the base each ran setup once.
+    assert.equal(await setupRuns(), 2)
+    const probeWith = async (iteration: number, body: string) => {
+      await writeFile(join(config.workdir, 'test', 'a.test.js'), body)
+      const candidate = await target.seal({
+        iteration,
+        runId: 'run-1',
+        attemptId: 'a',
+        signal: new AbortController().signal,
+      })
+      const result = await runTestProbe({
+        config,
+        candidate,
+        runRoot,
+        assertIntact: () => target.assertIntact(candidate),
+        signal: new AbortController().signal,
+      })
+      await target.assertIntact(candidate)
+      return result.files[0]?.baseOutputTail
+    }
+    // The first candidate's test edits the fixture on the base.
+    assert.equal(await probeWith(1, '// edit 1\n'), 'data=d')
+    // The next one sees setup's fixture, on a base set up again, and its
+    // test removes the fixture.
+    assert.equal(await probeWith(2, '// delete 2\n'), 'data=d')
+    assert.equal(await setupRuns(), 3)
+    // The next one sees it again, also on a base set up again.
+    assert.equal(await probeWith(3, '// keep 3\n'), 'data=d')
+    assert.equal(await setupRuns(), 4)
+    // A base its tests left as setup did is not set up again.
+    assert.equal(await probeWith(4, '// keep 4\n'), 'data=d')
+    assert.equal(await setupRuns(), 4)
   })
 
   it('prunes the registration of a base worktree whose directory a dying worker had already removed, also of a run no longer recorded', async () => {
@@ -6291,6 +6374,58 @@ describe('the test probe', { timeout: 300000 }, () => {
       assert.equal(await baseRegistered(repo), false)
       assert.equal(existsSync(testProbeBaseRecordOf(runRoot)), false)
       assert.deepEqual(await sweepRunScratch(durably), [])
+    } finally {
+      await durably.db.destroy()
+    }
+  })
+
+  it('keeps the base worktree record until git no longer lists the base, and removes a locked registration', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-test-probe-gitfail-'))
+    const repo = await seedRepo(root)
+    const stateRoot = join(root, 'state')
+    const runRoot = join(stateRoot, 'runs', 'gone-run')
+    const base = join(runRoot, 'base-work')
+    const record = testProbeBaseRecordOf(runRoot)
+    const baseCommit = await resolveCommit(repo, 'HEAD')
+    await prepareTestProbeBase({
+      repo,
+      root: runRoot,
+      baseCommit,
+      setupCommand: null,
+    })
+    const durably = createAgentDurably({ stateRoot })
+    await durably.migrate()
+    try {
+      // The directory went, and git fails when the sweep prunes, as with a
+      // repository on a volume that is not there.
+      await rm(base, { recursive: true, force: true })
+      await rename(repo, `${repo}.away`)
+      assert.deepEqual(await sweepRunScratch(durably), ['gone-run'])
+      assert.equal(existsSync(record), true)
+      // Back again, the next sweep takes the registration, then the record.
+      await rename(`${repo}.away`, repo)
+      assert.equal(await baseRegistered(repo), true)
+      assert.deepEqual(await sweepRunScratch(durably), ['gone-run'])
+      assert.equal(await baseRegistered(repo), false)
+      assert.equal(existsSync(record), false)
+      assert.deepEqual(await sweepRunScratch(durably), [])
+
+      // A registration left locked, as a killed `git worktree add` leaves
+      // it, is removed with its directory, and also without it.
+      for (const dirGone of [false, true]) {
+        await prepareTestProbeBase({
+          repo,
+          root: runRoot,
+          baseCommit,
+          setupCommand: null,
+        })
+        await git(repo, ['worktree', 'lock', '--reason', 'initializing', base])
+        if (dirGone) await rm(base, { recursive: true, force: true })
+        assert.equal(await removeTestProbeBase(repo, base), null)
+        assert.equal(await baseRegistered(repo), false)
+        assert.equal(existsSync(base), false)
+        assert.equal(existsSync(record), false)
+      }
     } finally {
       await durably.db.destroy()
     }
