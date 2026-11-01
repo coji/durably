@@ -800,7 +800,9 @@ Repository config: factory.json at the repository root, or --config <file>:
   forms included, is told to score each finding about the product's behavior
   with a likelihood and an impact from 1 to 10 and to make it a non-blocker
   when their product is below the threshold; findings of any other kind,
-  such as test sufficiency, scope, steering or secrets, are judged as before.
+  such as test sufficiency, scope, steering or secrets, are judged as before,
+  and so is a missed requirement the task, the spec or the confirmed context
+  explicitly asks for, however rare its case.
   The reviewer classifies; the factory keeps the scores and never changes a
   severity. 0 adds no such rule. Verdict reviews and spec reviews are not
   affected.

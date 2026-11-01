@@ -334,7 +334,7 @@ function reviewLines(reviews: ReportReview[], indent: string): string[] {
 }
 
 /** ` (likelihood 2, impact 3)` with the scores a finding has; else nothing. */
-function scoreAside(f: ReportFinding): string {
+function scoreAside(f: Pick<ReportFinding, 'likelihood' | 'impact'>): string {
   const scores = [
     ...(f.likelihood !== undefined ? [`likelihood ${f.likelihood}`] : []),
     ...(f.impact !== undefined ? [`impact ${f.impact}`] : []),
@@ -436,10 +436,19 @@ export interface HighlightGroup {
    * reviews are listed, not counted.
    */
   count: number
-  /** The titles the report kept, in round and review order. */
-  titles: string[]
+  /**
+   * The findings the report kept, in round and review order: each title
+   * with the scores it was given.
+   */
+  kept: HighlightFinding[]
   verdicts: HighlightVerdict[]
 }
+
+/** A kept finding of `HighlightGroup`: its title and any scores. */
+export type HighlightFinding = Pick<
+  ReportFinding,
+  'title' | 'likelihood' | 'impact'
+>
 
 /** A verdict review's round, lens and decision. */
 export interface HighlightVerdict {
@@ -454,7 +463,7 @@ export interface HighlightVerdict {
 }
 
 function emptyHighlight(): HighlightGroup {
-  return { count: 0, titles: [], verdicts: [] }
+  return { count: 0, kept: [], verdicts: [] }
 }
 
 function firstLine(notes: string): string {
@@ -501,7 +510,13 @@ export function reviewHighlights(
   ) => {
     if (!review.findings) return
     group.count += review.findings.counts[kind]
-    group.titles.push(...review.findings[kind].map((f) => f.title))
+    group.kept.push(
+      ...review.findings[kind].map((f) => ({
+        title: f.title,
+        ...(f.likelihood !== undefined ? { likelihood: f.likelihood } : {}),
+        ...(f.impact !== undefined ? { impact: f.impact } : {}),
+      })),
+    )
   }
   const verdict = (to: HighlightVerdict[], round: number, r: ReportReview) =>
     to.push({
@@ -917,6 +932,13 @@ export interface LoopReport {
    * absent when it fixed none.
    */
   reviewBlockerThreshold?: number | null
+  /**
+   * The code reviewers the threshold's rule reached: those whose output is
+   * findings-json and that have a recorded review, when the threshold is 1
+   * or more. Empty when it reached none; absent on a report built before it
+   * existed.
+   */
+  reviewBlockerRuleLenses?: string[]
   summary: RunSummary
   triage: ReportTriage | null
   /**
@@ -1610,7 +1632,7 @@ function highlightLines(h: ReviewHighlights): string[] {
     `  - round ${v.round} ${v.lens}: ${v.decision} — ${v.line}`
   const group = (label: string, g: HighlightGroup): string[] => [
     `- ${label}: ${g.count} finding(s)`,
-    ...g.titles.map((t) => `  - ${t}`),
+    ...g.kept.map((f) => `  - ${f.title}${scoreAside(f)}`),
     ...g.verdicts.map(verdict),
   ]
   const passed = h.last === 'passed'
@@ -1652,10 +1674,13 @@ export function reportToMarkdown(r: LoopReport): string {
       `- agent call limits: total ${formatDuration(r.agentTimeouts.totalMs)}, idle ${r.agentTimeouts.idleMs === null ? 'none' : formatDuration(r.agentTimeouts.idleMs)}`,
     )
   if (r.reviewBlockerThreshold != null) {
+    const told = r.reviewBlockerRuleLenses ?? []
     const rule =
       r.reviewBlockerThreshold === 0
         ? 'no likelihood × impact rule'
-        : 'a product-behavior finding whose likelihood × impact is below it is a non-blocker'
+        : told.length === 0
+          ? 'reached no review: no findings-json code review is recorded'
+          : `the ${told.join(' and ')} review${told.length === 1 ? ' was' : 's were'} told that a product-behavior finding whose likelihood × impact is below it is a non-blocker, unless the task, the spec or the confirmed context explicitly asks for what it finds missing`
     lines.push(
       `- review blocker threshold: ${r.reviewBlockerThreshold} (${rule})`,
     )

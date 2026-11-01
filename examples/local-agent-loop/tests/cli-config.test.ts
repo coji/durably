@@ -1443,6 +1443,11 @@ describe('trigger validation', { timeout: 120000 }, () => {
     assert.doesNotMatch(res.stdout, /DURABLY_DB/)
     assert.match(res.stdout, /\.local\/state\/local-agent-loop/)
     assert.match(res.stdout, /factory\.json/)
+    // The threshold's exclusions are the review prompt's (ADR-0040).
+    assert.match(
+      res.stdout,
+      /such as test sufficiency, scope, steering or secrets, are judged as before,\s+and so is a missed requirement the task, the spec or the confirmed context\s+explicitly asks for, however rare its case\./,
+    )
   })
 })
 
@@ -2396,10 +2401,14 @@ describe('review.blockerThreshold', { timeout: 240000 }, () => {
       }
       const report = await buildReport(durably, nine)
       assert.equal(report.reviewBlockerThreshold, 9)
+      // Its reviews are verdict reviews, so the rule reached none of them.
+      assert.deepEqual(report.reviewBlockerRuleLenses, [])
+      const markdown = reportToMarkdown(report)
       assert.match(
-        reportToMarkdown(report),
-        /- review blocker threshold: 9 \(a product-behavior finding whose likelihood × impact is below it is a non-blocker\)/,
+        markdown,
+        /- review blocker threshold: 9 \(reached no review: no findings-json code review is recorded\)$/m,
       )
+      assert.doesNotMatch(markdown, /is below it is a non-blocker/)
       assert.match(reportToJson(report), /"reviewBlockerThreshold": 9/)
     } finally {
       await durably.stop()

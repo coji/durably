@@ -49,8 +49,8 @@ function Group({
   fixed?: boolean
   compact?: boolean
 }) {
-  const titles = group.titles.slice(0, compact ? SHOWN_COMPACT : SHOWN)
-  const rest = group.count - titles.length
+  const kept = group.kept.slice(0, compact ? SHOWN_COMPACT : SHOWN)
+  const rest = group.count - kept.length
   const verdicts = compact ? [] : group.verdicts
   const Heading = compact ? 'p' : 'h3'
   return (
@@ -66,12 +66,23 @@ function Group({
       {group.count === 0 && verdicts.length === 0 ? (
         <p className="text-fg-3 text-sm">{REVIEW.none}</p>
       ) : null}
-      {titles.length > 0 ? (
+      {kept.length > 0 ? (
         <ul className="flex list-disc flex-col gap-1 pl-4 text-sm">
-          {titles.map((title, at) => (
-            // A kept list never changes order, so its position is its identity.
-            <li key={`${at}:${title}`}>{title}</li>
-          ))}
+          {kept.map((f, at) => {
+            const scores = REVIEW.scores(f)
+            return (
+              // A kept list never changes order, so its position is its identity.
+              <li key={`${at}:${f.title}`}>
+                {f.title}
+                {scores ? (
+                  <span className="text-fg-2 tabular-nums">
+                    {COMMON.separator}
+                    {scores}
+                  </span>
+                ) : null}
+              </li>
+            )
+          })}
         </ul>
       ) : null}
       {rest > 0 ? (

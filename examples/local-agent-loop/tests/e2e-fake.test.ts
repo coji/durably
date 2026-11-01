@@ -53,7 +53,11 @@ import {
   validReusable,
 } from '../src/factory/baseline-reuse.js'
 import { resolveTimeouts } from '../src/factory/job.js'
-import { codePrompt, TIMED_OUT_CANDIDATE_LINE } from '../src/factory/prompts.js'
+import {
+  blockerThresholdRules,
+  codePrompt,
+  TIMED_OUT_CANDIDATE_LINE,
+} from '../src/factory/prompts.js'
 import { codeStage } from '../src/factory/stages.js'
 import {
   EFFORT_RESUME_POLICY,
@@ -2942,6 +2946,7 @@ describe('verification and review side by side', { timeout: 300000 }, () => {
             ...(args.parallelReview !== undefined
               ? { parallelReview: args.parallelReview }
               : {}),
+            ...(args.review ? { reviewBlockerThreshold: 5 } : {}),
           },
           maxIterations: args.maxIterations,
           context: 'reuse',
@@ -3012,12 +3017,15 @@ describe('verification and review side by side', { timeout: 300000 }, () => {
         maxIterations: 1,
       })
       // The check fails while both reviews still run: both are cancelled.
+      // One is a findings-json review, which a cancelled call never counts
+      // as having been told the blocker rule (ADR-0040).
       ids['cancelled'] = await start({
         parallelReview: true,
         waitFor: 'started',
         failIterations: 1,
         maxIterations: 1,
         latencyMs: 10000,
+        review: true,
       })
       // The same, with reviews that report their session and usage while
       // they work: the stopped calls keep them (ADR-0034).
@@ -3211,6 +3219,11 @@ describe('verification and review side by side', { timeout: 300000 }, () => {
         assert.equal(saved.cancelled, 'superseded-by-verify')
       }
       assert.equal(cancelledReport.reviewRounds[0]?.status, 'cancelled')
+      assert.deepEqual(cancelledReport.reviewBlockerRuleLenses, [])
+      assert.match(
+        reportToMarkdown(cancelledReport),
+        /review blocker threshold: \d+ \(.*reached no review/,
+      )
       assert.equal(
         cancelledReport.reviewRounds[0]?.reason,
         'superseded-by-verify',
@@ -4151,6 +4164,13 @@ describe('the review blocker threshold', { timeout: 300000 }, () => {
   }
   const RULE =
     /If likelihood × impact is below (\d+), the finding is a non-blocker/
+  /** Every line of the rule, whatever its threshold. */
+  const RULE_LINES = blockerThresholdRules('findings-json', 7).map(
+    (line) =>
+      new RegExp(
+        line.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replaceAll('7', '\\d+'),
+      ),
+  )
 
   /** A one-file repository whose check always passes. */
   async function plainRepo(root: string): Promise<string> {
@@ -4221,6 +4241,7 @@ describe('the review blocker threshold', { timeout: 300000 }, () => {
       threshold?: number
       verdict?: boolean
       reviewOutputs?: string[]
+      checkCommand?: string[]
     }) =>
       (
         await durably.jobs.agentLoop.trigger({
@@ -4235,7 +4256,11 @@ describe('the review blocker threshold', { timeout: 300000 }, () => {
             dispositions: null,
             inputFiles: { task: null, spec: null, dispositions: null },
             issue: null,
-            checkCommand: ['node', '-e', 'process.exit(0)'],
+            checkCommand: args.checkCommand ?? [
+              'node',
+              '-e',
+              'process.exit(0)',
+            ],
             setupCommand: null,
             publish: false,
             ...(args.threshold !== undefined
@@ -4313,6 +4338,11 @@ describe('the review blocker threshold', { timeout: 300000 }, () => {
       // Stored before the threshold existed: no rule, as before.
       ids['legacy'] = await start({ reviewOutputs: [reply([]), reply([])] })
       ids['verdict'] = await start({ threshold: 5, verdict: true })
+      // findings-json reviews the run never reached: its check always fails.
+      ids['unreviewed'] = await start({
+        threshold: 5,
+        checkCommand: ['node', '-e', 'process.exit(1)'],
+      })
       await durably.init()
       for (const [name, id] of Object.entries(ids))
         await waitFor(
@@ -4347,19 +4377,25 @@ describe('the review blocker threshold', { timeout: 300000 }, () => {
       for (const name of ['low', 'high', 'tests']) {
         const contexts = contextsOf(name)
         assert.equal(contexts.length, 2, name)
-        for (const context of contexts)
+        for (const context of contexts) {
           assert.equal(RULE.exec(context)?.[1], '5')
+          for (const line of RULE_LINES) assert.match(context, line, name)
+        }
       }
       assert.ok(
         contextsOf('low').some((c) => c.startsWith('/review ')),
         'the command comes first',
       )
+      assert.equal(contextsOf('unreviewed').length, 0)
       for (const name of ['off', 'legacy', 'verdict']) {
         const contexts = contextsOf(name)
         assert.equal(contexts.length, 2, name)
         for (const context of contexts) {
           assert.ok(context.includes('You are an independent'), name)
-          assert.doesNotMatch(context, /likelihood/, name)
+          assert.doesNotMatch(context, /likelihood × impact/, name)
+          // No line of the rule, the exclusions included.
+          for (const line of RULE_LINES)
+            assert.doesNotMatch(context, line, name)
         }
       }
 
@@ -4387,7 +4423,27 @@ describe('the review blocker threshold', { timeout: 300000 }, () => {
         ],
       )
       const markdown = reportToMarkdown(low)
-      assert.match(markdown, /- review blocker threshold: 5 /)
+      assert.deepEqual(low.reviewBlockerRuleLenses, [
+        'correctness',
+        'edge-cases',
+      ])
+      assert.match(
+        markdown,
+        /- review blocker threshold: 5 \(the correctness and edge-cases reviews were told that .* unless the task, the spec or the confirmed context explicitly asks for what it finds missing\)$/m,
+      )
+      // A threshold no review was told reads as such: every review a
+      // verdict review, or findings-json reviews the run never reached.
+      for (const name of ['verdict', 'unreviewed']) {
+        const report = await buildReport(durably, ids[name] ?? '')
+        assert.deepEqual(report.reviewBlockerRuleLenses, [], name)
+        const md = reportToMarkdown(report)
+        assert.match(
+          md,
+          /- review blocker threshold: 5 \(reached no review: no findings-json code review is recorded\)$/m,
+          name,
+        )
+        assert.doesNotMatch(md, /were told that|was told that/, name)
+      }
       assert.match(markdown, /- LOW-PRODUCT \(likelihood 1, impact 4\)$/m)
       assert.match(markdown, /- UNSCORED$/m)
       const tests = await buildReport(durably, ids['tests'] ?? '')

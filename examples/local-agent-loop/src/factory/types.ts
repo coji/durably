@@ -191,9 +191,10 @@ export interface FactorySetup {
   /**
    * The code reviews' blocker threshold, fixed at trigger (ADR-0040): a
    * findings-json reviewer is told that a product-behavior finding whose
-   * likelihood × impact is below it is a non-blocker. 0 or null: no such
-   * rule; null on the sample and on a run stored before it existed, absent
-   * on a run set up before it existed.
+   * likelihood × impact is below it is a non-blocker, unless it is a missed
+   * requirement the task, spec or confirmed context explicitly asks for. 0
+   * or null: no such rule; null on the sample and on a run stored before it
+   * existed, absent on a run set up before it existed.
    */
   reviewBlockerThreshold?: number | null
   /**

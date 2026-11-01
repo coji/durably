@@ -225,7 +225,8 @@ export const testProbeSchema = z
  * `review.blockerThreshold` in factory.json and a target's
  * `reviewBlockerThreshold` (ADR-0040): a product-behavior finding of a
  * findings-json code review whose likelihood × impact is below it is a
- * non-blocker. 0 puts no such rule in the review.
+ * non-blocker, unless it is a missed requirement the task, spec or confirmed
+ * context explicitly asks for. 0 puts no such rule in the review.
  */
 export const reviewBlockerThresholdSchema = z.number().int().min(0).max(100)
 

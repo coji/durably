@@ -7,18 +7,21 @@ import { DESIGN } from '../../glossary'
 import { ReviewHighlightsPanel, ReviewsPanel } from '../run/ReviewsPanel'
 import { State } from './Specimen'
 
-/** Finding titles and verdicts as the report keeps them; data, as stored. */
+/** Kept findings and verdicts as the report keeps them; data, as stored. */
 const group = (
-  titles: string[],
+  kept: HighlightGroup['kept'],
   verdicts: HighlightGroup['verdicts'] = [],
-): HighlightGroup => ({ count: titles.length, titles, verdicts })
+): HighlightGroup => ({ count: kept.length, kept, verdicts })
 
 const EARLIER = group(
-  ['The cost column still prints six decimals'],
+  [{ title: 'The cost column still prints six decimals' }],
   [{ round: 1, lens: 'edge-cases', decision: 'needsChanges', line: '' }],
 )
-const LEFT = group(['Name the rounding rule in the README'])
-const OPEN = group(['A negative cost still prints as $-0.00'])
+// Advice with the scores its reviewer gave it (ADR-0040).
+const LEFT = group([
+  { title: 'Name the rounding rule in the README', likelihood: 2, impact: 2 },
+])
+const OPEN = group([{ title: 'A negative cost still prints as $-0.00' }])
 
 const HIGHLIGHTS: [keyof typeof DESIGN.state, ReviewHighlights][] = [
   [

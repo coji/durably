@@ -79,6 +79,7 @@ import {
   ACTION,
   ACTION_DONE,
   BULK,
+  COMMON,
   COMPARE,
   COPY,
   DESIGN,
@@ -2000,7 +2001,7 @@ describe('diagnosis wording on the page', () => {
     })
     const group = (titles: string[], verdicts = 0) => ({
       count: titles.length,
-      titles,
+      kept: titles.map((title) => ({ title })),
       verdicts: Array.from({ length: verdicts }, (_, i) =>
         verdictOf(i === 0 ? 'correctness' : 'edge-cases', 'needsChanges'),
       ),
@@ -2046,9 +2047,9 @@ describe('diagnosis wording on the page', () => {
         { round: 2, lens: 'correctness', decision: 'pass', line: 'ok' },
         { round: 2, lens: 'edge-cases', decision: 'pass', line: 'ok' },
       ],
-      earlier: { count: 0, titles: [], verdicts: [] },
-      left: { count: 0, titles: [], verdicts: [] },
-      open: { count: 0, titles: [], verdicts: [] },
+      earlier: { count: 0, kept: [], verdicts: [] },
+      left: { count: 0, kept: [], verdicts: [] },
+      open: { count: 0, kept: [], verdicts: [] },
     }
     const html = renderToStaticMarkup(
       createElement(ReviewHighlightsPanel, { h }),
@@ -2065,6 +2066,37 @@ describe('diagnosis wording on the page', () => {
     assert.match(text, new RegExp(`${REVIEW.left}\\n+${REVIEW.none}`))
     assert.doesNotMatch(text, /\d+件/)
     assert.equal(text.slice(left).includes(pass), false)
+  })
+
+  it('shows the scores a left finding was given beside its title, and none for a finding without them', () => {
+    const empty = { count: 0, kept: [], verdicts: [] }
+    const h = {
+      rounds: 1,
+      last: 'passed' as const,
+      lastPasses: [],
+      earlier: empty,
+      left: {
+        count: 3,
+        kept: [
+          { title: 'BOTH', likelihood: 2, impact: 3 },
+          { title: 'ONE', likelihood: 1 },
+          { title: 'NONE' },
+        ],
+        verdicts: [],
+      },
+      open: empty,
+    }
+    const items = [
+      ...renderToStaticMarkup(
+        createElement(ReviewHighlightsPanel, { h }),
+      ).matchAll(/<li[^>]*>(.*?)<\/li>/g),
+    ].map((m) => (m[1] ?? '').replace(/<[^>]+>/g, ''))
+    assert.deepEqual(items, [
+      `BOTH${COMMON.separator}頻度 2、深刻さ 3`,
+      `ONE${COMMON.separator}頻度 1`,
+      'NONE',
+    ])
+    assert.equal(REVIEW.scores({}), '')
   })
 
   it('says the fake runs it left out when they are all the window had', () => {

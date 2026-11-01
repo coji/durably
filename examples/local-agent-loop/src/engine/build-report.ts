@@ -100,6 +100,7 @@ interface PersistedInput {
     inputFiles?: Record<string, { path?: string } | null>
     reviewBlockerThreshold?: number | null
   }
+  review?: Partial<Record<string, { output?: string }>>
   repairOf?: {
     runId?: string
     candidateCommit?: string
@@ -1316,6 +1317,7 @@ export async function buildReport(
   )?.output as {
     target?: { kind?: string; workdir?: string }
     parallelReview?: unknown
+    review?: Partial<Record<string, { output?: string }>>
     reviewBlockerThreshold?: number | null
     agentTimeoutMs?: number
     agentIdleTimeoutMs?: number
@@ -1350,6 +1352,23 @@ export async function buildReport(
   const countedRounds = reviewRounds.filter((r) => r.status === 'completed')
   const discardedReviews = discardedReviewsOf(rows, reviewRounds)
   const reviews = lastReviews(run.output, waits, countedRounds)
+  // The rule is told only to a findings-json code review (ADR-0040), and
+  // reached it only once one of its reviews is recorded. A cancelled review
+  // may never have been sent its prompt, so it does not count.
+  const reviewInvocations = setupOutput ? setupOutput.review : input?.review
+  const reviewed = new Set(
+    [...reviewRounds.flatMap((r) => r.reviews), ...reviews]
+      .filter((r) => r.status !== 'cancelled')
+      .map((r) => r.lens),
+  )
+  const reviewBlockerRuleLenses =
+    reviewBlockerThreshold != null && reviewBlockerThreshold > 0
+      ? REVIEW_LENSES.filter(
+          (lens) =>
+            reviewInvocations?.[lens]?.output === 'findings-json' &&
+            reviewed.has(lens),
+        )
+      : []
   const preflight = preflightOf(steps, rows)
   // Minimal preflight calls get a role row of their own, never folded into
   // the roles whose settings they checked.
@@ -1382,6 +1401,7 @@ export async function buildReport(
     configVersion,
     agentTimeouts,
     reviewBlockerThreshold,
+    reviewBlockerRuleLenses,
     summary: summarizeRun({
       status: run.status,
       output: run.output,

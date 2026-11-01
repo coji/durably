@@ -430,7 +430,8 @@ function replyShape(output: ReviewOutput): string[] {
     'PLAN: <your independent plan, one or two sentences>',
     'COUNTEREXAMPLE: <what you tried and the result>',
     'Then your findings as one JSON array in a ```json fenced code block. Each finding is an object:',
-    '{"severity": "blocker" | "non-blocker", "title": "<one line>", "body": "<what is wrong and what to change>", "file": "<path, optional>", "line": <line number, optional>}',
+    '{"severity": "blocker" | "non-blocker", "title": "<one line>", "body": "<what is wrong and what to change>", "file": "<path, optional>", "line": <line number, optional>, "likelihood": <integer from 1 to 10, optional>, "impact": <integer from 1 to 10, optional>}',
+    'Leave out an optional field you have no value for; never write null in it.',
     'A blocker must be fixed before the candidate can pass; a non-blocker is advice. Write [] when you found nothing. Put the array last: only the status line may follow it.',
     `The last line of your reply must be exactly: ${REVIEW_STATUS_COMPLETE}`,
   ]
@@ -443,7 +444,7 @@ function replyShape(output: ReviewOutput): string[] {
  * requirement the task, spec or owner context states, keep the usual
  * judgement. Nothing for a threshold of 0 or a verdict review.
  */
-function blockerThresholdRules(
+export function blockerThresholdRules(
   output: ReviewOutput,
   threshold: number,
 ): string[] {
