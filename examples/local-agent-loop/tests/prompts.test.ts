@@ -305,7 +305,7 @@ describe("the code and repair reply's NOTES section", () => {
     )
   })
 
-  it('reads a section headed in Markdown, and the last one when there are several', () => {
+  it('reads a section headed in Markdown, from its first heading', () => {
     for (const heading of [
       '**NOTES:**',
       '**NOTES**:',
@@ -325,9 +325,13 @@ describe("the code and repair reply's NOTES section", () => {
       parseImplementerNotes('**NOTES:** left b.ts on purpose'),
       'left b.ts on purpose',
     )
+    assert.equal(parseImplementerNotes('NOTES： left b.ts'), 'left b.ts')
+    // A heading-like line inside the section, indented or not, stays in it.
     assert.equal(
-      parseImplementerNotes('NOTES: draft\nChanged a.ts.\nNOTES:\n- left b.ts'),
-      '- left b.ts',
+      parseImplementerNotes(
+        'NOTES:\n- left retry unfixed\n  Notes: ADR-0012 forbids it\n### Notes\nmore',
+      ),
+      '- left retry unfixed\n  Notes: ADR-0012 forbids it\n### Notes\nmore',
     )
     // A line that only starts with the word does not open the section.
     assert.equal(parseImplementerNotes('Notes about a.ts: none changed'), null)
@@ -337,7 +341,15 @@ describe("the code and repair reply's NOTES section", () => {
     assert.equal(parseImplementerNotes('Changed src/calc.js.'), null)
     assert.equal(parseImplementerNotes(''), null)
     assert.equal(parseImplementerNotes('Changed a.ts.\nNOTES:\n  \n'), null)
-    for (const none of ['none', 'None.', 'N/A', 'nothing', 'なし']) {
+    for (const none of [
+      'none',
+      'None.',
+      'N/A',
+      'nothing',
+      'なし',
+      'なし。',
+      '特になし',
+    ]) {
       assert.equal(
         parseImplementerNotes(`Changed a.ts.\nNOTES: ${none}`),
         null,
