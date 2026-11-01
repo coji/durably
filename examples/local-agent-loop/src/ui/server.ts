@@ -105,6 +105,7 @@ import {
   diagnoseRun,
   groupTasks,
   needsHuman,
+  taskRoots,
   taskRunIds,
   type Diagnosis,
   type DiagnosisKind,
@@ -359,40 +360,23 @@ export function repoNames(keys: Iterable<string>): Map<string, string> {
 /**
  * The repositories of `all`, by name with the sample and an unknown one
  * last, and the runs of the one `wanted` names: every run when it names
- * none of them. A run counts under its task's first run's repository, so
- * a repair is never split from the run it repairs. `keys` holds the key
- * each run counts under, by its ID, and `names` the name of every key,
- * each run's own included.
+ * none of them. A run counts under its task's first run's repository, as
+ * `groupTasks` finds that run, so a repair is never split from the run it
+ * repairs. `names` holds the name of every run's own key.
  */
 export function scopeRuns<
   R extends Pick<Run, 'id' | 'input'> & { labels?: Record<string, string> },
 >(
   all: R[],
   wanted: string | null,
-): {
-  scope: RepoScope
-  keys: Map<string, string>
-  names: Map<string, string>
-  runs: R[]
-} {
-  const byId = new Map(all.map((r) => [r.id, r]))
-  const rootOf = (run: R) => {
-    const seen = new Set([run.id])
-    for (let up = byId.get(repairParentId(run) ?? ''); up;) {
-      if (seen.has(up.id)) break
-      seen.add(up.id)
-      run = up
-      up = byId.get(repairParentId(up) ?? '')
-    }
-    return run
-  }
-  const keys = new Map(all.map((r) => [r.id, repoKeyOf(rootOf(r).input)]))
+): { scope: RepoScope; names: Map<string, string>; runs: R[] } {
+  const own = new Map(all.map((r) => [r.id, repoKeyOf(r.input)]))
+  const linked = all.map((r) => ({ id: r.id, parentId: repairParentId(r) }))
+  const rootOf = taskRoots(linked)
   // A run is named by its own input; only the switch and the filter go by
   // its task's first run.
-  const names = repoNames([
-    ...keys.values(),
-    ...all.map((r) => repoKeyOf(r.input)),
-  ])
+  const keys = new Map(linked.map((r) => [r.id, own.get(rootOf(r)) ?? '']))
+  const names = repoNames(own.values())
   const last = (key: string) => key === SUBJECT_REPO || key === UNKNOWN_REPO
   const repos = [...new Set(keys.values())]
     .map((key) => ({ key, name: names.get(key) ?? key }))
@@ -404,7 +388,6 @@ export function scopeRuns<
   const repo = repos.some((r) => r.key === wanted) ? wanted : null
   return {
     scope: { repos, repo },
-    keys,
     names,
     runs: repo === null ? all : all.filter((r) => keys.get(r.id) === repo),
   }
@@ -1738,7 +1721,6 @@ function createUiApi() {
       reports.get(src, found),
       orEmpty(allRuns(db), [found]),
     ])
-    const { names } = scopeRuns(all, null)
     const key = repoKeyOf(found.input)
     const [seen, steps, baselineSource, lineage] = await Promise.all([
       inspect(src, found, now, report, fresh, archived),
@@ -1753,7 +1735,9 @@ function createUiApi() {
       now: new Date(now).toISOString(),
       ...seen,
       repo: {
-        name: names.get(key) ?? REPO.unknown,
+        name:
+          repoNames(all.map((r) => repoKeyOf(r.input))).get(key) ??
+          REPO.unknown,
         path: key.startsWith('/') ? key : null,
       },
       lineage,

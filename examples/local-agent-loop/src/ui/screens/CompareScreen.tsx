@@ -6,6 +6,7 @@ import {
   formatPercent,
   formatWeek,
 } from '../../engine/format'
+import { segment, SEGMENTS } from '../components/button'
 import { DataTable, Td, Th } from '../components/DataTable'
 import { EmptyState } from '../components/EmptyState'
 import { RepoFilter } from '../components/RepoFilter'
@@ -29,17 +30,13 @@ function ViewSwitch({
       type="button"
       aria-pressed={view === value}
       onClick={() => onView(value)}
-      className={`inline-flex min-h-8 items-center rounded-sm px-3 text-sm ${view === value ? 'bg-raised text-fg border-line-strong border font-medium' : 'text-fg-2 hover:text-fg border border-transparent'}`}
+      className={segment(view === value)}
     >
       {label}
     </button>
   )
   return (
-    <div
-      role="group"
-      aria-label={COMPARE.view}
-      className="bg-sunken inline-flex self-start rounded-md p-1"
-    >
+    <div role="group" aria-label={COMPARE.view} className={SEGMENTS}>
       {option('trend', COMPARE.trendTab)}
       {option('config', COMPARE.configTab)}
     </div>

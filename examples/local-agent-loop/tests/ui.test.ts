@@ -307,13 +307,15 @@ describe('repositories', () => {
       { id: 'fix2', input: { ...repo('/b/site'), repairOf: { runId: 'fix' } } },
       { id: 'other', input: repo('/b/site') },
     ]
-    const { keys, runs: picked } = scopeRuns(runs, '/a/site')
+    const { runs: picked } = scopeRuns(runs, '/a/site')
     assert.deepEqual(
       picked.map((r) => r.id),
       ['root', 'fix', 'fix2'],
     )
-    assert.equal(keys.get('fix2'), '/a/site')
-    assert.equal(keys.get('other'), '/b/site')
+    assert.deepEqual(
+      scopeRuns(runs, '/b/site').runs.map((r) => r.id),
+      ['other'],
+    )
     // Each run is still named by its own input; the switch offers only the
     // repositories tasks count under.
     const lone = scopeRuns(runs.slice(0, 3), null)

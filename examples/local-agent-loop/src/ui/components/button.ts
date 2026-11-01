@@ -12,3 +12,12 @@ export const BUTTON = `${BASE} border-line-strong bg-raised text-fg-2 enabled:ho
 export const BUTTON_PRIMARY = `${BASE} border-transparent bg-fg text-inverse font-medium enabled:hover:bg-fg/85`
 
 export const BUTTON_QUIET = `${BASE} border-transparent bg-transparent text-fg-2 enabled:hover:border-line-strong enabled:hover:text-fg`
+
+/**
+ * A row of choices on a sunken strip, one of them current: the summary's
+ * two views, and the repositories a page can be narrowed to.
+ */
+export const SEGMENTS = 'bg-sunken inline-flex self-start rounded-md p-1'
+
+export const segment = (current: boolean) =>
+  `inline-flex min-h-8 items-center rounded-sm px-3 text-sm ${current ? 'bg-raised text-fg border-line-strong border font-medium' : 'text-fg-2 hover:text-fg border border-transparent'}`

@@ -234,7 +234,8 @@ export function App({ token }: { token: string }) {
   // The design page reads nothing from the API, so nothing polls there.
   if (route.page === 'design') return <DesignScreen route={route} />
   // Keyed by URL, so moving to another page stops the old page's polling
-  // and never shows one run's data under another's address.
+  // and never shows one run's data under another's address, nor one
+  // repository's list, and the tasks chosen in it, under another's.
   if (route.page === 'run') {
     const url = `/api/runs/${encodeURIComponent(route.id)}`
     return (
@@ -253,7 +254,7 @@ export function App({ token }: { token: string }) {
   if (route.page === 'compare')
     return compareView === 'trend' ? (
       <PolledPage<TrendResponse>
-        key="trend"
+        key={`trend${query}`}
         route={route}
         repo={repo}
         url={`/api/trend${query}`}
@@ -262,7 +263,7 @@ export function App({ token }: { token: string }) {
       />
     ) : (
       <PolledPage<CompareResponse>
-        key="compare"
+        key={`compare${query}`}
         route={route}
         repo={repo}
         url={`/api/compare${query}`}
@@ -272,7 +273,7 @@ export function App({ token }: { token: string }) {
     )
   return (
     <PolledPage<RunsResponse>
-      key="runs"
+      key={`runs${query}`}
       route={route}
       repo={repo}
       url={`/api/runs${query}`}
