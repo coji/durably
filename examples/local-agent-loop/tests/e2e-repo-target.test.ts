@@ -5684,6 +5684,8 @@ describe('owner context and stage context', { timeout: 240000 }, () => {
           assert.equal(notesBody(prompt), notes, `round ${n}`)
           assert.ok(!prompt.includes(other), `round ${n}`)
           assert.ok(prompt.includes(`also readable at ${copy}`), `round ${n}`)
+          // Both reviewers here are verdict reviews; a findings-json one is
+          // told the reason decides no severity (review-prompt.test.ts).
           assert.match(
             prompt,
             /A stated reason alone does not settle a finding or decide your verdict\./,
