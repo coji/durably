@@ -17,6 +17,7 @@ import {
   SPEC_FINAL_STEP,
   type RepairSessionRecord,
   type ReviewLens,
+  type TestProbeRecord,
 } from '../factory/types.js'
 import { classifyRun, stageStep } from './failure-reasons.js'
 import { PRICE_BASIS } from './pricing.js'
@@ -61,6 +62,7 @@ import {
   type ReportReviewFindings,
   type ReportReviewRound,
   type ReportSealedCandidate,
+  type ReportTestProbe,
   type ReportSpec,
   type ReportTriage,
   type ReviewStatus,
@@ -427,6 +429,45 @@ function sealedCandidates(steps: StoredStep[]): ReportSealedCandidate[] {
     })
     .sort((x, y) => x.sequence - y.sequence)
   return sealed.map((c, i) => ({ ...c, iteration: i + 1 }))
+}
+
+/**
+ * Every candidate's test probe, from its completed `stage:<n>:verify:
+ * test-probe` step, oldest first (ADR-0039). Only the stored record is
+ * read; nothing is run again.
+ */
+function testProbesOf(steps: StoredStep[]): ReportTestProbe[] {
+  return steps
+    .flatMap((s) => {
+      const where = stageStep(s.name)
+      const record = s.output as Partial<TestProbeRecord> | null
+      if (
+        s.status !== 'completed' ||
+        where?.stage !== 'verify' ||
+        where.part !== 'test-probe' ||
+        typeof record?.candidateId !== 'string' ||
+        !Array.isArray(record.files)
+      )
+        return []
+      const files = record.files
+      return [
+        {
+          candidateId: record.candidateId,
+          sequence: where.sequence,
+          targets: files.length,
+          failedOnBase: files.filter((f) => f.base.ran && f.base.exitCode !== 0)
+            .length,
+          elapsedMs: record.elapsedMs ?? 0,
+          couldNotRun: files.flatMap((f) =>
+            (['base', 'candidate'] as const).flatMap((side) => {
+              const result = f[side]
+              return result.ran ? [] : [`${f.path} (${side}): ${result.reason}`]
+            }),
+          ),
+        },
+      ]
+    })
+    .sort((x, y) => x.sequence - y.sequence)
 }
 
 /**
@@ -1317,6 +1358,7 @@ export async function buildReport(
     },
     candidate,
     candidates,
+    testProbes: testProbesOf(steps),
     repairSession: repairSession?.report ?? null,
     repairCalls: repairCallsOf(rows),
     reviews,

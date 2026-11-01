@@ -302,8 +302,8 @@ pnpm --filter example-local-agent-loop demo status --format json
   直下の `factory.json` を消した場合は、設定なしのtriggerと同じに扱います。
   `--config` で渡したファイル（パスが直下の `factory.json` でも）が無くなって
   いれば、設定なしとはみなさずエラーにします。
-  profile、`check`、`selfCheck`、`setup`、`base`、`codexPath`、timeout、`baselineCheck`、
-  `baselineReuse` は `trigger` と同じ規則で解決・検証し、trigger時の `--check`、`--setup`、`--base`
+  profile、`check`、`selfCheck`、`testProbe`、`setup`、`base`、`codexPath`、timeout、
+  `baselineCheck`、`baselineReuse` は `trigger` と同じ規則で解決・検証し、trigger時の `--check`、`--setup`、`--base`
   は引き続き設定より優先します。そのrunでは、次の手順の注記にもそう表示します。
   これらを変えるときは `trigger` からやり直します。同梱の題材のrunと
   外部の指摘からの修正run（`demo repair`）は `factory.json` を読まないので、
@@ -486,7 +486,8 @@ pnpm --filter example-local-agent-loop demo unarchive --run <runId>
 ### 終わったrunの作業ツリーを片付ける
 
 repo run の worktree（`runs/<runId>/work`）は、次のときに片付けます。片付けるのは
-worktree とレビュー用スナップショット（`runs/<runId>/review-snapshots`）だけです。
+worktree、レビュー用スナップショット（`runs/<runId>/review-snapshots`）、
+`testProbe` のbaseのworktree（`runs/<runId>/base-work`）だけです。
 
 - 承認して納品した run は、納品の記録を step に残した直後に、自分の worktree を
   片付けます。納品後に直すときは、記録した commit とブランチから新しい run を
@@ -1145,6 +1146,99 @@ reportの要約、`demo compare` の設定ごとの行、`demo compare --trend` 
   読み直し、`demo repair` の修正runは元のrunの値を引き継ぎます。promptが変わる
   ので、書いたときは `configVersion` に入ります。
 
+### 新しいテストをbaseとcandidateで動かす（testProbe）
+
+レビュー役はコマンドを実行できないので、新しいテストが変更を本当に確かめて
+いるかを、コードを読んで推測するしかありません。`factory.json` の
+`"testProbe"` を書くと、候補を封印したあと、検証とレビューの前に、候補が追加・
+変更したテストファイルをbaseと候補の両方で実行し、その結果を両方のレビュー役に
+信頼できる情報として渡します。
+
+```json
+{
+  "testProbe": [
+    {
+      "glob": "test/**/*.test.ts",
+      "command": ["pnpm", "vitest", "run", "{files}"]
+    }
+  ]
+}
+```
+
+- 1個以上の `{ glob, command }` を書けます。`glob` はリポジトリ直下からの相対
+  パスに当てます。`command` はargvの配列で、`"{files}"` だけの要素を1つ以上
+  含める必要があります。テストファイルごとに1回起動し、`"{files}"` の要素を
+  そのファイルのパス1つ（`./test/a.test.ts` のように `./` を付けたもの）に置き換え
+  ます。`-` で始まる名前のファイルがオプションと読まれることはありません。shellは
+  通さないので、パスが展開や分割されることもありません。`"--file={files}"` のように
+  他の文字と混ぜた要素、`"{files}"` の無いコマンド、空の配列と空の文字列、21個以上の
+  項目、200文字を超える `glob` は `trigger` の時点で拒否します。
+- 対象は、封印した候補の変更ファイル一覧（`changed-files.txt`）で `added` か
+  `modified` のファイルのうち、どれかの `glob` に合うものだけです。`deleted`、
+  `renamed`、`copied` のファイルは実行しません。複数の `glob` に合うファイルは、
+  最初に合った項目のコマンドで1回だけ実行します。合うファイルが無い候補では
+  コマンドを実行せず、「実行するテストが無かった」と結果に書きます。
+- setupでは、エージェントのworktreeと並べて、baseのcommitの切り離したworktree
+  （`runs/<id>/base-work`）を作り、同じ `setup` を実行します。候補ごとにこの
+  worktreeをbaseに戻し（前の候補のテストが書いた未追跡のファイルも消します。
+  `setup` が終わった直後に残っていた未追跡のファイルは
+  `runs/<id>/test-probe/base.json` に中身の指紋（ファイルはsha256）と一緒に記録
+  してあり、それは消しません。`setup` が作った `.gitignore` に当たらないfixture
+  も、候補側と同じようにbaseに残ります。前のテストが記録したファイルを書き換えたり
+  消したりしていたら、baseのworktreeを作り直して `setup` を実行し直し、記録も
+  取り直します。作り直しに失敗したら、baseの側は理由つきで「実行できなかった」に
+  なります）、対象のテストファイルだけを候補から持ってきて実行します。候補側はエージェントの
+  worktreeで同じファイルを実行します。テストが追跡中のファイルを書き換えても、
+  新しいファイルを書いても、レビューの前に封印した内容に戻し（`.gitignore` に
+  当たる依存などは残します）、候補が封印どおりであることを確かめます。次の封印に
+  テストの出力が入ることはありません。テストの実行中にworkerが止まったときは、
+  再開した検証が候補のworktreeを封印した内容に戻してから、probeをやり直します。
+- コマンドはどれも `CI=true` を足した環境で実行します。VitestやJestは、snapshotが
+  無いときに書いて通すのではなく、落ちます。baseに持ってくるのは対象のテスト
+  ファイルだけなので、候補が一緒に追加したfixtureやhelperで、どの `glob` にも
+  合わないものを使うテストは、baseではそれが無いために落ちます。結果の中でも、
+  出力の末尾からそれを見分けるよう求めます。
+- 各実行の時間の上限は `checkTimeoutMs` と同じで、出力は末尾だけを残します。
+  結果は `runs/<id>/test-probe/<候補ID>.txt` に書き、step の出力として保存します。
+  32 KiBに収まるように出力の末尾を短くし、それでも収まらないときは、件数には
+  含めたまま後ろのファイルの詳細を省きます。
+- 結果には、ファイルごとにbaseと候補の終了コード、所要時間、出力の末尾と、
+  「baseで落ちて候補で通った」「両方で通った」「候補で落ちた」「実行できなかった」
+  のどれかを書きます。factoryは結果を判定に使いません。baseで落ちても、新しい
+  テストが読み込むモジュールがbaseに無いだけのことがあるので、結果の中で、
+  出力の末尾から落ちた理由を読むよう求めます。結果が添付されたレビューでは、
+  規則も「添付の結果を根拠に判断し、結果が無いテストだけコードを読んで判断する」
+  に変わります。
+- 実行できなかった場合（baseのworktreeを作れない、baseの `setup` が失敗した、
+  コマンドが起動しない、時間切れ）も、runは止めません。理由を結果とreportに
+  残して、検証とレビューに進みます。baseの準備に失敗したときも、候補側は
+  実行します。
+- 結果は候補ごとの `stage:<n>:verify:test-probe` stepに保存します。`parallelReview`
+  でも、検証と二つのレビューを始める前に終わらせます。結果は検証のイベントで
+  runの状態に入り、順次のレビューはその状態から作ったtargetで受け取ります。
+  workerが止まって再開しても、保存した結果を使い、同じ候補のテストを二度実行
+  しません。保存する出力の末尾は、結果のテキストに載らなかったファイルの分も
+  含めて全部残ります。
+- baseのworktreeは、runが終わるとき（完了、失敗、cancel、setupやpreflightでの
+  失敗）に、gitの登録も含めて消します。specや承認を人が決めるのを待つ間はrunが
+  終わっていないので残し、待機のあとのprobeはそのまま使います。消えていれば
+  作り直します。別のプロセスからのcancelもその場で消し、それと行き違って残った
+  ものはworkerの起動時に消します。gitの登録は `git worktree remove -f -f` で
+  ディレクトリと一緒か先に消し（途中で止まった `git worktree add` が残したロック
+  付きの登録も消します）、`base.json` は `git worktree list` にbaseが出なくなって
+  から消します。片付けの途中でworkerが止まったりgitが失敗したりしても、起動時の
+  片付けが `base.json` から登録の残りを見つけて消します。`demo archive` と `demo prune --apply` も
+  worktreeと一緒に消します。
+- reportのJSON（`testProbes`）とMarkdown（「Test probe」節）には、候補ごとに
+  対象のファイル数、baseで落ちた数、所要時間、実行できなかった理由が出ます。
+  保存したstepから読むので、reportのためにテストを実行し直すことはありません。
+- 書かなければ、baseのworktreeもprobeのstepも作らず、工程は今までと同じです。
+  値は `trigger` の時点でrun inputに保存します。`retrigger` は保存した値を
+  引き継ぎ、`--reload-config` はファイルを読み直し、`demo repair` の修正runは
+  元のrunの値を引き継ぎます。`configVersion` には入りません。
+- 判断の理由は [ADR-0039](../../docs/adr/0039-local-agent-loop-test-probe.md)
+  にあります。
+
 ### 設定の事前確認（preflight）
 
 baselineの後、triageを含む最初のエージェント呼び出しの前に、全役割
@@ -1193,7 +1287,7 @@ baselineの後、triageを含む最初のエージェント呼び出しの前に
 保存します。実際に使うmodelとeffortは、workerがそのrequested設定からproviderの
 presetで解決します。workerは元のファイルを読み直さないので、trigger後にファイルを
 書き換えても、そのrunの設定とpromptは変わりません。timeout、`codexPath`、
-`baselineCheck`、`baselineReuse`、`parallelReview`、`selfCheck`、`commit` も同じく解決済みの値をrun inputに保存します。reportには各入力ファイルの
+`baselineCheck`、`baselineReuse`、`parallelReview`、`selfCheck`、`testProbe`、`commit` も同じく解決済みの値をrun inputに保存します。reportには各入力ファイルの
 pathと、保存した本文から計算したSHA-256が出ます。contextは本文もreportに出します。
 Markdownでは本文中のどのバッククォートの並びより長いフェンスで囲むので、
 本文の見出しがreportの見出しと混ざりません。設定を直した後に同じtaskで
@@ -1748,7 +1842,7 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   `--context-file`、`--max-iterations` だけです。`--publish`、`--check`、`--config` など、ほかの
   フラグは黙って無視せずエラーにします。
 - 子runは、親が保存したtask、spec、issue、profile（triageも含む解決済みの値）、
-  check、`selfCheck`、setup、timeout、`codexPath`、commitとpublishの設定、`--max-iterations` を
+  check、`selfCheck`、`testProbe`、setup、timeout、`codexPath`、commitとpublishの設定、`--max-iterations` を
   引き継ぎます。`--max-iterations`（1から5の整数）を渡したときだけ、子runの修正回数を
   その値にします。値は子runの入力に保存され、`configVersion` にも入ります。親のsetupが記録した値は `null` でもそのまま使い、setupに項目が
   無い古い親だけ保存済みの入力から補います。子の子も同じです。

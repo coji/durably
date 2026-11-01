@@ -59,6 +59,7 @@ import {
   assertSetupLeftNoUntracked,
   checkFingerprint,
   RepoTarget,
+  removeTestProbeBase,
 } from '../targets/repo.js'
 import {
   BASELINE_INDEX_PRUNE_AGE_MS,
@@ -74,6 +75,7 @@ import {
 } from './events.js'
 import {
   agentLogsDirBeside,
+  baseWorkdirOf,
   runRootOf,
   reviewSnapshotsDirOf,
   specFileOf,
@@ -104,6 +106,11 @@ import {
   type Target,
   type TargetConfig,
 } from './target.js'
+import {
+  TEST_PROBE_FILES,
+  TEST_PROBE_MAX_GLOB,
+  TEST_PROBE_MAX_RULES,
+} from './test-probe.js'
 import {
   BASELINE_STEP,
   EFFORT_RESUME_POLICY,
@@ -178,6 +185,42 @@ export const selfCheckSchema = z
   .min(1)
   .max(5)
 
+/**
+ * `testProbe` in a target and in factory.json (ADR-0039): one or more
+ * entries, each a glob over repository-relative paths and an argv run once
+ * per matching test file, with each `{files}` element replaced by its path.
+ * The path is never part of a longer element, so no shell or tool splits
+ * it. At most `TEST_PROBE_MAX_RULES` entries of globs up to
+ * `TEST_PROBE_MAX_GLOB` characters, so the globs the result lists stay a
+ * few KiB of its 32 KiB.
+ */
+export const testProbeSchema = z
+  .array(
+    z
+      .object({
+        glob: z.string().min(1).max(TEST_PROBE_MAX_GLOB),
+        command: z
+          .array(z.string().min(1))
+          .min(1)
+          .refine((argv) => argv.includes(TEST_PROBE_FILES), {
+            message: `command needs a "${TEST_PROBE_FILES}" element, which each test file's path replaces`,
+          })
+          .refine(
+            (argv) =>
+              argv.every(
+                (arg) =>
+                  arg === TEST_PROBE_FILES || !arg.includes(TEST_PROBE_FILES),
+              ),
+            {
+              message: `"${TEST_PROBE_FILES}" must be an element of its own, not part of one`,
+            },
+          ),
+      })
+      .strict(),
+  )
+  .min(1)
+  .max(TEST_PROBE_MAX_RULES)
+
 /** Where an input came from. Its hash is taken from the stored content. */
 const inputFileSchema = z.object({ path: z.string().min(1) })
 
@@ -237,6 +280,11 @@ const targetSchema = z
        * finishing (ADR-0031). Null or absent: no such rule, as before.
        */
       selfCheck: selfCheckSchema.nullable().optional(),
+      /**
+       * The test files to run on the base and on each candidate before its
+       * check and reviews (ADR-0039). Null or absent: none, as before.
+       */
+      testProbe: testProbeSchema.nullable().optional(),
       /** Push the branch and open a draft pull request when approved. */
       publish: z.boolean().default(false),
       /**
@@ -519,6 +567,17 @@ export function fixReviewInvocation(
       )
   }
   return invocation
+}
+
+/**
+ * Whether `error` is Durably parking the run on a wait: `step.waitFor`
+ * suspends by throwing this error, and the run goes on once the wait
+ * resolves, so it has not ended.
+ */
+function isSuspension(error: unknown): boolean {
+  return (
+    error instanceof Error && error.message === 'Durably execution suspended'
+  )
 }
 
 /**
@@ -1396,301 +1455,337 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
     output: outputSchema,
     run: async (step, input) => {
       const root = runRoot(step.runId)
-      const setup = await step.run(
-        'setup',
-        async (signal) => {
-          // Profiles first: a bad profile fails before any worktree or branch
-          // exists in the target repository.
-          const repairOf = input.repairOf ?? null
-          const {
-            profiles,
-            triage,
-            repair,
-            spec: specProfiles,
-          } = repairOf
-            ? // A repair run takes the profiles its parent resolved, as they
-              // were. It records the parent's triage profile but never runs
-              // triage.
-              {
-                profiles: byRole((role) => repairOf.profiles[role]),
-                triage: repairOf.profiles.triage,
-                repair: repairOf.profiles.repair,
-                spec: null,
-              }
-            : resolveInputProfiles(input)
-          assertSingleMode({
-            ...profiles,
-            ...(triage ? { triage } : {}),
-            ...(repair ? { repair } : {}),
-            ...(specProfiles
-              ? Object.fromEntries(specRoleEntries(specProfiles))
-              : {}),
-          })
-          // Checked again here, as at trigger, before anything exists.
-          const review = fixReviewInvocations(input.review, profiles, 'review')
-          if (Object.keys(review).length > 0 && input.target.kind !== 'repo')
-            throw new Error(
-              'review: a reviewer command, context or output needs a repository target',
-            )
-          const specReviewers = (specProfiles?.reviewers ?? []).map((r) => ({
-            ...r,
-            invocation: fixReviewInvocation(
-              r.invocation,
-              r.profile,
-              `spec.review.${r.name}`,
-              { spec: true },
-            ),
-          }))
-          // A repair profile that makes the same call as code is code: the
-          // run keeps its session and its config version.
-          const ownRepair = separateRepairProfile({ repair, profiles })
-          // A run triggered from the CLI carries both timeouts. Only a run
-          // stored before they were fixed reads the worker's environment.
-          // Both are read before anything is created, so a bad value leaves
-          // no run directory, worktree or branch behind.
-          const {
-            checkTimeoutMs: testTimeoutMs,
-            agentTimeoutMs,
-            agentIdleTimeoutMs,
-          } = resolveTimeouts(input.target.kind, input)
-          const codexPath = input.codexPath ?? null
-          // The path and version of every real CLI the roles launch, so runs
-          // on different builds never share a config version. A repair run
-          // never launches the triage CLI, so it is not probed.
-          const cli: Record<string, string | null> = {}
-          const triageRuns = triageThatRuns(input, triage)
-          const used = new Set(
-            [
-              ...Object.values(profiles),
-              ...(triageRuns ? [triageRuns] : []),
-              ...(ownRepair ? [ownRepair] : []),
+      const setup = await step
+        .run(
+          'setup',
+          async (signal) => {
+            // Profiles first: a bad profile fails before any worktree or branch
+            // exists in the target repository.
+            const repairOf = input.repairOf ?? null
+            const {
+              profiles,
+              triage,
+              repair,
+              spec: specProfiles,
+            } = repairOf
+              ? // A repair run takes the profiles its parent resolved, as they
+                // were. It records the parent's triage profile but never runs
+                // triage.
+                {
+                  profiles: byRole((role) => repairOf.profiles[role]),
+                  triage: repairOf.profiles.triage,
+                  repair: repairOf.profiles.repair,
+                  spec: null,
+                }
+              : resolveInputProfiles(input)
+            assertSingleMode({
+              ...profiles,
+              ...(triage ? { triage } : {}),
+              ...(repair ? { repair } : {}),
               ...(specProfiles
-                ? specRoleEntries(specProfiles).map(([, p]) => p)
-                : []),
-            ].map((p) => p.provider),
-          )
-          await Promise.all(
-            [...used].map(async (provider) => {
-              // Only the Codex version reads the pinned path.
-              const versions = await resolveVersions(provider, codexPath)
-              const identity = cliIdentityOf(provider, versions)
-              if (!identity) return
-              cli[`${provider}CliPath`] = identity.path
-              cli[`${provider}Cli`] = identity.version
-            }),
-          )
-          await mkdir(root, { recursive: true })
-          const prepared: TargetConfig =
-            input.target.kind === 'subject'
-              ? await prepareSubjectTarget({
-                  subjectDir: subjectDir(),
-                  root,
-                  testTimeoutMs,
-                })
-              : await prepareRepoTarget({
-                  repoPath: input.target.repoPath,
-                  baseRef: input.target.baseRef,
-                  // A repair run's branch never carries the issue number,
-                  // so it cannot be taken for the parent's.
-                  branch: repairOf
-                    ? `factory/${step.runId}`
-                    : branchFor(step.runId, input.target.issue),
-                  root,
-                  task: input.target.task,
-                  spec: input.target.spec,
-                  dispositions: input.target.dispositions,
-                  context: input.target.context ?? null,
-                  issue: input.target.issue,
-                  // With `checkFromSpec`, the script names the check later.
-                  checkCommand: input.target.checkFromSpec
-                    ? []
-                    : (input.target.checkCommand ?? []),
-                  checkFromSpec: input.target.checkFromSpec ?? null,
-                  setupCommand: input.target.setupCommand,
-                  selfCheck: input.target.selfCheck ?? null,
-                  checkTimeoutMs: testTimeoutMs,
-                  publish: input.target.publish,
-                  commit: input.target.commit ?? DEFAULT_COMMIT_SETTINGS,
-                  repairOf: repairOf
-                    ? {
-                        runId: repairOf.runId,
-                        findings: repairOf.findings,
-                        parentConclusion: repairOf.parentConclusion,
-                      }
-                    : null,
-                  // The parent's candidate is checked again here, not only
-                  // by `demo repair`: its branch can move after that check,
-                  // and a retrigger never makes it. The check runs after a
-                  // replayed setup has discarded its earlier worktree and
-                  // branch and right before the new ones are cut, so a
-                  // refused repair leaves neither, nor a run directory.
-                  ...(repairOf
-                    ? {
-                        beforeCreate: (repo: string) =>
-                          assertCandidateUnmoved(
-                            repo,
-                            repairOf.candidateCommit,
-                            repairOf.candidateBranch,
-                          ).catch(async (error: unknown) => {
-                            await rm(root, { recursive: true, force: true })
-                            throw new Error(
-                              `${CANDIDATE_MOVED_MESSAGE}: ${error instanceof Error ? error.message : String(error)}; the repair of ${repairOf.runId} stopped without a worktree, branch or run directory and before any agent call`,
-                            )
-                          }),
-                      }
-                    : {}),
-                  signal,
-                })
-          // Only a reviewer with its own command or local instructions reads
-          // the base and head trees, or every reviewer when reviews run
-          // beside the check, so only then are they extracted. Trees an
-          // earlier attempt of this setup left are discarded with its
-          // worktree.
-          const parallelReview =
-            input.target.kind === 'repo' && input.target.parallelReview === true
-          const snapshotsDir = reviewSnapshotsDirOf(root)
-          await rm(snapshotsDir, { recursive: true, force: true })
-          const target: TargetConfig =
-            prepared.kind === 'repo' &&
-            (parallelReview ||
-              [
-                ...Object.values(review),
-                ...specReviewers.map((r) => r.invocation),
-              ].some((r) => usesReviewMaterials(r ?? null)))
-              ? { ...prepared, reviewSnapshotsDir: snapshotsDir }
-              : prepared
-          const baselineCheck =
-            input.target.kind === 'repo' && input.target.baselineCheck === true
-          // A passing baseline removes every untracked file .gitignore does
-          // not cover, so setup must not leave any. Checked here, in the
-          // step that ran setup, so a resumed baseline never mistakes the
-          // check's own output for setup's.
-          const runsBaseline = runsBaselineCheck(baselineCheck, input.repairOf)
-          if (runsBaseline && target.kind === 'repo')
-            await assertSetupLeftNoUntracked(target.workdir, signal)
-          // Resolved here, in the worktree setup prepared, and never again:
-          // a replay compares the values this run was set up with. A check
-          // chosen from the spec is resolved in its own step instead.
-          const baselineIdentity =
-            runsBaseline && target.kind === 'repo' && !target.checkFromSpec
-              ? await baselineIdentityOf(target)
-              : null
-          const spec: SpecSetup | null = specProfiles
-            ? {
-                ...specProfiles,
-                reviewers: specReviewers,
-                specPath: specFileOf(root),
-              }
-            : null
-          const instructionsVersion = 'local-factory.v3'
-          // Fixed here with the CLI version just recorded, so a restarted
-          // worker with another environment never changes how this run's
-          // repairs treat the implementation session.
-          const repairSession = ownRepair
-            ? repairSessionDecision({
-                contextMode: input.context,
-                code: profiles.code,
-                repair: ownRepair,
-                claudeCliVersion: cli['claudeCli'] ?? null,
-                env: process.env,
-                fakeEffortResume:
-                  input.fakeScenario?.claudeEffortResume === true,
-              })
-            : null
-          // The version the run takes only once preflight confirms the
-          // continuation; every other run keeps `configVersion`.
-          const versionWith = (policy: string | null) =>
-            configVersionOf({
-              contextMode: input.context,
-              instructionsVersion,
-              maxIterations: input.maxIterations,
-              target:
-                target.kind === 'subject'
-                  ? 'subject'
-                  : target.checkFromSpec
-                    ? `repo:from-spec:${target.checkFromSpec.join(' ')}`
-                    : `repo:${target.checkCommand.join(' ')}`,
+                ? Object.fromEntries(specRoleEntries(specProfiles))
+                : {}),
+            })
+            // Checked again here, as at trigger, before anything exists.
+            const review = fixReviewInvocations(
+              input.review,
+              profiles,
+              'review',
+            )
+            if (Object.keys(review).length > 0 && input.target.kind !== 'repo')
+              throw new Error(
+                'review: a reviewer command, context or output needs a repository target',
+              )
+            const specReviewers = (specProfiles?.reviewers ?? []).map((r) => ({
+              ...r,
+              invocation: fixReviewInvocation(
+                r.invocation,
+                r.profile,
+                `spec.review.${r.name}`,
+                { spec: true },
+              ),
+            }))
+            // A repair profile that makes the same call as code is code: the
+            // run keeps its session and its config version.
+            const ownRepair = separateRepairProfile({ repair, profiles })
+            // A run triggered from the CLI carries both timeouts. Only a run
+            // stored before they were fixed reads the worker's environment.
+            // Both are read before anything is created, so a bad value leaves
+            // no run directory, worktree or branch behind.
+            const {
+              checkTimeoutMs: testTimeoutMs,
               agentTimeoutMs,
               agentIdleTimeoutMs,
-              checkTimeoutMs: testTimeoutMs,
-              code: profiles.code,
-              repair: ownRepair,
-              repairSession: policy,
-              correctness: profiles.correctness,
-              edgeCases: profiles['edge-cases'],
+            } = resolveTimeouts(input.target.kind, input)
+            const codexPath = input.codexPath ?? null
+            // The path and version of every real CLI the roles launch, so runs
+            // on different builds never share a config version. A repair run
+            // never launches the triage CLI, so it is not probed.
+            const cli: Record<string, string | null> = {}
+            const triageRuns = triageThatRuns(input, triage)
+            const used = new Set(
+              [
+                ...Object.values(profiles),
+                ...(triageRuns ? [triageRuns] : []),
+                ...(ownRepair ? [ownRepair] : []),
+                ...(specProfiles
+                  ? specRoleEntries(specProfiles).map(([, p]) => p)
+                  : []),
+              ].map((p) => p.provider),
+            )
+            await Promise.all(
+              [...used].map(async (provider) => {
+                // Only the Codex version reads the pinned path.
+                const versions = await resolveVersions(provider, codexPath)
+                const identity = cliIdentityOf(provider, versions)
+                if (!identity) return
+                cli[`${provider}CliPath`] = identity.path
+                cli[`${provider}Cli`] = identity.version
+              }),
+            )
+            await mkdir(root, { recursive: true })
+            const prepared: TargetConfig =
+              input.target.kind === 'subject'
+                ? await prepareSubjectTarget({
+                    subjectDir: subjectDir(),
+                    root,
+                    testTimeoutMs,
+                  })
+                : await prepareRepoTarget({
+                    repoPath: input.target.repoPath,
+                    baseRef: input.target.baseRef,
+                    // A repair run's branch never carries the issue number,
+                    // so it cannot be taken for the parent's.
+                    branch: repairOf
+                      ? `factory/${step.runId}`
+                      : branchFor(step.runId, input.target.issue),
+                    root,
+                    task: input.target.task,
+                    spec: input.target.spec,
+                    dispositions: input.target.dispositions,
+                    context: input.target.context ?? null,
+                    issue: input.target.issue,
+                    // With `checkFromSpec`, the script names the check later.
+                    checkCommand: input.target.checkFromSpec
+                      ? []
+                      : (input.target.checkCommand ?? []),
+                    checkFromSpec: input.target.checkFromSpec ?? null,
+                    setupCommand: input.target.setupCommand,
+                    selfCheck: input.target.selfCheck ?? null,
+                    testProbe: input.target.testProbe ?? null,
+                    checkTimeoutMs: testTimeoutMs,
+                    publish: input.target.publish,
+                    commit: input.target.commit ?? DEFAULT_COMMIT_SETTINGS,
+                    repairOf: repairOf
+                      ? {
+                          runId: repairOf.runId,
+                          findings: repairOf.findings,
+                          parentConclusion: repairOf.parentConclusion,
+                        }
+                      : null,
+                    // The parent's candidate is checked again here, not only
+                    // by `demo repair`: its branch can move after that check,
+                    // and a retrigger never makes it. The check runs after a
+                    // replayed setup has discarded its earlier worktree and
+                    // branch and right before the new ones are cut, so a
+                    // refused repair leaves neither, nor a run directory.
+                    ...(repairOf
+                      ? {
+                          beforeCreate: (repo: string) =>
+                            assertCandidateUnmoved(
+                              repo,
+                              repairOf.candidateCommit,
+                              repairOf.candidateBranch,
+                            ).catch(async (error: unknown) => {
+                              await rm(root, { recursive: true, force: true })
+                              throw new Error(
+                                `${CANDIDATE_MOVED_MESSAGE}: ${error instanceof Error ? error.message : String(error)}; the repair of ${repairOf.runId} stopped without a worktree, branch or run directory and before any agent call`,
+                              )
+                            }),
+                        }
+                      : {}),
+                    signal,
+                  })
+            // Only a reviewer with its own command or local instructions reads
+            // the base and head trees, or every reviewer when reviews run
+            // beside the check, so only then are they extracted. Trees an
+            // earlier attempt of this setup left are discarded with its
+            // worktree.
+            const parallelReview =
+              input.target.kind === 'repo' &&
+              input.target.parallelReview === true
+            const snapshotsDir = reviewSnapshotsDirOf(root)
+            await rm(snapshotsDir, { recursive: true, force: true })
+            const target: TargetConfig =
+              prepared.kind === 'repo' &&
+              (parallelReview ||
+                [
+                  ...Object.values(review),
+                  ...specReviewers.map((r) => r.invocation),
+                ].some((r) => usesReviewMaterials(r ?? null)))
+                ? { ...prepared, reviewSnapshotsDir: snapshotsDir }
+                : prepared
+            const baselineCheck =
+              input.target.kind === 'repo' &&
+              input.target.baselineCheck === true
+            // A passing baseline removes every untracked file .gitignore does
+            // not cover, so setup must not leave any. Checked here, in the
+            // step that ran setup, so a resumed baseline never mistakes the
+            // check's own output for setup's.
+            const runsBaseline = runsBaselineCheck(
+              baselineCheck,
+              input.repairOf,
+            )
+            if (runsBaseline && target.kind === 'repo')
+              await assertSetupLeftNoUntracked(target.workdir, signal)
+            // Resolved here, in the worktree setup prepared, and never again:
+            // a replay compares the values this run was set up with. A check
+            // chosen from the spec is resolved in its own step instead.
+            const baselineIdentity =
+              runsBaseline && target.kind === 'repo' && !target.checkFromSpec
+                ? await baselineIdentityOf(target)
+                : null
+            const spec: SpecSetup | null = specProfiles
+              ? {
+                  ...specProfiles,
+                  reviewers: specReviewers,
+                  specPath: specFileOf(root),
+                }
+              : null
+            const instructionsVersion = 'local-factory.v3'
+            // Fixed here with the CLI version just recorded, so a restarted
+            // worker with another environment never changes how this run's
+            // repairs treat the implementation session.
+            const repairSession = ownRepair
+              ? repairSessionDecision({
+                  contextMode: input.context,
+                  code: profiles.code,
+                  repair: ownRepair,
+                  claudeCliVersion: cli['claudeCli'] ?? null,
+                  env: process.env,
+                  fakeEffortResume:
+                    input.fakeScenario?.claudeEffortResume === true,
+                })
+              : null
+            // The version the run takes only once preflight confirms the
+            // continuation; every other run keeps `configVersion`.
+            const versionWith = (policy: string | null) =>
+              configVersionOf({
+                contextMode: input.context,
+                instructionsVersion,
+                maxIterations: input.maxIterations,
+                target:
+                  target.kind === 'subject'
+                    ? 'subject'
+                    : target.checkFromSpec
+                      ? `repo:from-spec:${target.checkFromSpec.join(' ')}`
+                      : `repo:${target.checkCommand.join(' ')}`,
+                agentTimeoutMs,
+                agentIdleTimeoutMs,
+                checkTimeoutMs: testTimeoutMs,
+                code: profiles.code,
+                repair: ownRepair,
+                repairSession: policy,
+                correctness: profiles.correctness,
+                edgeCases: profiles['edge-cases'],
+                triage,
+                cli,
+                commit: target.kind === 'repo' ? (target.commit ?? null) : null,
+                selfCheck:
+                  target.kind === 'repo' ? (target.selfCheck ?? null) : null,
+                review,
+                spec,
+              })
+            const value: FactorySetup = {
+              fake: profiles.code.provider === 'fake',
+              contextMode: input.context,
+              target,
+              checkpointsDir: join(root, 'operation-checkpoints'),
+              instructionsVersion,
+              configVersion: versionWith(null),
+              profiles,
+              repair,
+              ...(repairSession
+                ? {
+                    repairSession: repairSession.eligible
+                      ? {
+                          ...repairSession,
+                          confirmedConfigVersion:
+                            versionWith(EFFORT_RESUME_POLICY),
+                        }
+                      : repairSession,
+                  }
+                : {}),
               triage,
-              cli,
-              commit: target.kind === 'repo' ? (target.commit ?? null) : null,
-              selfCheck:
-                target.kind === 'repo' ? (target.selfCheck ?? null) : null,
-              review,
-              spec,
-            })
-          const value: FactorySetup = {
-            fake: profiles.code.provider === 'fake',
-            contextMode: input.context,
-            target,
-            checkpointsDir: join(root, 'operation-checkpoints'),
-            instructionsVersion,
-            configVersion: versionWith(null),
-            profiles,
-            repair,
-            ...(repairSession
-              ? {
-                  repairSession: repairSession.eligible
-                    ? {
-                        ...repairSession,
-                        confirmedConfigVersion:
-                          versionWith(EFFORT_RESUME_POLICY),
-                      }
-                    : repairSession,
-                }
-              : {}),
-            triage,
-            maxIterations: input.maxIterations,
-            agentTimeoutMs,
-            agentIdleTimeoutMs,
-            baselineCheck,
-            // Null, not absent, without the check, so a repair run does not
-            // take the value from this run's input instead.
-            baselineReuse:
-              baselineCheck && input.target.kind === 'repo'
-                ? (input.target.baselineReuse ?? null)
-                : null,
-            ...(baselineCheck ? { baselineIdentity } : {}),
-            codexPath,
-            ...(Object.keys(review).length > 0 ? { review } : {}),
-            ...(spec ? { spec } : {}),
-            // Only when on, so a run without it keeps the setup it had.
-            ...(parallelReview ? { parallelReview } : {}),
-            ...(repairOf
-              ? {
-                  repairOf: {
-                    runId: repairOf.runId,
-                    candidateCommit: repairOf.candidateCommit,
-                    parentConclusion: repairOf.parentConclusion,
-                  },
-                }
-              : {}),
-            // A draft pull request is itself what the human reviews, so waiting
-            // for a separate approval signal first would hold a worker for
-            // nothing. The bundled sample keeps the wait: its human-wait timing
-            // is part of what the example measures.
-            autoApprove: input.autoApprove ?? target.kind === 'repo',
-          }
-          return value
-        },
-        {
-          metadata: {
-            stage: 'setup',
-            provider: input.provider,
-            context: input.context,
-            target: input.target.kind,
-          } as unknown as JsonValue,
-        },
-      )
+              maxIterations: input.maxIterations,
+              agentTimeoutMs,
+              agentIdleTimeoutMs,
+              baselineCheck,
+              // Null, not absent, without the check, so a repair run does not
+              // take the value from this run's input instead.
+              baselineReuse:
+                baselineCheck && input.target.kind === 'repo'
+                  ? (input.target.baselineReuse ?? null)
+                  : null,
+              ...(baselineCheck ? { baselineIdentity } : {}),
+              codexPath,
+              ...(Object.keys(review).length > 0 ? { review } : {}),
+              ...(spec ? { spec } : {}),
+              // Only when on, so a run without it keeps the setup it had.
+              ...(parallelReview ? { parallelReview } : {}),
+              ...(repairOf
+                ? {
+                    repairOf: {
+                      runId: repairOf.runId,
+                      candidateCommit: repairOf.candidateCommit,
+                      parentConclusion: repairOf.parentConclusion,
+                    },
+                  }
+                : {}),
+              // A draft pull request is itself what the human reviews, so waiting
+              // for a separate approval signal first would hold a worker for
+              // nothing. The bundled sample keeps the wait: its human-wait timing
+              // is part of what the example measures.
+              autoApprove: input.autoApprove ?? target.kind === 'repo',
+            }
+            return value
+          },
+          {
+            metadata: {
+              stage: 'setup',
+              provider: input.provider,
+              context: input.context,
+              target: input.target.kind,
+            } as unknown as JsonValue,
+          },
+        )
+        .catch(async (error: unknown) => {
+          // A setup that fails after it made the probe's base worktree, such
+          // as on untracked files a baseline would remove, ends the run: the
+          // worktree goes now, with git's registration of it. A lost lease is
+          // left alone: the worker that resumes sets up again from scratch.
+          if (
+            input.target.kind === 'repo' &&
+            input.target.testProbe &&
+            !(error instanceof Error && error.name === 'LeaseLostError')
+          )
+            await removeTestProbeBase(
+              input.target.repoPath,
+              baseWorkdirOf(root),
+            )
+          throw error
+        })
 
       let target = createTarget(setup.target)
+      let targetConfig = setup.target
+      // The target is only its config: one built again from a config that
+      // changed, at setup or by a stage's event, is the same target with
+      // what changed.
+      const syncTarget = (config: TargetConfig) => {
+        if (config === targetConfig) return
+        targetConfig = config
+        target = createTarget(config)
+      }
       // One per run, shared by every role. Review verdicts are read by round
       // and lens, so replaying completed rounds shifts nothing.
       const fakeRun = input.fakeScenario
@@ -1743,10 +1838,8 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             })
           : null
       }
-      let repairSession = specStages ? await preflightAndConfirm() : null
-      let runSetup: FactorySetup = repairSession
-        ? { ...setup, configVersion: repairSession.configVersion }
-        : setup
+      let repairSession: Awaited<ReturnType<typeof preflightAndConfirm>> = null
+      let runSetup: FactorySetup = setup
       // The spec stages write, review and fix the run's spec, and fix the
       // one the run goes on with; a person's rejection ends the run here,
       // before any implementation call.
@@ -1754,13 +1847,22 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
       // review snapshots behind: whichever of these steps throws, the base
       // tree extracted for spec review must not wait for the worker's
       // startup sweep. A suspension on the spec wait is not a failure and
-      // is left alone by the `LeaseLostError` exemption below.
+      // is left alone by the `LeaseLostError` exemption below. The test
+      // probe's base worktree is kept across that wait, for the probes
+      // after it.
       let roleProviders!: Record<ProfileRole, AgentProvider>
       let providers!: Record<ProfileRole, AgentProvider> & {
         repair: AgentProvider
       }
       let triage: Awaited<ReturnType<typeof runTriage>> | null
       try {
+        // Inside the cleanup, so a preflight that fails ends the run without
+        // its base worktree or review snapshots.
+        if (specStages) {
+          repairSession = await preflightAndConfirm()
+          if (repairSession)
+            runSetup = { ...setup, configVersion: repairSession.configVersion }
+        }
         if (specStages && runSetup.target.kind === 'repo') {
           const outcome = await runSpecStages({
             step,
@@ -1834,7 +1936,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               : {}),
           }
         }
-        if (runSetup !== setup) target = createTarget(runSetup.target)
+        syncTarget(runSetup.target)
         // The pinned check must pass on the base commit, or no candidate could
         // be graded: stop before paying for any agent call. The same checkpoint
         // pair as verification, so a completed result is read back on resume
@@ -1955,7 +2057,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
         // As the stage loop below does: a suspension on the spec wait, a
         // failure or a cancel leaves no review snapshots behind.
         if (!(error instanceof Error && error.name === 'LeaseLostError'))
-          await target.releaseReviewSnapshots?.({ base: true })
+          await target.releaseRunScratch?.({ ended: !isSuspension(error) })
         throw error
       }
       let state = initialState(runSetup, repairSession?.confirmed ?? null)
@@ -1990,17 +2092,22 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             state,
             decision: selected,
             key: `stage:${sequence}:${selected.stage}`,
-            services: { providers, target },
+            services: { providers, target, createTarget },
           })
           state = reduce(state, FactoryEventSchema.parse(rawEvent))
+          // A stage result registered for the reviewers, such as the test
+          // probe's, changes the setup: the next stage gets a target with it.
+          syncTarget(state.setup.target)
         }
       } catch (error) {
         // A failed or cancelled run never runs again, so its review
         // snapshots go now, before the failure is recorded. A lost lease is
         // left alone: the run may be picked up again and read them. A
-        // suspension for approval finds none left.
+        // suspension for approval finds none left. The probe's base
+        // worktree goes with them when the run ended, and is kept across
+        // a wait; a probe that finds it gone makes it again.
         if (!(error instanceof Error && error.name === 'LeaseLostError'))
-          await target.releaseReviewSnapshots?.({ base: true })
+          await target.releaseRunScratch?.({ ended: !isSuspension(error) })
         throw error
       }
       await target.cleanup()

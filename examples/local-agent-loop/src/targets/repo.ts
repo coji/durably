@@ -13,12 +13,15 @@
  * still be the candidate's commit. Like the directory-hash check on the sample
  * target, this detects an unintended change; it is not a sandbox.
  */
-import { constants as fsConstants, existsSync } from 'node:fs'
+import { createHash, type Hash } from 'node:crypto'
+import { createReadStream, constants as fsConstants, existsSync } from 'node:fs'
 import {
   copyFile,
+  lstat,
   mkdir,
   readdir,
   readFile,
+  readlink,
   realpath,
   rename,
   rm,
@@ -34,6 +37,7 @@ import {
   resolve,
   sep,
 } from 'node:path'
+import { pipeline } from 'node:stream/promises'
 
 import { runChild } from '../engine/child.js'
 import {
@@ -53,6 +57,7 @@ import {
   isDirty,
   writePatch,
   pushBranch,
+  removeWorktreeRegistration,
   resolveCommit,
   someUntracked,
   treeOf,
@@ -71,12 +76,14 @@ import {
   type GradeResult,
 } from '../engine/verification.js'
 import {
+  baseWorkdirOf,
   removableRunPathsOf,
   reviewBaseTreeOf,
   reviewHeadTreeOf,
   reviewWorkdirOf,
   specReviewWorkdirOf,
   stageContextDirOf,
+  testProbeBaseRecordOf,
   worktreeRetiredMarkerOf,
 } from '../factory/layout.js'
 import { changedPathsLine, trustedContextLines } from '../factory/prompts.js'
@@ -93,7 +100,7 @@ import {
   type Target,
   type UntrustedInput,
 } from '../factory/target.js'
-import type { ProfileRole } from '../factory/types.js'
+import { TEST_PROBE_CONTEXT, type ProfileRole } from '../factory/types.js'
 
 /** Why a repair run's unapproved base was never approved (ADR-0030). */
 const UNAPPROVED_BASE: Record<
@@ -302,8 +309,26 @@ export class RepoTarget implements Target {
     return [
       'Judge the change against the task and the trusted context below. You are reading a real repository, so follow its own conventions rather than any assumed layout.',
       'Check that the change is minimal and that nothing unrelated was touched.',
-      'Check the tests: a test that passes whether or not the change is present does not count as coverage. Say needsChanges when the new tests would pass against the base commit.',
+      ...this.testRules(),
       'Check that no dependency was added without need and that no secret, credential or absolute local path was introduced.',
+    ]
+  }
+
+  /**
+   * How a reviewer judges the tests. With the test probe's result attached
+   * (ADR-0039), the factory ran the tests and the reviewer judges from that;
+   * how to read it is in the result itself. Without it, from the code.
+   */
+  private testRules(): string[] {
+    const coverage =
+      'Check the tests: a test that passes whether or not the change is present does not count as coverage.'
+    const probed = this.config.stageContext?.some(
+      (entry) => entry.name === TEST_PROBE_CONTEXT,
+    )
+    return [
+      probed
+        ? `${coverage} Judge them from any trusted stage result below that covers them, and say needsChanges when one shows a test meant to cover the change passing on the base commit. Read the code to judge a test no such result covers.`
+        : `${coverage} Say needsChanges when the new tests would pass against the base commit.`,
     ]
   }
 
@@ -864,12 +889,20 @@ export class RepoTarget implements Target {
   }
 
   async cleanup(): Promise<void> {
-    // The review snapshots are only read during a review. The worktree is
-    // left here whatever the run came to: only an approved delivery removes
-    // it (`retireWorktree`), and a stop keeps it for a person to look at.
-    // The branches are always kept; they are the delivery.
-    if (this.config.reviewSnapshotsDir)
-      await removeQuietly(this.config.reviewSnapshotsDir)
+    // The review snapshots are only read during a review, and the probe's
+    // base worktree only by a probe. The worktree is left here whatever the
+    // run came to: only an approved delivery removes it (`retireWorktree`),
+    // and a stop keeps it for a person to look at. The branches are always
+    // kept; they are the delivery.
+    await this.releaseRunScratch({ ended: true })
+  }
+
+  async releaseRunScratch(options: { ended: boolean }): Promise<void> {
+    await this.releaseReviewSnapshots({ base: true })
+    // Kept across a wait: the probes after it reset it for each candidate.
+    const base = this.config.testProbeBase
+    if (options.ended && base)
+      await removeTestProbeBase(this.config.repoPath, base.workdir)
   }
 
   /**
@@ -884,7 +917,11 @@ export class RepoTarget implements Target {
         worktreeRetiredMarkerOf(this.runRoot),
         `${JSON.stringify({ at: new Date().toISOString() })}\n`,
       )
-      return await removeRunWorktree(this.config.repoPath, this.runRoot)
+      const warnings = await removeRunWorktree(
+        this.config.repoPath,
+        this.runRoot,
+      )
+      return warnings.length > 0 ? warnings.join('; ') : null
     } catch (error) {
       return error instanceof Error ? error.message : String(error)
     }
@@ -892,18 +929,169 @@ export class RepoTarget implements Target {
 }
 
 /**
- * Remove a repository run's worktree with `git worktree remove --force`,
- * prune git's registration of it, and remove its review snapshots. Nothing
- * else of the run is touched. Asking again after a removal succeeds and
- * does nothing. Returns why git could not remove the worktree, or null.
+ * Remove each of a repository run's worktrees (`removableRunPathsOf`) and
+ * git's registration of it: the agent's with `git worktree remove --force`
+ * and a prune, the test probe's base with its record (`removeTestProbeBase`),
+ * and then its other directories. Asking again after a removal succeeds and
+ * does nothing. Returns `<path>: <why>` for each worktree git could not
+ * remove; empty when none.
  */
 export async function removeRunWorktree(
   repoPath: string,
   runRoot: string,
-): Promise<string | null> {
+): Promise<string[]> {
   const paths = removableRunPathsOf(runRoot)
-  await removeQuietly(paths.reviewSnapshots)
-  return forceRemoveWorktree(repoPath, paths.worktree)
+  await Promise.all(paths.dirs.map(removeQuietly))
+  const warnings: string[] = []
+  // One at a time, since each runs git in the same repository.
+  for (const dir of paths.worktrees) {
+    const warning =
+      dir === baseWorkdirOf(runRoot)
+        ? await removeTestProbeBase(repoPath, dir)
+        : await forceRemoveWorktree(repoPath, dir)
+    if (warning) warnings.push(`${dir}: ${warning}`)
+  }
+  return warnings
+}
+
+/** What `testProbeBaseRecordOf` holds. */
+export interface TestProbeBaseRecord {
+  /** The repository the base worktree is registered in. */
+  repoPath: string
+  /**
+   * The untracked paths `.gitignore` does not cover that its setup left
+   * (`untrackedPaths`), each with its fingerprint (`fingerprintPaths`): the
+   * probe keeps them when it puts the base back, and makes the base again
+   * when one is gone or changed. Absent until setup has succeeded.
+   */
+  setupUntracked?: Record<string, string>
+}
+
+/** The base worktree's record of the run at `runRoot`, or null. */
+export async function readTestProbeBaseRecord(
+  runRoot: string,
+): Promise<TestProbeBaseRecord | null> {
+  try {
+    const record = JSON.parse(
+      await readFile(testProbeBaseRecordOf(runRoot), 'utf8'),
+    ) as Partial<TestProbeBaseRecord> | null
+    if (typeof record?.repoPath !== 'string') return null
+    return {
+      repoPath: record.repoPath,
+      // A list of paths alone, from before the fingerprints, counts as none.
+      ...(record.setupUntracked &&
+      typeof record.setupUntracked === 'object' &&
+      !Array.isArray(record.setupUntracked)
+        ? {
+            setupUntracked: Object.fromEntries(
+              Object.entries(record.setupUntracked).map(([path, print]) => [
+                path,
+                String(print),
+              ]),
+            ),
+          }
+        : {}),
+    }
+  } catch {
+    return null
+  }
+}
+
+/** Write the base worktree's record of the run at `runRoot`. */
+export async function writeTestProbeBaseRecord(
+  runRoot: string,
+  record: TestProbeBaseRecord,
+): Promise<void> {
+  const file = testProbeBaseRecordOf(runRoot)
+  await mkdir(dirname(file), { recursive: true })
+  await writeFile(file, `${JSON.stringify(record)}\n`)
+}
+
+/**
+ * Each of `paths`, relative to `dir`, with what it holds: a file by the
+ * sha256 of its bytes, a symbolic link by its target, and a directory, such
+ * as a nested repository `untrackedPaths` names with a trailing `/`, by
+ * everything under it (`hashTree`), so an edit inside it shows. A path that
+ * cannot be read is `missing`. One at a time, so a setup that left many
+ * files opens one at once.
+ */
+export async function fingerprintPaths(
+  dir: string,
+  paths: string[],
+): Promise<Record<string, string>> {
+  const prints: Record<string, string> = {}
+  for (const path of paths) {
+    const full = join(dir, path)
+    prints[path] = await lstat(full)
+      .then(async (info) => {
+        if (info.isSymbolicLink()) return `link:${await readlink(full)}`
+        if (info.isDirectory()) {
+          const hash = createHash('sha256')
+          await hashTree(full, hash)
+          return `dir:${hash.digest('hex')}`
+        }
+        return `file:${await hashFile(full)}`
+      })
+      .catch(() => 'missing')
+  }
+  return prints
+}
+
+/** The sha256 of a file's bytes, read as a stream. */
+async function hashFile(full: string): Promise<string> {
+  const hash = createHash('sha256')
+  await pipeline(createReadStream(full), hash)
+  return hash.digest('hex')
+}
+
+/**
+ * Feed `hash` everything under the directory `full`, depth first in sorted
+ * order and skipping nothing: each entry's name with a file's sha256, a
+ * link's target, or a directory's own entries, and any other kind by name.
+ * One file is open at a time.
+ */
+async function hashTree(full: string, hash: Hash): Promise<void> {
+  const entries = (await readdir(full, { withFileTypes: true })).sort((a, b) =>
+    a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+  )
+  for (const entry of entries) {
+    const path = join(full, entry.name)
+    if (entry.isSymbolicLink()) {
+      hash.update(`link\0${entry.name}\0${await readlink(path)}\0`)
+    } else if (entry.isDirectory()) {
+      hash.update(`dir\0${entry.name}\0`)
+      await hashTree(path, hash)
+      hash.update('end\0')
+    } else if (entry.isFile()) {
+      hash.update(`file\0${entry.name}\0${await hashFile(path)}\0`)
+    } else {
+      hash.update(`other\0${entry.name}\0`)
+    }
+  }
+}
+
+/**
+ * Remove the test probe's base worktree, git's registration of it
+ * (`removeWorktreeRegistration`), and then its record
+ * (`testProbeBaseRecordOf`), from the run directory `dir` is in. A
+ * directory git refuses, or never registered, is removed outright, since it
+ * holds nothing anyone works in, and its registration taken again. The
+ * record goes only once `git worktree list` no longer names the base, so a
+ * worker that dies midway, or a git that fails, leaves it for the next
+ * cleanup to find. Returns why git could not remove the registration, or
+ * null. Asking again does nothing, and it never throws.
+ */
+export async function removeTestProbeBase(
+  repoPath: string,
+  dir: string,
+): Promise<string | null> {
+  let failure = await removeWorktreeRegistration(repoPath, dir)
+  if (existsSync(dir)) {
+    await removeQuietly(dir)
+    failure = await removeWorktreeRegistration(repoPath, dir)
+  }
+  if (failure === null) await removeQuietly(testProbeBaseRecordOf(dirname(dir)))
+  return failure
 }
 
 /** Remove a directory, ignoring every failure; for best-effort cleanup. */

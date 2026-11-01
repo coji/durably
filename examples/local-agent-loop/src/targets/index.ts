@@ -12,18 +12,27 @@ import { join } from 'node:path'
 import { runChild } from '../engine/child.js'
 import {
   addWorktree,
+  describeGitFailure,
   discardWorktree,
   repoRoot,
   resolveCommit,
+  untrackedPaths,
 } from '../engine/git.js'
-import { repoWorkdirOf } from '../factory/layout.js'
+import { baseWorkdirOf, repoWorkdirOf } from '../factory/layout.js'
 import type {
   CommitSettings,
   RepoTargetConfig,
   Target,
   TargetConfig,
+  TestProbeBase,
 } from '../factory/target.js'
-import { RepoTarget } from './repo.js'
+import type { TestProbeRule } from '../factory/types.js'
+import {
+  fingerprintPaths,
+  RepoTarget,
+  removeTestProbeBase,
+  writeTestProbeBaseRecord,
+} from './repo.js'
 import { SubjectTarget } from './subject.js'
 
 export { prepareSubjectTarget } from './subject.js'
@@ -55,6 +64,8 @@ export interface PrepareRepoArgs {
   setupCommand: string[] | null
   /** Fixed at trigger; see `RepoTargetConfig.selfCheck`. */
   selfCheck?: string[][] | null
+  /** Fixed at trigger; see `RepoTargetConfig.testProbe`. */
+  testProbe?: TestProbeRule[] | null
   checkTimeoutMs: number
   publish: boolean
   /** Fixed at trigger; applied to every iteration and the squash commit. */
@@ -90,23 +101,21 @@ export async function prepareRepoTarget(
     branch: args.branch,
     ...(args.signal ? { signal: args.signal } : {}),
   })
-  if (args.setupCommand && args.setupCommand.length > 0) {
-    const [command, ...rest] = args.setupCommand
-    if (!command) throw new Error('empty setup command')
-    // A fresh worktree has no installed dependencies, so the check would fail
-    // for a reason that has nothing to do with the agent's work.
-    const res = await runChild(command, rest, {
-      cwd: workdir,
-      timeoutMs: 900_000,
-      maxOutputChars: 20_000,
-      ...(args.signal ? { signal: args.signal } : {}),
-    })
-    if (res.code !== 0) {
-      throw new Error(
-        `worktree setup failed (${res.code ?? 'null'}): ${`${res.stdout}${res.stderr}`.slice(-2000)}`,
-      )
-    }
-  }
+  // A fresh worktree has no installed dependencies, so the check would fail
+  // for a reason that has nothing to do with the agent's work.
+  await runSetupCommand(args.setupCommand, workdir, args.signal)
+  // The probe's base worktree, only with `testProbe`. Its failure never
+  // stops setup: the probe records it and the run goes on.
+  const testProbe = args.testProbe ?? null
+  const testProbeBase = testProbe
+    ? await prepareTestProbeBase({
+        repo,
+        root: args.root,
+        baseCommit,
+        setupCommand: args.setupCommand,
+        ...(args.signal ? { signal: args.signal } : {}),
+      })
+    : null
   return {
     kind: 'repo',
     repoPath: repo,
@@ -122,11 +131,89 @@ export async function prepareRepoTarget(
     spec: args.spec,
     dispositions: args.dispositions,
     context: args.context ?? null,
+    ...(testProbe ? { testProbe, testProbeBase } : {}),
     issue: args.issue,
     deliveryDir: join(args.root, 'delivery'),
     candidatesDir: join(args.root, 'candidates'),
     publish: args.publish,
     commit: args.commit,
     ...(args.repairOf ? { repairOf: args.repairOf } : {}),
+  }
+}
+
+/**
+ * Run a worktree's `setupCommand`, if it has one, in `cwd`; throws when it
+ * fails. Setup runs it in the agent's worktree, and again in the probe's
+ * base worktree.
+ */
+async function runSetupCommand(
+  setupCommand: string[] | null,
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (!setupCommand || setupCommand.length === 0) return
+  const [command, ...rest] = setupCommand
+  if (!command) throw new Error('empty setup command')
+  const res = await runChild(command, rest, {
+    cwd,
+    timeoutMs: 900_000,
+    maxOutputChars: 20_000,
+    ...(signal ? { signal } : {}),
+  })
+  if (res.code !== 0) {
+    throw new Error(
+      `worktree setup failed (${res.code ?? 'null'}): ${`${res.stdout}${res.stderr}`.slice(-2000)}`,
+    )
+  }
+}
+
+/**
+ * Make the test probe's base worktree (ADR-0039): detached at `baseCommit`
+ * under the run's directory, set up with the same `setupCommand` as the
+ * agent's. Whatever an earlier attempt left there is discarded first, so a
+ * setup that runs again, or a probe that finds the worktree gone, starts
+ * clean. Its record (`testProbeBaseRecordOf`) names the repository before
+ * the worktree is made, and once setup has succeeded the untracked files
+ * setup left with their fingerprints (`fingerprintPaths`), which the probe
+ * keeps when it puts the base back and checks to tell a base a test
+ * changed. A worktree
+ * that cannot be made or set up is removed again and its reason returned:
+ * the probe records it, and nothing stops the run. A cancel or a lost lease
+ * still throws, after removing what was made of it: a cancelled run never
+ * runs a step again, and a run whose lease was lost makes the base again
+ * when its setup or a probe runs again.
+ */
+export async function prepareTestProbeBase(args: {
+  repo: string
+  /** The run's directory. */
+  root: string
+  baseCommit: string
+  setupCommand: string[] | null
+  signal?: AbortSignal
+}): Promise<TestProbeBase> {
+  const workdir = baseWorkdirOf(args.root)
+  await removeTestProbeBase(args.repo, workdir)
+  await writeTestProbeBaseRecord(args.root, { repoPath: args.repo })
+  try {
+    await addWorktree({
+      repo: args.repo,
+      dir: workdir,
+      baseCommit: args.baseCommit,
+      ...(args.signal ? { signal: args.signal } : {}),
+    })
+    await runSetupCommand(args.setupCommand, workdir, args.signal)
+    await writeTestProbeBaseRecord(args.root, {
+      repoPath: args.repo,
+      setupUntracked: await fingerprintPaths(
+        workdir,
+        await untrackedPaths(workdir, args.signal),
+      ),
+    })
+    return { workdir, setupFailure: null }
+  } catch (error) {
+    await removeTestProbeBase(args.repo, workdir)
+    if (args.signal?.aborted || (error as Error).name === 'SpawnCancelledError')
+      throw error
+    return { workdir, setupFailure: describeGitFailure(error) }
   }
 }

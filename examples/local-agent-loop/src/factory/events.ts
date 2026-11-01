@@ -87,6 +87,13 @@ const reviewStepSchema = reviewSchema.extend({
   findings: reviewFindingsSchema.nullable(),
 })
 
+/**
+ * A result a stage hands the reviewers as trusted context, such as the test
+ * probe's (ADR-0039), from that stage's settled step output. The reducer
+ * registers it with `withStageContext`.
+ */
+const stageContextSchema = z.object({ name: z.string(), content: z.string() })
+
 export const FactoryEventSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('code.completed'),
@@ -102,6 +109,7 @@ export const FactoryEventSchema = z.discriminatedUnion('type', [
     exitCode: z.number().nullable(),
     // Optional so a verification recorded before logs existed still parses.
     log: verificationLogSchema.nullable().optional(),
+    stageContext: stageContextSchema.optional(),
   }),
   z.object({
     type: z.literal('review.completed'),
@@ -123,6 +131,7 @@ export const FactoryEventSchema = z.discriminatedUnion('type', [
     reviews: z.array(reviewSchema).length(2).nullable(),
     // Optional so a round recorded before it existed still parses.
     failedCheckReviews: z.array(reviewStepSchema).optional(),
+    stageContext: stageContextSchema.optional(),
   }),
   z.object({
     type: z.literal('approval.completed'),

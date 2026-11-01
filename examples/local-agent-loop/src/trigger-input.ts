@@ -33,6 +33,7 @@ import {
   selfCheckSchema,
   specMaxRoundsSchema,
   specReviewerNameSchema,
+  testProbeSchema,
   timeoutMsSchema,
   type FixedProfile,
 } from './factory/job.js'
@@ -57,6 +58,7 @@ import {
   type ProfileRole,
   type ReviewInvocation,
   type ReviewLens,
+  type TestProbeRule,
 } from './factory/types.js'
 import { assertCandidateUnmoved } from './targets/repo.js'
 
@@ -171,6 +173,11 @@ const factoryConfigSchema = z
      * finishing. Prompt-only: the factory never runs them (ADR-0031).
      */
     selfCheck: selfCheckSchema.optional(),
+    /**
+     * The added or modified test files to run on the base and on each
+     * candidate, for the reviewers (ADR-0039); none when absent.
+     */
+    testProbe: testProbeSchema.optional(),
     setup: z.array(z.string().min(1)).min(1).optional(),
     base: z.string().min(1).optional(),
     profiles: z
@@ -527,6 +534,7 @@ async function repoSettings(
       setupCommand:
         setupCommand && setupCommand.length > 0 ? setupCommand : null,
       selfCheck: config?.selfCheck ?? null,
+      testProbe: config?.testProbe ?? null,
       baselineCheck: config?.baselineCheck ?? false,
       baselineReuse: config?.baselineReuse ?? null,
       parallelReview: config?.parallelReview ?? false,
@@ -939,6 +947,7 @@ interface StoredRepairInput {
     }
     commit?: CommitSettings
     selfCheck?: string[][] | null
+    testProbe?: TestProbeRule[] | null
     baselineCheck?: boolean
     baselineReuse?: BaselineReuse | null
     parallelReview?: boolean
@@ -1283,6 +1292,11 @@ export function buildRepairInput(
         t,
         'selfCheck',
         () => parentInput.target?.selfCheck ?? null,
+      ),
+      testProbe: recorded(
+        t,
+        'testProbe',
+        () => parentInput.target?.testProbe ?? null,
       ),
       publish: t.publish,
       commit: recorded(

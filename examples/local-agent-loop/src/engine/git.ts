@@ -8,6 +8,8 @@
  * finished run's worktree and, when asked, its branches.
  */
 import { existsSync } from 'node:fs'
+import { realpath } from 'node:fs/promises'
+import { basename, dirname, join, resolve } from 'node:path'
 
 import { runChild } from './child.js'
 
@@ -126,7 +128,7 @@ export async function removeWorktree(
 }
 
 /** A failed git call as one line: the command and what git printed. */
-function describeGitFailure(error: unknown): string {
+export function describeGitFailure(error: unknown): string {
   if (error instanceof GitError) {
     const stderr = error.stderr.trim()
     return stderr ? `${error.message}: ${stderr}` : error.message
@@ -160,6 +162,70 @@ export async function forceRemoveWorktree(
     failure ??= describeGitFailure(error)
   }
   return failure
+}
+
+/**
+ * Remove a worktree that holds nothing anyone works in, such as the test
+ * probe's base, and git's registration of it: `git worktree remove -f -f`,
+ * which also takes a registration left locked by a `git worktree add` that
+ * was killed, and a registration whose directory is already gone, then a
+ * prune. Returns null only once `git worktree list` no longer names `dir`,
+ * else why git could not tell or remove it. The directory itself is left
+ * to the caller when git refuses it.
+ */
+export async function removeWorktreeRegistration(
+  repo: string,
+  dir: string,
+): Promise<string | null> {
+  let failure: string | null = null
+  try {
+    await git(repo, ['worktree', 'remove', '--force', '--force', dir])
+  } catch (error) {
+    // Also refused when git never registered it, which the list tells.
+    failure = describeGitFailure(error)
+  }
+  try {
+    await git(repo, ['worktree', 'prune'])
+    return (await worktreeRegistered(repo, dir))
+      ? (failure ?? `${dir} is still a registered worktree`)
+      : null
+  } catch (error) {
+    return describeGitFailure(error)
+  }
+}
+
+/**
+ * Whether `git worktree list` names `dir`, compared also through the real
+ * path of its nearest existing ancestor, since git records real paths and
+ * `dir` may be gone. Throws when git cannot list them.
+ */
+async function worktreeRegistered(repo: string, dir: string): Promise<boolean> {
+  const wanted = new Set([resolve(dir)])
+  let rest = ''
+  for (let at = resolve(dir); ; at = dirname(at)) {
+    const real = await realpath(at).catch(() => null)
+    if (real) {
+      wanted.add(rest ? join(real, rest) : real)
+      break
+    }
+    if (dirname(at) === at) break
+    rest = rest ? join(basename(at), rest) : basename(at)
+  }
+  const out = await git(repo, ['worktree', 'list', '--porcelain'])
+  return porcelainWorktreePaths(out).some((path) => wanted.has(path))
+}
+
+/**
+ * The paths a `git worktree list --porcelain` output names, one per
+ * `worktree <path>` line. Without `-z`, which needs git 2.36, the lines are
+ * newline-separated, so a path that holds a newline cannot be read back;
+ * such a path is not supported and never matches.
+ */
+export function porcelainWorktreePaths(out: string): string[] {
+  return out
+    .split('\n')
+    .filter((line) => line.startsWith('worktree '))
+    .map((line) => line.slice(9))
 }
 
 /**
@@ -449,6 +515,41 @@ export async function discardWorktree(
 }
 
 /**
+ * Put a worktree's tracked files, its index and its `HEAD` back at `commit`.
+ * Files the index holds that `commit` does not are removed; untracked ones
+ * stay. The test probe uses it to bring each worktree back after a run.
+ */
+export async function resetHard(
+  dir: string,
+  commit: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await git(
+    dir,
+    ['reset', '--hard', '--quiet', commit],
+    signal ? { signal } : {},
+  )
+}
+
+/**
+ * Write `paths` as `commit` has them into a worktree of the same repository,
+ * and nothing else. Each path is taken literally, never as a pathspec
+ * pattern, and git refuses one beyond a symbolic link.
+ */
+export async function checkoutPathsFrom(
+  dir: string,
+  commit: string,
+  paths: string[],
+  signal?: AbortSignal,
+): Promise<void> {
+  if (paths.length === 0) return
+  await git(dir, ['checkout', commit, '--', ...paths], {
+    env: { GIT_LITERAL_PATHSPECS: '1' },
+    ...(signal ? { signal } : {}),
+  })
+}
+
+/**
  * Remove untracked files and directories that `.gitignore` does not cover,
  * including nested repositories (the second `-f`). Ignored files, such as
  * installed dependencies, stay.
@@ -458,6 +559,32 @@ export async function cleanUntracked(
   signal?: AbortSignal,
 ): Promise<void> {
   await git(cwd, ['clean', '-ffd'], signal ? { signal } : {})
+}
+
+/** The longest `untrackedPaths` listing read, in characters. */
+const UNTRACKED_LIST_CHARS = 10_000_000
+
+/**
+ * Every untracked path `.gitignore` does not cover, relative to `cwd`, a
+ * worktree's top: each file, and a nested repository as its directory with
+ * a trailing `/`. Throws when the listing is too long to read in full,
+ * since a cut one would leave some out.
+ */
+export async function untrackedPaths(
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const out = await git(
+    cwd,
+    ['ls-files', '--others', '--exclude-standard', '-z'],
+    {
+      maxOutputChars: UNTRACKED_LIST_CHARS,
+      ...(signal ? { signal } : {}),
+    },
+  )
+  if (out.length >= UNTRACKED_LIST_CHARS)
+    throw new Error(`too many untracked files in ${cwd} to list`)
+  return out.split('\0').filter(Boolean)
 }
 
 /**

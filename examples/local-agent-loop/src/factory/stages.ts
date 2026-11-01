@@ -66,13 +66,16 @@ import {
 } from './reducer.js'
 import {
   checkContextText,
+  checkStageContextName,
   MAX_CONTEXT_BYTES,
   type Delivery,
   type RepairParentConclusion,
   type StageContext,
   type Target,
   type UntrustedInput,
+  withStageContext,
 } from './target.js'
+import { recoverInterruptedProbe, runTestProbe } from './test-probe.js'
 import {
   idleLimitOf,
   REVIEW_CANCEL_REASON,
@@ -105,6 +108,9 @@ import {
   type SpecVersion,
   type StageArgs,
   type StageHandler,
+  TEST_PROBE_CONTEXT,
+  type TestProbeRecord,
+  testProbeStepOf,
 } from './types.js'
 
 function requireCandidate(state: StageArgs['state']) {
@@ -312,7 +318,11 @@ export const verifyStage: StageHandler = async (args) => {
   if (state.setup.parallelReview) return verifyReviewStage(args)
   const target = services.target
   const candidate = requireCandidate(state)
+  await recoverProbe(args, candidate)
   await target.assertIntact(candidate)
+  // The review that follows gets its result through the event: the
+  // reducer registers it, and the job rebuilds the target with it.
+  const probe = await testProbeOf(args, candidate, key)
   const result = await step.run(`${key}:acceptance`, (signal, attempt) =>
     verifyCandidate(
       state,
@@ -331,6 +341,7 @@ export const verifyStage: StageHandler = async (args) => {
     stdout: result.stdout,
     exitCode: result.exitCode,
     log: result.log ?? null,
+    ...(probe ? { stageContext: probe } : {}),
   }
 }
 
@@ -399,10 +410,20 @@ export const reviewStage: StageHandler = async ({
  * once every branch has.
  */
 const verifyReviewStage: StageHandler = async (args) => {
-  const { step, state, key, services } = args
-  const target = services.target
-  const candidate = requireCandidate(state)
-  await target.assertIntact(candidate)
+  const { step, key, services } = args
+  const candidate = requireCandidate(args.state)
+  await recoverProbe(args, candidate)
+  await services.target.assertIntact(candidate)
+  // The probe completes before the check and the reviews start. Its result
+  // is registered here too, as the reducer does with the event, so the
+  // reviewers of this round are given a target built with it.
+  const probe = await testProbeOf(args, candidate, key)
+  const state = probe
+    ? { ...args.state, setup: withStageContext(args.state.setup, probe) }
+    : args.state
+  const target = probe
+    ? services.createTarget(state.setup.target)
+    : services.target
   const reviewKey = key.replace(/:verify$/, ':review')
   const round = await reviewRoundOf({
     step,
@@ -475,7 +496,65 @@ const verifyReviewStage: StageHandler = async (args) => {
     ...(verification.passed
       ? { reviews: completed }
       : { reviews: null, failedCheckReviews: completed }),
+    ...(probe ? { stageContext: probe } : {}),
   }
+}
+
+/**
+ * Before a verify stage checks its candidate: a worker that died while the
+ * probe's tests ran in the candidate's worktree left it as the tests did,
+ * and the probe step that runs again needs it as sealed.
+ */
+async function recoverProbe(
+  { state }: StageArgs,
+  candidate: CandidateRef,
+): Promise<void> {
+  const config = state.setup.target
+  if (config.kind !== 'repo') return
+  await recoverInterruptedProbe({
+    config,
+    candidate,
+    runRoot: dirname(state.setup.checkpointsDir),
+  })
+}
+
+/**
+ * The candidate's test probe (ADR-0039), in the verify stage's step
+ * `<verifyKey>:test-probe`: run once, before the candidate's check and
+ * reviews, and read back from the step on every replay. Returns its stored
+ * result, for the stage's event to register as the `test-probe` stage
+ * context, replacing an earlier candidate's. Null, with no step, on a run
+ * without `testProbe`.
+ */
+async function testProbeOf(
+  { step, state, services }: StageArgs,
+  candidate: CandidateRef,
+  verifyKey: string,
+): Promise<StageContext | null> {
+  const config = state.setup.target
+  if (config.kind !== 'repo' || !config.testProbe) return null
+  const record: TestProbeRecord = await step.run(
+    testProbeStepOf(verifyKey),
+    async (signal) => {
+      const { resultFile, ...probed } = await runTestProbe({
+        config,
+        candidate,
+        runRoot: dirname(state.setup.checkpointsDir),
+        assertIntact: () => services.target.assertIntact(candidate),
+        signal,
+      })
+      return {
+        ...probed,
+        // Read inside the step, so the content is its settled output.
+        context: await readStageContextFile({
+          name: TEST_PROBE_CONTEXT,
+          file: resultFile,
+          worktree: config.workdir,
+        }),
+      }
+    },
+  )
+  return record.context
 }
 
 /** Grade one sealed candidate through the verification checkpoint pair. */
@@ -1424,16 +1503,6 @@ export async function runCheckFromSpec(
   )
 }
 
-/** A stage context's name: it names the block and the factory's copy. */
-const STAGE_CONTEXT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
-
-function checkStageContextName(name: string): void {
-  if (!STAGE_CONTEXT_NAME.test(name))
-    throw new Error(
-      `stage context ${name}: a name is lower-case letters, digits and dashes`,
-    )
-}
-
 /**
  * Read a file a stage produced, such as the result of a test it ran on the
  * base and the candidate, for the reviewers' trusted context. Call it inside
@@ -1470,35 +1539,4 @@ export async function readStageContextFile(args: {
   })
   checkContextText(`stage context ${name}`, content)
   return { name, content }
-}
-
-/**
- * The internal hook through which a stage hands the reviewers a result of
- * its own as trusted context: `settled` is that stage's completed step
- * output, from `readStageContextFile`. Only the content is registered,
- * never the file the stage read, and the reviewers read the factory's own
- * copy under the run directory, outside the candidate worktree. A result of
- * the same name replaces the earlier one. Returns the setup to rebuild the
- * target from, as the spec stages' advice and the check's notes are.
- */
-export function withStageContext(
-  setup: FactorySetup,
-  settled: StageContext,
-): FactorySetup {
-  const target = setup.target
-  if (target.kind !== 'repo')
-    throw new Error('stage context needs a repository target')
-  checkStageContextName(settled.name)
-  checkContextText(`stage context ${settled.name}`, settled.content)
-  const entry: StageContext = { name: settled.name, content: settled.content }
-  return {
-    ...setup,
-    target: {
-      ...target,
-      stageContext: [
-        ...(target.stageContext ?? []).filter((e) => e.name !== entry.name),
-        entry,
-      ],
-    },
-  }
 }

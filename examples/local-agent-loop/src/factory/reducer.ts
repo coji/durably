@@ -1,7 +1,25 @@
 /** Pure factory state reducer. */
 import type { FactoryEvent, SpecEvent } from './events.js'
 import { specBlockerText } from './prompts.js'
-import type { FactoryState, SpecReviewResult, SpecVersion } from './types.js'
+import { withStageContext, type StageContext } from './target.js'
+import type {
+  FactorySetup,
+  FactoryState,
+  SpecReviewResult,
+  SpecVersion,
+} from './types.js'
+
+/**
+ * The setup with a stage's result registered for the reviewers, or as it
+ * was when the event carries none. A new setup makes the job rebuild the
+ * target from it before the next stage.
+ */
+function setupWith(
+  setup: FactorySetup,
+  stageContext: StageContext | undefined,
+): FactorySetup {
+  return stageContext ? withStageContext(setup, stageContext) : setup
+}
 
 export function reduce(state: FactoryState, event: FactoryEvent): FactoryState {
   switch (event.type) {
@@ -22,6 +40,7 @@ export function reduce(state: FactoryState, event: FactoryEvent): FactoryState {
         throw new Error(`verification target is stale: ${event.targetId}`)
       return {
         ...state,
+        setup: setupWith(state.setup, event.stageContext),
         verification: {
           targetId: event.targetId,
           passed: event.passed,
@@ -56,12 +75,14 @@ export function reduce(state: FactoryState, event: FactoryEvent): FactoryState {
         exitCode: event.exitCode,
         log: event.log,
       }
+      const setup = setupWith(state.setup, event.stageContext)
       // A failed check hands its output to the repair first. The reviews
       // of a candidate that failed are neither kept nor counted; those that
       // completed go to the repair apart, after the check failure.
       if (!event.passed)
         return {
           ...state,
+          setup,
           verification,
           reviews: [],
           repairNotes: [`acceptance: ${event.stdout.slice(-1000)}`],
@@ -73,6 +94,7 @@ export function reduce(state: FactoryState, event: FactoryEvent): FactoryState {
         )
       return {
         ...state,
+        setup,
         verification,
         reviews: event.reviews,
         reviewRounds: state.reviewRounds + 1,

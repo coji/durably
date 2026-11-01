@@ -35,6 +35,7 @@ import {
   archiveDirOf,
   archiveMarkerOf,
   removableRunPathsOf,
+  repoWorkdirOf,
   runRootOf,
 } from './factory/layout.js'
 import { repairLabels } from './factory/repair.js'
@@ -145,13 +146,13 @@ async function repoRunFiles(durably: AgentLoopDurably, run: Run) {
   if (target?.kind !== 'repo' || !target.repoPath || !target.workdir)
     return null
   const runRoot = runRootOf(durably.stateRoot, run.id)
-  const own = removableRunPathsOf(runRoot)
-  if (resolve(target.workdir) !== resolve(own.worktree)) return null
+  const worktree = repoWorkdirOf(runRoot)
+  if (resolve(target.workdir) !== resolve(worktree)) return null
   return {
     repoPath: target.repoPath,
     runRoot,
-    worktree: own.worktree,
-    reviewSnapshots: own.reviewSnapshots,
+    worktree,
+    ...removableRunPathsOf(runRoot),
     branches: [
       ...(target.branch ? [target.branch] : []),
       squashedBranchFor(run.id),
@@ -182,9 +183,10 @@ export interface RunCleanup {
 }
 
 /**
- * Remove a repository run's worktree and review snapshots, if any are left,
- * and with `deleteBranches` its recorded branches too, after the worktree,
- * since git refuses to delete a branch a worktree has checked out. Branches
+ * Remove a repository run's worktrees and other directories, if any are
+ * left (`removableRunPathsOf`), and with `deleteBranches` its recorded
+ * branches too, after the worktrees, since git refuses to delete a branch a
+ * worktree has checked out. Branches
  * of a delivered run are never deleted. The caller decides the run may be
  * cleaned up.
  */
@@ -199,10 +201,10 @@ async function cleanUpRun(
   }
   // Called also when the directory is gone, so a worktree deleted outside
   // git leaves no stale registration that would keep its branch checked out.
-  const present = existsSync(files.worktree)
-  const warning = await removeRunWorktree(files.repoPath, files.runRoot)
-  if (warning) done.warnings.push(`worktree ${files.worktree}: ${warning}`)
-  else done.worktreeRemoved = present
+  const present = files.worktrees.some((dir) => existsSync(dir))
+  const warnings = await removeRunWorktree(files.repoPath, files.runRoot)
+  done.warnings.push(...warnings.map((warning) => `worktree ${warning}`))
+  done.worktreeRemoved = present && warnings.length === 0
   if (deleteBranches && !files.delivered)
     for (const branch of await existingBranches(files)) {
       const warning = await deleteBranch(files.repoPath, branch)
@@ -219,11 +221,12 @@ async function cleanUpRun(
  * Refused for any run `archivable` refuses: one still open is decided or
  * worked instead, and one that finished needs no one.
  *
- * A repository run's worktree and review snapshots are removed with it,
- * also when it already was archived, so asking again retries a removal
- * that failed. Its branches are kept unless `deleteBranches` says
- * otherwise (`demo archive --delete-branch`). A failed removal is a
- * warning in the answer, not a refusal: the run is archived either way.
+ * A repository run's worktree, the test probe's base worktree and its
+ * review snapshots are removed with it, also when it already was
+ * archived, so asking again retries a removal that failed. Its branches
+ * are kept unless `deleteBranches` says otherwise (`demo archive
+ * --delete-branch`). A failed removal is a warning in the answer, not a
+ * refusal: the run is archived either way.
  */
 export async function archiveRun(
   durably: AgentLoopDurably,
@@ -422,11 +425,18 @@ export async function planPrune(
       archived.has(run.id) &&
       archivable((await diagnose(durably, run, now)).kind)
     if (!files.delivered && !shelved) continue
-    if (existsSync(files.worktree)) {
-      const bytes = await sizeOf(files.worktree)
+    // Every worktree of the run counts as one entry, also when the agent's
+    // own is gone; the entry names the first one still there.
+    const left = files.worktrees.filter((dir) => existsSync(dir))
+    const [first] = left
+    if (first) {
+      const bytes = (await Promise.all(left.map(sizeOf))).reduce(
+        (sum, size) => sum + size,
+        0,
+      )
       plan.worktrees.push({
         runId: run.id,
-        path: files.worktree,
+        path: first,
         bytes,
         reason: files.delivered ? 'delivered' : 'archived',
       })

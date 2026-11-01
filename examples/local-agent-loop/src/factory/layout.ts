@@ -76,16 +76,65 @@ export function stageContextDirOf(runRoot: string): string {
 }
 
 /**
+ * The test probe's detached worktree at the base commit (ADR-0039), beside
+ * the agent's and made only with `testProbe`. The run keeps it across its
+ * waits and removes it when it ends; an archive and `demo prune --apply`
+ * remove what is left of it with the worktree.
+ */
+export function baseWorkdirOf(runRoot: string): string {
+  return join(runRoot, 'base-work')
+}
+
+/**
+ * The probe's result for one candidate, which the probe step reads back as
+ * the `test-probe` stage context. Outside both worktrees, and kept with the
+ * run like the candidate's diff.
+ */
+export function testProbeResultOf(
+  runRoot: string,
+  candidateId: string,
+): string {
+  return join(runRoot, 'test-probe', `${candidateId}.txt`)
+}
+
+/**
+ * Present while the probe runs one candidate's tests in its worktree, and
+ * removed once that worktree is back as sealed. A verify stage that finds
+ * it, after a worker died mid-probe, puts the worktree back before it
+ * checks the candidate (ADR-0039). Outside both worktrees, like the result.
+ */
+export function testProbeMarkerOf(
+  runRoot: string,
+  candidateId: string,
+): string {
+  return join(runRoot, 'test-probe', `${candidateId}.running`)
+}
+
+/**
+ * The test probe's record of its base worktree (ADR-0039): the repository
+ * it is registered in, and the untracked paths its setup left with their
+ * fingerprints. Written before the worktree is made and removed only once
+ * `git worktree list` no longer names it, so a cleanup a dying worker or a
+ * failing git cut short is found and finished by the next one, even with
+ * the directory already gone.
+ */
+export function testProbeBaseRecordOf(runRoot: string): string {
+  return join(runRoot, 'test-probe', 'base.json')
+}
+
+/**
  * The paths of a finished repository run that may be removed, and nothing
- * else of the run: its worktree and its review snapshots.
+ * else of the run: its git worktrees (the agent's, then the test probe's
+ * base, whose record goes with it) and its other directories (the review
+ * snapshots).
  */
 export function removableRunPathsOf(runRoot: string): {
-  worktree: string
-  reviewSnapshots: string
+  worktrees: string[]
+  dirs: string[]
 } {
   return {
-    worktree: repoWorkdirOf(runRoot),
-    reviewSnapshots: reviewSnapshotsDirOf(runRoot),
+    worktrees: [repoWorkdirOf(runRoot), baseWorkdirOf(runRoot)],
+    dirs: [reviewSnapshotsDirOf(runRoot)],
   }
 }
 

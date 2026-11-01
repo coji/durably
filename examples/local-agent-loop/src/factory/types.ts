@@ -28,6 +28,7 @@ import type { FactoryEvent } from './events.js'
 import type {
   Delivery,
   RepairParentConclusion,
+  StageContext,
   Target,
   TargetConfig,
 } from './target.js'
@@ -427,6 +428,58 @@ export type ParallelReviewStepResult =
   | ReviewStepResult
   | CancelledReviewStepResult
 
+/**
+ * One `testProbe` entry, fixed at trigger: the added or modified files whose
+ * repository-relative path matches `glob` are run one at a time with
+ * `command`, argv whose `{files}` elements are each replaced by that path.
+ */
+export interface TestProbeRule {
+  glob: string
+  command: string[]
+}
+
+/**
+ * One side of one probed test file: its exit code, or why it could not run
+ * (the base could not be prepared, the command did not start, or it timed
+ * out). `elapsedMs` is 0 for a side that was never started.
+ */
+export type TestProbeSide =
+  | { ran: true; exitCode: number | null; elapsedMs: number }
+  | { ran: false; reason: string; elapsedMs: number }
+
+/**
+ * One test file the probe ran on the base and on the candidate, with the
+ * last characters each side printed (empty when it printed nothing or never
+ * started). The tails are kept here whatever the result text had room for.
+ */
+export interface TestProbeFile {
+  path: string
+  command: string[]
+  base: TestProbeSide
+  candidate: TestProbeSide
+  baseOutputTail: string
+  candidateOutputTail: string
+}
+
+/**
+ * What a candidate's probe step stores: the candidate it ran on, each test
+ * file it ran, how long it took, and the result text the reviewers get as
+ * the `test-probe` stage context. A replay reads all of it back from the
+ * step and runs nothing.
+ */
+export interface TestProbeRecord {
+  candidateId: string
+  files: TestProbeFile[]
+  elapsedMs: number
+  context: StageContext
+}
+
+/** The stage context name the probe's result is registered under. */
+export const TEST_PROBE_CONTEXT = 'test-probe'
+
+/** The probe step of the verify stage whose key is `verifyKey`. */
+export const testProbeStepOf = (verifyKey: string) => `${verifyKey}:test-probe`
+
 export interface FactoryOutcome {
   approved: boolean
   conclusion:
@@ -771,8 +824,16 @@ export interface FactoryServices {
    * `repair` is `code`'s unless `separateRepairProfile(setup)` names one.
    */
   providers: Record<ProfileRole | 'repair', AgentProvider>
-  /** Rebuilt from `setup.target` on every replay. */
+  /**
+   * Rebuilt from `setup.target` on every replay, and whenever a stage's
+   * event changes it.
+   */
   target: Target
+  /**
+   * Build a target from a config, as the job does: for a stage that
+   * registers a result of its own and reviews within the same stage.
+   */
+  createTarget: (config: TargetConfig) => Target
 }
 
 export interface StageArgs {

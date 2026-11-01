@@ -211,6 +211,23 @@ export interface ReportSealedCandidate extends ReportCandidate {
 }
 
 /**
+ * One candidate's test probe (ADR-0039), as its stored step records it:
+ * read back, never run again for the report.
+ */
+export interface ReportTestProbe {
+  candidateId: string
+  /** The stage sequence of the verify entry that probed it. */
+  sequence: number
+  /** Added or modified test files that matched a glob, each run once. */
+  targets: number
+  /** Of those, the ones that ran on the base and failed there. */
+  failedOnBase: number
+  elapsedMs: number
+  /** One line per side that could not run: `<path> (<side>): <reason>`. */
+  couldNotRun: string[]
+}
+
+/**
  * One reviewer's verdict. A finished run carries the last round in its
  * output; a run waiting for approval has it only in the approval wait.
  */
@@ -893,6 +910,11 @@ export interface LoopReport {
   candidate: ReportCandidate | null
   /** Every sealed candidate with its size, oldest first. */
   candidates: ReportSealedCandidate[]
+  /**
+   * Every candidate's test probe, oldest first; empty on a run without
+   * `testProbe`. Absent on a report made before it existed.
+   */
+  testProbes?: ReportTestProbe[]
   /**
    * Whether a repair on its own profile continues the implementation
    * session, and why; null when repair runs on `code` or the run has not
@@ -1737,6 +1759,21 @@ export function reportToMarkdown(r: LoopReport): string {
     lines.push('- none')
   }
   lines.push('')
+  if (r.testProbes && r.testProbes.length > 0) {
+    lines.push(
+      '## Test probe (new and changed tests on the base and the candidate)',
+    )
+    lines.push('')
+    for (const p of r.testProbes) {
+      lines.push(
+        `- ${p.candidateId}: ${p.targets} test file(s), ${p.failedOnBase} failed on the base, ${p.couldNotRun.length} side(s) could not run, ${formatDuration(p.elapsedMs)}`,
+      )
+      // The reasons are command and git output, so none reads as Markdown.
+      if (p.couldNotRun.length > 0)
+        lines.push('', ...fencedText(p.couldNotRun.join('\n')), '')
+    }
+    lines.push('')
+  }
   lines.push('## Repair calls (session handling and cache read per call)')
   lines.push('')
   if (r.repairCalls.length > 0) {
