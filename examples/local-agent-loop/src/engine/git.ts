@@ -145,6 +145,17 @@ export function describeGitFailure(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/** How a warning ends when no retry can remove the directory it names. */
+const REMOVE_BY_HAND = 'remove the directory by hand'
+
+/**
+ * Whether `warning` says no retry can remove its directory, so asking again
+ * would only repeat it (`describeRemoveFailure`).
+ */
+export function needsRemovalByHand(warning: string): boolean {
+  return warning.endsWith(`: ${REMOVE_BY_HAND}`)
+}
+
 /**
  * A failed `git worktree remove` of `dir` as one line: git's words, or, when
  * it was stopped at its limit, that `dir` may be partly removed. `listed`
@@ -163,7 +174,7 @@ function describeRemoveFailure(
       ? `git worktree remove was stopped at its ${formatDuration(error.timeoutMs, 'en')} limit before it finished; ${dir} may be partly removed`
       : describeGitFailure(error)
   if (listed === false)
-    return `${failure}. git no longer lists ${dir} as a worktree, so neither archive nor ${DEMO} prune --apply can remove it: remove the directory by hand`
+    return `${failure}. git no longer lists ${dir} as a worktree, so neither archive nor ${DEMO} prune --apply can remove it: ${REMOVE_BY_HAND}`
   if (error instanceof SpawnTimeoutError)
     return listed
       ? `${failure}. git still lists it, so ${DEMO} prune --apply continues the removal`
@@ -204,9 +215,10 @@ export async function forceRemoveWorktree(
   if (!refused) return null
   // Whether a retry can still finish it: git refuses a directory it no
   // longer lists, as after a removal stopped once dir/.git was deleted.
-  const listed = existsSync(dir)
-    ? await worktreeRegistered(repo, dir).catch(() => null)
-    : true
+  const listed = await worktreeRegistered(repo, dir).catch(() => null)
+  // Stopped after it removed the directory, and the prune took the rest:
+  // nothing is left to remove.
+  if (listed === false && !existsSync(dir)) return null
   return describeRemoveFailure(refused, dir, listed)
 }
 

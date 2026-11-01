@@ -50,6 +50,7 @@ import {
 } from './engine/compare.js'
 import { DEMO } from './engine/failure-reasons.js'
 import { formatCost, formatDuration } from './engine/format.js'
+import { needsRemovalByHand } from './engine/git.js'
 import {
   reportToJson,
   reportToMarkdown,
@@ -1400,9 +1401,9 @@ if (cmd === 'worker') {
       printWarnings(warnings)
       // Only what git refused is retried by asking again, once its cause is
       // gone; a worktree git no longer lists is removed by hand, as its
-      // warning says. A run that could not be read or archived has to be
+      // warning says, so it alone gets no retry hint. A run that could not be read or archived has to be
       // looked at first.
-      if (warnings.length > 0)
+      if (warnings.some((w) => !needsRemovalByHand(w)))
         console.error(
           `run ${DEMO} archive --series ${seriesId}${a['delete-branch'] === 'true' ? ' --delete-branch' : ''} again to retry what git refused`,
         )
@@ -1440,7 +1441,7 @@ if (cmd === 'worker') {
     if (done.deletedBranches.length > 0)
       console.log(`deleted branches: ${done.deletedBranches.join(', ')}`)
     printWarnings(done.warnings)
-    if (done.warnings.length > 0)
+    if (done.warnings.some((w) => !needsRemovalByHand(w)))
       console.error(
         `run ${DEMO} archive --run ${runId}${a['delete-branch'] === 'true' ? ' --delete-branch' : ''} again to retry what git refused`,
       )

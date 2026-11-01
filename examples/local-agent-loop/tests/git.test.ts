@@ -21,6 +21,7 @@ import {
   ensureSquashedBranch,
   describeCommitChanges,
   forceRemoveWorktree,
+  needsRemovalByHand,
   diffStat,
   isDirty,
   discardWorktree,
@@ -204,13 +205,21 @@ describe('git engine', () => {
       branch: 'work/orphan',
     })
     await rm(join(orphan, '.git'))
-    for (let i = 0; i < 2; i++)
+    for (let i = 0; i < 2; i++) {
+      const warning = (await forceRemoveWorktree(repo, orphan)) ?? ''
+      assert.ok(needsRemovalByHand(`worktree ${warning}`), warning)
       assert.match(
-        (await forceRemoveWorktree(repo, orphan)) ?? '',
+        warning,
         new RegExp(
           `git no longer lists ${orphan.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} as a worktree, so neither archive nor pnpm --filter example-local-agent-loop demo prune --apply can remove it: remove the directory by hand$`,
         ),
       )
+    }
+    // Any other warning can be retried.
+    assert.equal(
+      needsRemovalByHand('worktree x: failed with code 128: locked'),
+      false,
+    )
     // A refusal that is not the limit keeps git's own words.
     await addWorktree({
       repo,
