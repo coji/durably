@@ -95,7 +95,12 @@ export async function isDirty(
   options: { includeUntracked?: boolean } = {},
 ): Promise<boolean> {
   const args = ['status', '--porcelain=v1']
-  if (options.includeUntracked === false) args.push('--untracked-files=no')
+  // Without untracked files, a nested repository counts as changed when a
+  // tracked file in it is edited or its `HEAD` moved, as `changedGitlinks`
+  // sees it, whatever `diff.ignoreSubmodules` or `submodule.<name>.ignore`
+  // config would hide; one git cannot read makes this throw.
+  if (options.includeUntracked === false)
+    args.push('--untracked-files=no', '--ignore-submodules=untracked')
   const out = await git(cwd, args)
   return out.trim().length > 0
 }
@@ -642,7 +647,10 @@ export async function changedGitlinks(
       '--porcelain=v1',
       '-z',
       '--untracked-files=no',
-      '--ignore-submodules=none',
+      // Unlike `none`, this skips listing each nested repository's untracked
+      // files, which no reset touches, while still overriding config that
+      // hides changed nested repositories.
+      '--ignore-submodules=untracked',
     ],
     pass,
   )
@@ -694,7 +702,8 @@ export async function untrackedPaths(
  * ignored files does not, and a nested repository does. Empty when the clean
  * would remove nothing; for a finite `limit` only that and the first few
  * names matter, so a long listing is not read in full, while an infinite
- * one reads it all.
+ * one reads it all. Each path is the literal name relative to `cwd`, with
+ * git's quoting undone.
  */
 export async function someUntracked(
   cwd: string,
@@ -702,7 +711,10 @@ export async function someUntracked(
   signal?: AbortSignal,
 ): Promise<string[]> {
   const cap = Number.isFinite(limit) ? 100_000 : Number.POSITIVE_INFINITY
-  const out = await git(cwd, ['clean', '-ffdn'], {
+  // `git clean` has no `-z`; with `core.quotePath` off it quotes only a
+  // name holding `"`, `\` or a control character, which `unquotePath`
+  // undoes, and a newline in a name never splits a line.
+  const out = await git(cwd, ['-c', 'core.quotePath=false', 'clean', '-ffdn'], {
     // The dry run's "Would remove" wording is translated in other locales.
     env: { LC_ALL: 'C' },
     maxOutputChars: cap,
@@ -715,6 +727,49 @@ export async function someUntracked(
     .map((line) => /^Would remove (.+)$/.exec(line)?.[1])
     .filter((path): path is string => path !== undefined)
     .slice(0, limit)
+    .map(unquotePath)
+}
+
+const C_ESCAPES: Record<string, number> = {
+  a: 7,
+  b: 8,
+  t: 9,
+  n: 10,
+  v: 11,
+  f: 12,
+  r: 13,
+  '"': 34,
+  '\\': 92,
+}
+
+/**
+ * A path as git prints it outside `-z` output, with its C-style quoting
+ * undone: the surrounding double quotes go, and each escape, a three-digit
+ * octal one for a byte included, becomes what it stands for, read as UTF-8.
+ * A path git did not quote comes back as it is.
+ */
+function unquotePath(quoted: string): string {
+  if (!(quoted.length >= 2 && quoted.startsWith('"') && quoted.endsWith('"')))
+    return quoted
+  const bytes: number[] = []
+  const body = Buffer.from(quoted.slice(1, -1), 'utf8')
+  for (let i = 0; i < body.length; i++) {
+    const byte = body[i] ?? 0
+    if (byte !== 92) {
+      bytes.push(byte)
+      continue
+    }
+    const next = String.fromCharCode(body[i + 1] ?? 0)
+    const octal = /^[0-7]{3}$/.exec(body.subarray(i + 1, i + 4).toString())
+    if (octal) {
+      bytes.push(Number.parseInt(octal[0], 8))
+      i += 3
+    } else {
+      bytes.push(C_ESCAPES[next] ?? body[i + 1] ?? 92)
+      i += 1
+    }
+  }
+  return Buffer.from(bytes).toString('utf8')
 }
 
 /** Read one file's contents at a commit without checking it out. */
