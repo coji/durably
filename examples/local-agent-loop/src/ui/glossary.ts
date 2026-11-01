@@ -565,6 +565,8 @@ export const BULK = {
   archiveNote:
     'どのタスクも、止まった実行だけをアーカイブします。記録はそのまま残り、終わったタスクに移ります。',
   archived: (n: string) => `${n} 件のタスクをアーカイブしました`,
+  archivedPartly: (n: string, partly: string) =>
+    `${n} 件のタスクをアーカイブし、${partly} 件は一部の実行だけアーカイブしました`,
   unarchived: (n: string) => `${n} 件の実行をアーカイブから戻しました`,
   archiving: (done: string, total: string) =>
     `タスクをアーカイブしています（${total} 件中 ${done} 件）`,
@@ -574,6 +576,7 @@ export const BULK = {
     `実行をアーカイブから戻しています（${total} 件中 ${done} 件）`,
   undo: 'まとめて戻す',
   failed: (n: string) => `${n} 件はできませんでした`,
+  partly: (n: string) => `${n} 件は一部の実行をアーカイブできませんでした`,
 } as const
 
 // ---------------------------------------------------------------- shell

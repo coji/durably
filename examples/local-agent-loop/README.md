@@ -463,9 +463,10 @@ pnpm --filter example-local-agent-loop demo unarchive --run <runId>
   片付けをやり直します。`unarchive` しても worktree は元に戻りません。
 - `git worktree remove` には 10 分の上限があります。依存パッケージを入れた大きな
   worktree は、消すのに数分かかることがあるためです。上限で止まったときは、worktree が
-  一部だけ消えて残ることがあり、警告がそう伝えます。もう一度 `archive` を打つか
-  `demo prune --apply` で続きを消せます。web UI は書き込みを1つずつ処理するので、
-  片付けのあいだはほかの操作が待ちます。
+  一部だけ消えて残ることがあり、警告がそのパスとともにそう伝えます。`git worktree list`
+  にまだ載っていれば `demo prune --apply` で続きを消せます。載っていなければ、git は
+  そのディレクトリを worktree として扱えず、ほかの方法では消さないので、手で消します。
+  web UI は書き込みを1つずつ処理するので、片付けのあいだはほかの操作が待ちます。
 - アーカイブの印を付けた時点で応答を返し、worktree を後で消す形はとっていません。
   消せなかったことを応答で伝えられなくなり、CLI と web UI が同じ関数から同じ結果を
   受け取れなくなるためです。

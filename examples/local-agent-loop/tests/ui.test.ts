@@ -3574,7 +3574,7 @@ describe('numbers on the screens', () => {
     assert.ok(text.includes('worktree /w/b: git worktree remove failed'))
   })
 
-  it('keeps what a task archived and why git left its worktree when another of its runs failed', () => {
+  it('keeps what a task archived and why git left its worktree when another of its runs failed', async () => {
     const answer: SeriesResult = {
       archived: [
         { runId: 'd1', changed: true, warnings: [] },
@@ -3597,18 +3597,13 @@ describe('numbers on the screens', () => {
       archived: [],
       warnings: [],
     })
-    const { error, ...kept } = result
-    const outcome: BulkOutcome = {
-      action: 'archive-series',
-      done: [],
-      failed: [
-        {
-          item: { runId: 'd1', name: 'task d' },
-          ...kept,
-          error: error ?? '',
-        },
-      ],
-    }
+    // Through the path the page takes: each answer read as the notice
+    // reads it, one item after another.
+    const outcome = await sendEach(
+      { action: 'archive-series', items: [{ runId: 'd1', name: 'task d' }] },
+      async () => result,
+      () => {},
+    )
     // The runs it did archive can be brought back; the warning and the
     // error both show under the task's name.
     assert.deepEqual(undoItems(outcome), [
@@ -3620,11 +3615,14 @@ describe('numbers on the screens', () => {
         createElement(BulkNotice, { outcome, onUndo: () => {} }),
       ),
     )
-    assert.ok(text.includes(BULK.archived('0')))
+    // Counted as partly archived, not as a task that archived nothing.
+    assert.ok(text.includes(BULK.archivedPartly('0', '1')))
+    assert.ok(!text.includes(BULK.archived('0')))
     assert.ok(text.includes(BULK.undo))
     assert.ok(text.includes(ACTION_DONE.worktreeLeft))
     assert.ok(text.includes('worktree /w/d2: git worktree remove was stopped'))
-    assert.ok(text.includes(BULK.failed('1')))
+    assert.ok(text.includes(BULK.partly('1')))
+    assert.ok(!text.includes(BULK.failed('1')))
     assert.ok(text.includes('d3: refusing to archive d3'))
     assert.equal(text.split('task d').length - 1, 2)
   })

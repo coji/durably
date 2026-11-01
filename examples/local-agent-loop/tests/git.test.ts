@@ -183,12 +183,12 @@ describe('git engine', () => {
   it('says a worktree removal stopped at its limit may be partly done, and removes it when asked again', async () => {
     const wt = join(root, 'wt-slow')
     await addWorktree({ repo, dir: wt, baseCommit: base, branch: 'work/slow' })
-    // Killed before git can finish: the warning names the limit and the way
-    // to continue, not git's exit code.
+    // Killed before git can finish: the warning names the limit, the
+    // directory and the ways to finish, not git's exit code.
     const stopped = await forceRemoveWorktree(repo, wt, 1)
-    assert.match(
-      stopped ?? '',
-      /^git worktree remove was stopped at its <0\.1s limit before it finished; the directory may be partly removed\. Archive the run again or run demo prune --apply to continue$/,
+    assert.equal(
+      stopped,
+      `git worktree remove was stopped at its <0.1s limit before it finished; ${wt} may be partly removed. If git worktree list still names it, pnpm --filter example-local-agent-loop demo prune --apply continues the removal; otherwise remove the directory by hand`,
     )
     // The registration is kept, so asking again with the usual limit
     // finishes the removal.
@@ -210,9 +210,10 @@ describe('git engine', () => {
     assert.equal(await forceRemoveWorktree(repo, wt), null)
     // The same for the test probe's base, removed with -f -f.
     await addWorktree({ repo, dir: wt, baseCommit: base })
-    assert.match(
-      (await removeWorktreeRegistration(repo, wt, 1)) ?? '',
-      /^git worktree remove was stopped at its <0\.1s limit before it finished; the directory may be partly removed\./,
+    assert.ok(
+      (await removeWorktreeRegistration(repo, wt, 1))?.startsWith(
+        `git worktree remove was stopped at its <0.1s limit before it finished; ${wt} may be partly removed.`,
+      ),
     )
     assert.equal(await removeWorktreeRegistration(repo, wt), null)
   })

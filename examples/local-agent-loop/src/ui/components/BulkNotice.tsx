@@ -44,7 +44,8 @@ export interface BulkOutcome {
   /**
    * The items refused, each with the CLI's own words. A task whose
    * `archive-series` archived some of its runs and failed on others keeps
-   * the runs it archived and their warnings here too.
+   * the runs it archived and their warnings here too, and the notice
+   * counts it apart from one that archived nothing.
    */
   failed: (BulkItemResult & { error: string })[]
 }
@@ -124,10 +125,36 @@ export function undoItems(outcome: BulkOutcome): BulkItem[] {
   )
 }
 
+/** Items with why each failed, under a line that counts them. */
+function FailedList({
+  heading,
+  items,
+}: {
+  heading: string
+  items: BulkOutcome['failed']
+}) {
+  if (items.length === 0) return null
+  return (
+    <>
+      <p>{heading}</p>
+      <ul className="flex flex-col gap-1">
+        {items.map(({ item, error }) => (
+          <li key={item.runId}>
+            <p>{item.name}</p>
+            <p className="font-code break-all">{error}</p>
+          </li>
+        ))}
+      </ul>
+    </>
+  )
+}
+
 /**
  * What a bulk action came to: how many it did, the way back from an
- * archive, each item whose cleanup git refused with why, and each item it
- * could not do with why.
+ * archive, each item whose cleanup git refused with why, each task it
+ * archived only some runs of with why, and each item it could not do with
+ * why. A task that archived some of its runs is counted apart from one
+ * that archived nothing.
  */
 export function BulkNotice({
   outcome,
@@ -141,10 +168,17 @@ export function BulkNotice({
   const { done, failed } = outcome
   const left = [...done, ...failed].filter((d) => d.warnings.length > 0)
   const back = outcome.action === 'archive-series' ? undoItems(outcome) : []
+  const partly = failed.filter((f) => f.archived.length > 0)
+  const refused = failed.filter((f) => f.archived.length === 0)
   const title =
-    outcome.action === 'archive-series'
-      ? BULK.archived(formatCount(done.length))
-      : BULK.unarchived(formatCount(done.length))
+    outcome.action === 'unarchive'
+      ? BULK.unarchived(formatCount(done.length))
+      : partly.length > 0
+        ? BULK.archivedPartly(
+            formatCount(done.length),
+            formatCount(partly.length),
+          )
+        : BULK.archived(formatCount(done.length))
   return (
     <Notice
       tone={failed.length > 0 ? 'failed' : undefined}
@@ -184,19 +218,14 @@ export function BulkNotice({
           </ul>
         </>
       ) : null}
-      {failed.length > 0 ? (
-        <>
-          <p>{BULK.failed(formatCount(failed.length))}</p>
-          <ul className="flex flex-col gap-1">
-            {failed.map(({ item, error }) => (
-              <li key={item.runId}>
-                <p>{item.name}</p>
-                <p className="font-code break-all">{error}</p>
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : null}
+      <FailedList
+        heading={BULK.partly(formatCount(partly.length))}
+        items={partly}
+      />
+      <FailedList
+        heading={BULK.failed(formatCount(refused.length))}
+        items={refused}
+      />
     </Notice>
   )
 }
