@@ -1,7 +1,7 @@
 import type { Task } from '../../../engine/status'
 import type { Act, ActionName } from '../../components/ActionNotice'
 import { RunActions } from '../../components/RunActions'
-import { runHref } from '../../components/RunLink'
+import { useRunHref } from '../../components/RunLink'
 import { StatusBadge } from '../../components/StatusBadge'
 import {
   ArchivedMark,
@@ -35,6 +35,7 @@ export function TaskRuns({
   aside?: string | null
   onAsking?: (runId: string, action: ActionName | null) => void
 }) {
+  const runHref = useRunHref()
   return (
     <ol className="border-line flex flex-col border-t">
       {task.runs.map((r) => {

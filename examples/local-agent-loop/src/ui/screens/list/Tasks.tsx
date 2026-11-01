@@ -5,7 +5,7 @@ import type { Act } from '../../components/ActionNotice'
 import { EmptyState } from '../../components/EmptyState'
 import { LiveProgress } from '../../components/LiveProgress'
 import { RunActions } from '../../components/RunActions'
-import { runHref } from '../../components/RunLink'
+import { useRunHref } from '../../components/RunLink'
 import { StageTrack } from '../../components/StageTrack'
 import {
   ArchivedMark,
@@ -133,6 +133,7 @@ function TaskItem({
   selection?: Selection
 }) {
   const [asking, setAsking] = useState<string | null>(null)
+  const runHref = useRunHref()
   const rep = rows.get(task.representative)
   const name = taskName(task, rows)
   if (!rep || !name) return null

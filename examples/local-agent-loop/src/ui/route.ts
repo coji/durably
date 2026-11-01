@@ -35,3 +35,18 @@ export function withRepo(path: string, repo?: string): string {
 export function pageHref(page: 'runs' | 'compare', repo?: string): string {
   return withRepo(page === 'runs' ? '#/' : '#/compare', repo)
 }
+
+/**
+ * Where the list or the summary should be once the server says which
+ * repository it counted, `counted`: all of them for a key no run has any
+ * more, or a repository's own key for another spelling of its path. Null
+ * when the URL already says so, and on any other page.
+ */
+export function reconciledHref(
+  route: Route,
+  counted: string | null,
+): string | null {
+  if (route.page !== 'runs' && route.page !== 'compare') return null
+  const repo = counted ?? undefined
+  return route.repo === repo ? null : pageHref(route.page, repo)
+}

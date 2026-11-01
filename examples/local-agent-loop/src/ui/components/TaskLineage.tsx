@@ -1,6 +1,6 @@
 import { COMMON, LIST } from '../glossary'
 import type { LineageRun } from '../server'
-import { runHref } from './RunLink'
+import { useRunHref } from './RunLink'
 import { StatusBadge } from './StatusBadge'
 import { ArchivedMark, SupersededMark } from './SupersededMark'
 import { runRole, runState } from './TaskRow'
@@ -21,6 +21,7 @@ export function TaskLineage({
   current: string
   now: string
 }) {
+  const runHref = useRunHref()
   if (runs.length <= 1) return null
   return (
     <nav aria-label={LIST.lineage} className="flex flex-col gap-1 text-xs">

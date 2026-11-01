@@ -231,6 +231,8 @@ export function App({ token }: { token: string }) {
       history.replaceState(null, '', withRepo(runHref(runId), repo))
   }, [runId, runRepo, repo])
   const query = withRepo('', repo)
+  // Switching repositories replaces the page, the pressed link with it.
+  useFocusOnChange(query)
   // The design page reads nothing from the API, so nothing polls there.
   if (route.page === 'design') return <DesignScreen route={route} />
   // Keyed by URL, so moving to another page stops the old page's polling
@@ -258,6 +260,7 @@ export function App({ token }: { token: string }) {
         route={route}
         repo={repo}
         url={`/api/trend${query}`}
+        counted={(data) => data.repo}
         heading={() => SHELL.compare}
         render={(data) => <TrendScreen data={data} onView={setCompareView} />}
       />
@@ -267,6 +270,7 @@ export function App({ token }: { token: string }) {
         route={route}
         repo={repo}
         url={`/api/compare${query}`}
+        counted={(data) => data.repo}
         heading={() => SHELL.compare}
         render={(data) => <CompareScreen data={data} onView={setCompareView} />}
       />
@@ -277,6 +281,7 @@ export function App({ token }: { token: string }) {
       route={route}
       repo={repo}
       url={`/api/runs${query}`}
+      counted={(data) => data.repo}
       notice={notice}
       heading={() => SHELL.runs}
       render={(data) => <RunsScreen data={data} act={act} actMany={actMany} />}

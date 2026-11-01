@@ -8,13 +8,14 @@
  * by an in-process fake-mode worker against that same database.
  */
 import assert from 'node:assert/strict'
-import { spawn, type ChildProcess } from 'node:child_process'
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import {
   mkdir,
   mkdtemp,
   readdir,
   readFile,
+  realpath,
   rm,
   symlink,
   writeFile,
@@ -78,6 +79,7 @@ import {
 } from '../src/ui/components/BulkNotice.js'
 import { RepoFilter } from '../src/ui/components/RepoFilter.js'
 import { ReviewFindingTitles } from '../src/ui/components/ReviewFindingTitles.js'
+import { RepoContext, RunLink } from '../src/ui/components/RunLink.js'
 import { openNow } from '../src/ui/components/TaskRow.js'
 import {
   ACTION,
@@ -136,7 +138,12 @@ import {
   type LogView,
 } from '../src/ui/components/trace/AttemptLog.js'
 import { pollEvery } from '../src/ui/poll.js'
-import { pageHref, parseRoute, withRepo } from '../src/ui/route.js'
+import {
+  pageHref,
+  parseRoute,
+  reconciledHref,
+  withRepo,
+} from '../src/ui/route.js'
 import { GroupPanel } from '../src/ui/screens/compare/GroupPanel.js'
 import { TrendScreen } from '../src/ui/screens/CompareScreen.js'
 import { DesignScreen } from '../src/ui/screens/DesignScreen.js'
@@ -237,6 +244,37 @@ describe('repositories', () => {
     )
   })
 
+  it('keys one repository by one key, however its path was written', async () => {
+    // Paths git can't answer for are only resolved.
+    assert.equal(repoKeyOf(repo('/w/durably/')), '/w/durably')
+    assert.equal(repoKeyOf(repo('/w/x/../durably')), '/w/durably')
+    const all = scopeRuns(
+      [
+        { id: '1', input: repo('/w/durably') },
+        { id: '2', input: repo('/w/durably/') },
+      ],
+      null,
+    )
+    assert.deepEqual(all.scope.repos, [{ key: '/w/durably', name: 'durably' }])
+    // Another spelling of a repository's path asks for that repository.
+    assert.equal(
+      scopeRuns([{ id: '1', input: repo('/w/durably') }], '/w/durably/').scope
+        .repo,
+      '/w/durably',
+    )
+    // A directory inside a repository is that repository's top level.
+    const dir = await mkdtemp(join(tmpdir(), 'repo-key-'))
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: dir })
+      await mkdir(join(dir, 'app'))
+      const top = await realpath(dir)
+      assert.equal(repoKeyOf(repo(join(dir, 'app'))), top)
+      assert.equal(repoKeyOf(repo(`${dir}/`)), top)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   it('names a repository by its directory, with parents only where two names are the same', () => {
     const names = repoNames([
       '/a/x/public',
@@ -256,6 +294,25 @@ describe('repositories', () => {
       [UNKNOWN_REPO]: REPO.unknown,
     })
     assert.equal(REPO.subject, '同梱題材')
+    // A repository named as the sample or an unknown one is told apart.
+    assert.deepEqual(
+      Object.fromEntries(
+        repoNames([
+          '/w/同梱題材',
+          `/w/${REPO.unknown}`,
+          `/${REPO.subject}`,
+          SUBJECT_REPO,
+          UNKNOWN_REPO,
+        ]),
+      ),
+      {
+        '/w/同梱題材': 'w/同梱題材',
+        [`/w/${REPO.unknown}`]: `w/${REPO.unknown}`,
+        [`/${REPO.subject}`]: `/${REPO.subject}`,
+        [SUBJECT_REPO]: REPO.subject,
+        [UNKNOWN_REPO]: REPO.unknown,
+      },
+    )
     // Only the two that clash get a parent.
     assert.deepEqual(
       Object.fromEntries(repoNames(['/a/public', '/b/public', '/c/site'])),
@@ -3656,12 +3713,45 @@ describe('routes', () => {
     assert.equal(pageHref('compare'), '#/compare')
     assert.deepEqual(parseRoute('#/?repo='), { page: 'runs' })
     assert.deepEqual(parseRoute('#/runs/a%3Fb'), { page: 'run', id: 'a?b' })
+    // A run's link keeps the page's repository, also opened in a new tab.
+    assert.ok(
+      renderToStaticMarkup(
+        createElement(
+          RepoContext,
+          { value: path },
+          createElement(RunLink, { id: 'a/b', name: 'n' }),
+        ),
+      ).includes(`href="${withRepo('#/runs/a%2Fb', path)}"`),
+    )
+    assert.match(
+      renderToStaticMarkup(createElement(RunLink, { id: 'a/b', name: 'n' })),
+      /href="#\/runs\/a%2Fb"/,
+    )
     // A run's page keeps the list's repository, so its links back do.
     assert.deepEqual(parseRoute(withRepo('#/runs/a%2Fb', path)), {
       page: 'run',
       id: 'a/b',
       repo: path,
     })
+  })
+
+  it('sets the URL to the repository the server counted', () => {
+    const runs = parseRoute(pageHref('runs', '/gone'))
+    // A key no run has any more leaves the URL.
+    assert.equal(reconciledHref(runs, null), '#/')
+    assert.equal(
+      reconciledHref(parseRoute(pageHref('compare', '/w/a/')), '/w/a'),
+      pageHref('compare', '/w/a'),
+    )
+    assert.equal(
+      reconciledHref(parseRoute(pageHref('runs', '/w/a')), '/w/a'),
+      null,
+    )
+    assert.equal(reconciledHref(parseRoute('#/'), null), null)
+    assert.equal(
+      reconciledHref(parseRoute('#/runs/x?repo=%2Fgone'), null),
+      null,
+    )
   })
 })
 

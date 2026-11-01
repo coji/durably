@@ -20,6 +20,7 @@
  *   agent log, or its check's stdout or stderr, from a path the attempt
  *   recorded, and only inside the run's own directory.
  */
+import { execFileSync } from 'node:child_process'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { open, realpath } from 'node:fs/promises'
@@ -255,7 +256,8 @@ export interface RunDetailResponse {
 /**
  * Tasks whose newest run finished in the last 30 days, by week and the first
  * run's code model and effort, fake tasks left out: what `compare --trend
- * --format json` prints.
+ * --format json` prints, with the repositories, counting only one
+ * repository's tasks when narrowed to it.
  */
 export type TrendResponse = Trend & RepoScope
 
@@ -304,11 +306,40 @@ export const SUBJECT_REPO = 'subject'
 /** The key of a repository run whose input names no path. */
 export const UNKNOWN_REPO = 'unknown'
 
+/** Each path's repository top level, asked of git once per path. */
+const topLevels = new Map<string, string>()
+
 /**
- * Which repository a run worked on, from its stored input: the target's
- * `repoPath`, the bundled sample's own key, or the unknown key for any
- * other input, such as a repository run without a path. A path always
- * starts with `/`, so it is never mistaken for either.
+ * The repository a path is in, by git's name for its top level, so a
+ * trailing slash, a `..` or a directory inside it all name one repository;
+ * the path itself, resolved, when git can't say, as for a repository that
+ * is gone. Git is asked once per path, since the page polls.
+ */
+export function repoTopLevel(path: string): string {
+  const resolved = resolve(path)
+  let top = topLevels.get(resolved)
+  if (top === undefined) {
+    try {
+      top =
+        execFileSync('git', ['rev-parse', '--show-toplevel'], {
+          cwd: resolved,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+          timeout: 5000,
+        }).trim() || resolved
+    } catch {
+      top = resolved
+    }
+    topLevels.set(resolved, top)
+  }
+  return top
+}
+
+/**
+ * Which repository a run worked on, from its stored input: the top level
+ * of the target's `repoPath`, the bundled sample's own key, or the unknown
+ * key for any other input, such as a repository run without a path. A
+ * path always starts with `/`, so it is never mistaken for either.
  */
 export function repoKeyOf(input: unknown): string {
   const target = (input as { target?: { kind?: string; repoPath?: unknown } })
@@ -317,18 +348,20 @@ export function repoKeyOf(input: unknown): string {
   return target?.kind === 'repo' &&
     typeof target.repoPath === 'string' &&
     target.repoPath.length > 0
-    ? target.repoPath
+    ? repoTopLevel(target.repoPath)
     : UNKNOWN_REPO
 }
 
 /**
  * A short name for each repository key: the directory's own name, with as
  * many parent directories before it as it takes to tell apart repositories
- * whose names are the same. The bundled sample and a run without a path
- * have names of their own.
+ * whose names are the same, or the same as the names the bundled sample and
+ * a run without a path always have. A path that can't grow past such a name
+ * is named by itself.
  */
 export function repoNames(keys: Iterable<string>): Map<string, string> {
   const names = new Map<string, string>()
+  const taken = new Set<string>([REPO.subject, REPO.unknown])
   const parts = new Map<string, string[]>()
   for (const key of new Set(keys)) {
     if (key === SUBJECT_REPO) names.set(key, REPO.subject)
@@ -343,8 +376,8 @@ export function repoNames(keys: Iterable<string>): Map<string, string> {
     const byName = new Map<string, string[]>()
     for (const key of parts.keys())
       byName.set(nameOf(key), [...(byName.get(nameOf(key)) ?? []), key])
-    for (const same of byName.values())
-      if (same.length > 1)
+    for (const [name, same] of byName)
+      if (same.length > 1 || taken.has(name))
         for (const key of same) {
           const d = depth.get(key) ?? 1
           if (d < (parts.get(key)?.length ?? 0)) {
@@ -353,7 +386,8 @@ export function repoNames(keys: Iterable<string>): Map<string, string> {
           }
         }
   }
-  for (const key of parts.keys()) names.set(key, nameOf(key))
+  for (const key of parts.keys())
+    names.set(key, taken.has(nameOf(key)) ? key : nameOf(key))
   return names
 }
 
@@ -385,7 +419,10 @@ export function scopeRuns<
         Number(last(x.key)) - Number(last(y.key)) ||
         x.name.localeCompare(y.name),
     )
-  const repo = repos.some((r) => r.key === wanted) ? wanted : null
+  // A path asked for with a trailing slash or a `..` is the same one; git
+  // is never asked about a path that came only from a URL.
+  const asked = wanted?.startsWith('/') ? resolve(wanted) : wanted
+  const repo = repos.some((r) => r.key === asked) ? asked : null
   return {
     scope: { repos, repo },
     names,
