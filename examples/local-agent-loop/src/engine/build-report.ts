@@ -419,9 +419,14 @@ function asTimeout(value: unknown): AgentTimeout | null {
     : null
 }
 
-/** Every completed `stage:<n>:code:candidate` step, in sealing order. */
-function sealedCandidates(steps: StoredStep[]): ReportSealedCandidate[] {
-  const sealed = steps
+/**
+ * Every completed `stage:<n>:code:candidate` step, in sealing order, with
+ * its iteration: the one numbering both the candidates and their notes use.
+ */
+function sealedCodeSteps(
+  steps: StoredStep[],
+): { candidate: ReportSealedCandidate; output: unknown }[] {
+  return steps
     .flatMap((s) => {
       const where = stageStep(s.name)
       const candidate = asReportCandidate(s.output)
@@ -429,11 +434,19 @@ function sealedCandidates(steps: StoredStep[]): ReportSealedCandidate[] {
         where?.stage === 'code' &&
         where.part === 'candidate' &&
         candidate
-        ? [{ ...candidate, sequence: where.sequence }]
+        ? [{ candidate, sequence: where.sequence, output: s.output }]
         : []
     })
     .sort((x, y) => x.sequence - y.sequence)
-  return sealed.map((c, i) => ({ ...c, iteration: i + 1 }))
+    .map(({ candidate, sequence, output }, i) => ({
+      candidate: { ...candidate, sequence, iteration: i + 1 },
+      output,
+    }))
+}
+
+/** Every completed `stage:<n>:code:candidate` step, in sealing order. */
+function sealedCandidates(steps: StoredStep[]): ReportSealedCandidate[] {
+  return sealedCodeSteps(steps).map((s) => s.candidate)
 }
 
 /**
@@ -443,26 +456,21 @@ function sealedCandidates(steps: StoredStep[]): ReportSealedCandidate[] {
  * iteration of the rest.
  */
 function implementerNotesOf(steps: StoredStep[]): ReportImplementerNotes[] {
-  return steps
-    .flatMap((s) => {
-      const where = stageStep(s.name)
-      return s.status === 'completed' &&
-        where?.stage === 'code' &&
-        where.part === 'candidate' &&
-        asReportCandidate(s.output)
-        ? [{ sequence: where.sequence, output: s.output }]
-        : []
-    })
-    .sort((x, y) => x.sequence - y.sequence)
-    .flatMap((s, i) => {
-      const stored = (
-        s.output as { implementerNotes?: Partial<StoredImplementerNotes> }
-      ).implementerNotes
-      return (stored?.role === 'implement' || stored?.role === 'repair') &&
-        typeof stored.notes === 'string'
-        ? [{ iteration: i + 1, role: stored.role, notes: stored.notes }]
-        : []
-    })
+  return sealedCodeSteps(steps).flatMap(({ candidate, output }) => {
+    const stored = (
+      output as { implementerNotes?: Partial<StoredImplementerNotes> }
+    ).implementerNotes
+    return (stored?.role === 'implement' || stored?.role === 'repair') &&
+      typeof stored.notes === 'string'
+      ? [
+          {
+            iteration: candidate.iteration,
+            role: stored.role,
+            notes: stored.notes,
+          },
+        ]
+      : []
+  })
 }
 
 /**

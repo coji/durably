@@ -700,7 +700,7 @@ export class RepoTarget implements Target {
     }))
   }
 
-  async prepareStageContext(implementerNotes: string | null = null): Promise<{
+  async prepareStageContext(implementerNotes: string | null): Promise<{
     dir: string
     files: string[]
     implementerNotes: string | null
@@ -710,27 +710,28 @@ export class RepoTarget implements Target {
     // Named with a dot, which no stage context's name has, so it never
     // takes the place of a stage result's copy.
     const notesPath = join(dir, 'implementer-notes.untrusted.txt')
-    if (implementerNotes === null) await rm(notesPath, { force: true })
-    if (copies.length === 0 && implementerNotes === null) return null
+    const notesCopy =
+      implementerNotes === null
+        ? null
+        : { path: notesPath, content: implementerNotes }
+    if (!notesCopy) await rm(notesPath, { force: true })
+    if (copies.length === 0 && !notesCopy) return null
     await mkdir(dir, { recursive: true })
     // From the stored content every time, so a copy removed or changed
     // since the stage settled is put back as it was; one that still holds
     // it is left alone.
     await Promise.all(
-      [
-        ...copies,
-        ...(implementerNotes === null
-          ? []
-          : [{ path: notesPath, content: implementerNotes }]),
-      ].map(async ({ path, content }) => {
-        const current = await readFile(path, 'utf8').catch(() => null)
-        if (current !== content) await writeFile(path, content)
-      }),
+      [...copies, ...(notesCopy ? [notesCopy] : [])].map(
+        async ({ path, content }) => {
+          const current = await readFile(path, 'utf8').catch(() => null)
+          if (current !== content) await writeFile(path, content)
+        },
+      ),
     )
     return {
       dir,
       files: copies.map((copy) => copy.path),
-      implementerNotes: implementerNotes === null ? null : notesPath,
+      implementerNotes: notesCopy?.path ?? null,
     }
   }
 

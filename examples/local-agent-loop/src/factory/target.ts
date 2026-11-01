@@ -397,7 +397,7 @@ export interface Target {
    * provenance and are never trusted context. Without notes, an earlier
    * candidate's copy is removed.
    */
-  prepareStageContext?(implementerNotes?: string | null): Promise<{
+  prepareStageContext?(implementerNotes: string | null): Promise<{
     dir: string
     /** The stage results' copies: trusted. */
     files: string[]
