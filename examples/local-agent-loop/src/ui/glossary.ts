@@ -565,9 +565,18 @@ export const BULK = {
   archiveNote:
     'どのタスクも、止まった実行だけをアーカイブします。記録はそのまま残り、終わったタスクに移ります。',
   archived: (n: string) => `${n} 件のタスクをアーカイブしました`,
+  archivedPartly: (n: string, partly: string) =>
+    `${n} 件のタスクをアーカイブし、${partly} 件は一部の実行だけアーカイブしました`,
   unarchived: (n: string) => `${n} 件の実行をアーカイブから戻しました`,
+  archiving: (done: string, total: string) =>
+    `タスクをアーカイブしています（${total} 件中 ${done} 件）`,
+  archivingNote:
+    '1 件ずつ、作業ツリーを片付けてから次に進みます。大きな作業ツリーは 1 件に数分かかります。',
+  unarchiving: (done: string, total: string) =>
+    `実行をアーカイブから戻しています（${total} 件中 ${done} 件）`,
   undo: 'まとめて戻す',
   failed: (n: string) => `${n} 件はできませんでした`,
+  partly: (n: string) => `${n} 件は一部の実行をアーカイブできませんでした`,
 } as const
 
 // ---------------------------------------------------------------- shell
@@ -674,10 +683,10 @@ export const DETAIL = {
     'ログ、差分、仕様、チェックポイント、納品の記録は残っています。直すときは記録したコミットから新しい実行を始めます。',
   worktreeWarning: '納品のあと、作業ツリーを片付けられませんでした',
   worktreeWarningNote:
-    '実行は承認と納品を終えています。demo prune --apply で片付けをやり直せます。',
+    '実行は承認と納品を終えています。demo prune --apply で片付けをやり直せます。git がもう作業ツリーとして扱っていないと警告にあるときは、ディレクトリを手で消します。',
   worktreeLeft: 'アーカイブした実行の作業ツリーが残っています',
   worktreeLeftNote:
-    'アーカイブのときに片付けられませんでした。原因を取り除いてから demo prune --apply で片付けます。',
+    'アーカイブのときに片付けられませんでした。原因を取り除いてから demo prune --apply で片付けます。git がもう作業ツリーとして扱っていないときは、ディレクトリを手で消します。',
   retry: '再実行',
   humanCheck: '人が確認すること',
   leadTime: '所要時間',

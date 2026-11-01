@@ -60,6 +60,17 @@ export class SpawnCancelledError extends Error {
   }
 }
 
+/** `runChild`'s rejection when the child ran past `timeoutMs` and was killed. */
+export class SpawnTimeoutError extends Error {
+  constructor(
+    command: string,
+    readonly timeoutMs: number,
+  ) {
+    super(`${command} timed out after ${timeoutMs}ms (child killed)`)
+    this.name = 'SpawnTimeoutError'
+  }
+}
+
 /**
  * The log write error carried by a timeout or cancel rejection from
  * `runChild`, so the incomplete log is still flagged when there is no result.
@@ -260,9 +271,7 @@ export async function runChild(
         })
       })
       timer = setTimeout(() => {
-        terminationError = new Error(
-          `${command} timed out after ${timeoutMs}ms (child killed)`,
-        )
+        terminationError = new SpawnTimeoutError(command, timeoutMs)
         kill()
       }, timerDelay(timeoutMs))
       timer.unref?.()

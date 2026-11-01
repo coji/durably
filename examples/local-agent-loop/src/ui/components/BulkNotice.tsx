@@ -27,15 +27,92 @@ export interface SeriesResult {
   errors?: string[]
 }
 
+/**
+ * What one item came to: the runs it newly archived and why git left a
+ * worktree or a branch behind, if it did.
+ */
+export interface BulkItemResult {
+  item: BulkItem
+  archived: string[]
+  warnings: string[]
+}
+
 export interface BulkOutcome {
   action: BulkRequest['action']
+  /** The items done. */
+  done: BulkItemResult[]
   /**
-   * The items done, each with the runs it newly archived and why git left
-   * a worktree or a branch behind, if it did.
+   * The items refused, each with the CLI's own words. A task whose
+   * `archive-series` archived some of its runs and failed on others keeps
+   * the runs it archived and their warnings here too, and the notice
+   * counts it apart from one that archived nothing.
    */
-  done: { item: BulkItem; archived: string[]; warnings: string[] }[]
-  /** The items refused, each with the CLI's own words. */
-  failed: { item: BulkItem; error: string }[]
+  failed: (BulkItemResult & { error: string })[]
+}
+
+/** One item's answer: what it came to, and why it failed, if it did. */
+export type ItemAnswer = Omit<BulkItemResult, 'item'> & { error?: string }
+
+/**
+ * One item's answer as the notice reads it: the runs a task's
+ * `archive-series` newly archived, every warning its runs carry, and its
+ * errors as one, if any.
+ */
+export function seriesOutcome(answer: SeriesResult): ItemAnswer {
+  const runs = answer.archived ?? []
+  const errors = answer.errors ?? []
+  return {
+    archived: runs.filter((r) => r.changed).map((r) => r.runId),
+    warnings: runs.flatMap((r) => r.warnings ?? []),
+    ...(errors.length > 0 ? { error: errors.join('\n') } : {}),
+  }
+}
+
+/**
+ * Send a bulk action's items one after another, as the CLI does them, and
+ * tell `onProgress` how many have their answer after each. A failed item
+ * does not stop the rest.
+ */
+export async function sendEach(
+  request: BulkRequest,
+  send: (item: BulkItem) => Promise<ItemAnswer>,
+  onProgress: (done: number) => void,
+): Promise<BulkOutcome> {
+  const outcome: BulkOutcome = {
+    action: request.action,
+    done: [],
+    failed: [],
+  }
+  for (const [i, item] of request.items.entries()) {
+    // react-doctor-disable-next-line react-doctor/async-await-in-loop -- One at a time, so each answer moves the count.
+    const { error, ...result } = await send(item)
+    if (error === undefined) outcome.done.push({ item, ...result })
+    else outcome.failed.push({ item, ...result, error })
+    onProgress(i + 1)
+  }
+  return outcome
+}
+
+/** How far a bulk action has come, while it runs. */
+export function BulkProgress({
+  action,
+  done,
+  total,
+}: {
+  action: BulkRequest['action']
+  done: number
+  total: number
+}) {
+  const archive = action === 'archive-series'
+  const progress = archive ? BULK.archiving : BULK.unarchiving
+  return (
+    <Notice
+      tone="running"
+      title={progress(formatCount(done), formatCount(total))}
+    >
+      {archive ? <p>{BULK.archivingNote}</p> : null}
+    </Notice>
+  )
 }
 
 /**
@@ -43,15 +120,41 @@ export interface BulkOutcome {
  * back: the notice's way back, and nothing a person did not just archive.
  */
 export function undoItems(outcome: BulkOutcome): BulkItem[] {
-  return outcome.done.flatMap(({ item, archived }) =>
+  return [...outcome.done, ...outcome.failed].flatMap(({ item, archived }) =>
     archived.map((runId) => ({ runId, name: item.name })),
+  )
+}
+
+/** Items with why each failed, under a line that counts them. */
+function FailedList({
+  heading,
+  items,
+}: {
+  heading: string
+  items: BulkOutcome['failed']
+}) {
+  if (items.length === 0) return null
+  return (
+    <>
+      <p>{heading}</p>
+      <ul className="flex flex-col gap-1">
+        {items.map(({ item, error }) => (
+          <li key={item.runId}>
+            <p>{item.name}</p>
+            <p className="font-code break-all">{error}</p>
+          </li>
+        ))}
+      </ul>
+    </>
   )
 }
 
 /**
  * What a bulk action came to: how many it did, the way back from an
- * archive, each item whose cleanup git refused with why, and each item it
- * could not do with why.
+ * archive, each item whose cleanup git refused with why, each task it
+ * archived only some runs of with why, and each item it could not do with
+ * why. A task that archived some of its runs is counted apart from one
+ * that archived nothing.
  */
 export function BulkNotice({
   outcome,
@@ -63,12 +166,19 @@ export function BulkNotice({
   onDismiss?: () => void
 }) {
   const { done, failed } = outcome
-  const left = done.filter((d) => d.warnings.length > 0)
+  const left = [...done, ...failed].filter((d) => d.warnings.length > 0)
   const back = outcome.action === 'archive-series' ? undoItems(outcome) : []
+  const partly = failed.filter((f) => f.archived.length > 0)
+  const refused = failed.filter((f) => f.archived.length === 0)
   const title =
-    outcome.action === 'archive-series'
-      ? BULK.archived(formatCount(done.length))
-      : BULK.unarchived(formatCount(done.length))
+    outcome.action === 'unarchive'
+      ? BULK.unarchived(formatCount(done.length))
+      : partly.length > 0
+        ? BULK.archivedPartly(
+            formatCount(done.length),
+            formatCount(partly.length),
+          )
+        : BULK.archived(formatCount(done.length))
   return (
     <Notice
       tone={failed.length > 0 ? 'failed' : undefined}
@@ -108,19 +218,14 @@ export function BulkNotice({
           </ul>
         </>
       ) : null}
-      {failed.length > 0 ? (
-        <>
-          <p>{BULK.failed(formatCount(failed.length))}</p>
-          <ul className="flex flex-col gap-1">
-            {failed.map(({ item, error }) => (
-              <li key={item.runId}>
-                <p>{item.name}</p>
-                <p className="font-code break-all">{error}</p>
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : null}
+      <FailedList
+        heading={BULK.partly(formatCount(partly.length))}
+        items={partly}
+      />
+      <FailedList
+        heading={BULK.failed(formatCount(refused.length))}
+        items={refused}
+      />
     </Notice>
   )
 }

@@ -50,6 +50,7 @@ import {
 } from './engine/compare.js'
 import { DEMO } from './engine/failure-reasons.js'
 import { formatCost, formatDuration } from './engine/format.js'
+import { needsRemovalByHand } from './engine/git.js'
 import {
   reportToJson,
   reportToMarkdown,
@@ -1398,10 +1399,14 @@ if (cmd === 'worker') {
         r.warnings.map((w) => `${r.runId}: ${w}`),
       )
       printWarnings(warnings)
-      // Only a removal git refused is retried by asking again; a run that
-      // could not be read or archived has to be looked at first.
-      if (warnings.length > 0)
-        console.error(`run ${DEMO} archive --series ${seriesId} again to retry`)
+      // Only what git refused is retried by asking again, once its cause is
+      // gone; a worktree git no longer lists is removed by hand, as its
+      // warning says, so it alone gets no retry hint. A run that could not be read or archived has to be
+      // looked at first.
+      if (warnings.some((w) => !needsRemovalByHand(w)))
+        console.error(
+          `run ${DEMO} archive --series ${seriesId}${a['delete-branch'] === 'true' ? ' --delete-branch' : ''} again to retry what git refused`,
+        )
       if (done.errors.length > 0)
         failed.push(
           `could not diagnose or archive every run of task ${done.taskId}:\n${done.errors.join('\n')}`,
@@ -1436,8 +1441,10 @@ if (cmd === 'worker') {
     if (done.deletedBranches.length > 0)
       console.log(`deleted branches: ${done.deletedBranches.join(', ')}`)
     printWarnings(done.warnings)
-    if (done.warnings.length > 0)
-      console.error(`run ${DEMO} archive --run ${runId} again to retry`)
+    if (done.warnings.some((w) => !needsRemovalByHand(w)))
+      console.error(
+        `run ${DEMO} archive --run ${runId}${a['delete-branch'] === 'true' ? ' --delete-branch' : ''} again to retry what git refused`,
+      )
   } finally {
     await durably.db.destroy()
   }

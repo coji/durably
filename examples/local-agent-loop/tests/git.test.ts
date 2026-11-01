@@ -21,10 +21,13 @@ import {
   DEFAULT_COMMIT_AUTHOR,
   ensureSquashedBranch,
   describeCommitChanges,
+  forceRemoveWorktree,
+  needsRemovalByHand,
   diffStat,
   isDirty,
   discardWorktree,
   porcelainWorktreePaths,
+  removeWorktreeRegistration,
   writePatch,
   readFileAt,
   removeWorktree,
@@ -232,6 +235,69 @@ describe('git engine', () => {
     // Discarding twice, or discarding what was never created, is a no-op.
     await discardWorktree(repo, wt, branch)
     await discardWorktree(repo, join(root, 'never-made'), 'work/never')
+  })
+
+  it('says a worktree removal stopped at its limit may be partly done, and removes it when asked again', async () => {
+    const wt = join(root, 'wt-slow')
+    await addWorktree({ repo, dir: wt, baseCommit: base, branch: 'work/slow' })
+    // Killed before git can finish: the warning names the limit, the
+    // directory and the ways to finish, not git's exit code.
+    const stopped = await forceRemoveWorktree(repo, wt, 1)
+    assert.equal(
+      stopped,
+      `git worktree remove was stopped at its <0.1s limit before it finished; ${wt} may be partly removed. git still lists it, so pnpm --filter example-local-agent-loop demo prune --apply continues the removal`,
+    )
+    // The registration is kept, so asking again with the usual limit
+    // finishes the removal.
+    assert.equal(await forceRemoveWorktree(repo, wt), null)
+    assert.doesNotMatch(await git(repo, ['worktree', 'list']), /wt-slow/)
+    // A directory git no longer lists, as when a stopped removal had
+    // deleted its .git: no retry can remove it, and the warning says so.
+    const orphan = join(root, 'wt-orphan')
+    await addWorktree({
+      repo,
+      dir: orphan,
+      baseCommit: base,
+      branch: 'work/orphan',
+    })
+    await rm(join(orphan, '.git'))
+    for (let i = 0; i < 2; i++) {
+      const warning = (await forceRemoveWorktree(repo, orphan)) ?? ''
+      assert.ok(needsRemovalByHand(`worktree ${warning}`), warning)
+      assert.match(
+        warning,
+        new RegExp(
+          `git no longer lists ${orphan.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} as a worktree, so neither archive nor pnpm --filter example-local-agent-loop demo prune --apply can remove it: remove the directory by hand$`,
+        ),
+      )
+    }
+    // Any other warning can be retried.
+    assert.equal(
+      needsRemovalByHand('worktree x: failed with code 128: locked'),
+      false,
+    )
+    // A refusal that is not the limit keeps git's own words.
+    await addWorktree({
+      repo,
+      dir: wt,
+      baseCommit: base,
+      branch: 'work/slow-2',
+    })
+    await git(repo, ['worktree', 'lock', wt])
+    assert.match(
+      (await forceRemoveWorktree(repo, wt)) ?? '',
+      /failed with code 128: .*locked/,
+    )
+    await git(repo, ['worktree', 'unlock', wt])
+    assert.equal(await forceRemoveWorktree(repo, wt), null)
+    // The same for the test probe's base, removed with -f -f.
+    await addWorktree({ repo, dir: wt, baseCommit: base })
+    assert.ok(
+      (await removeWorktreeRegistration(repo, wt, 1))?.startsWith(
+        `git worktree remove was stopped at its <0.1s limit before it finished; ${wt} may be partly removed.`,
+      ),
+    )
+    assert.equal(await removeWorktreeRegistration(repo, wt), null)
   })
 
   it('counts a change by files and text lines, renames and binaries included', async () => {

@@ -23,9 +23,13 @@ import {
 } from './components/ActionNotice'
 import {
   BulkNotice,
+  BulkProgress,
+  sendEach,
+  seriesOutcome,
   type BulkAct,
   type BulkItem,
   type BulkOutcome,
+  type ItemAnswer,
   type BulkRequest,
   type SeriesResult,
 } from './components/BulkNotice'
@@ -97,37 +101,38 @@ async function post(
 }
 
 /**
- * One item of a bulk action: the runs it newly archived, or why it failed.
- * A task's `archive-series` that could not archive every stop counts as
- * failed, with the CLI's own reasons.
+ * One item of a bulk action, as `seriesOutcome` reads its answer, or why
+ * the request failed. A task's `archive-series` that could not archive
+ * every stop counts as failed, with the CLI's own reasons, and keeps the
+ * runs it did archive.
  */
 async function postItem(
   token: string,
   action: BulkRequest['action'],
   item: BulkItem,
-): Promise<{ archived: string[]; warnings: string[] } | { error: string }> {
+): Promise<ItemAnswer> {
   try {
-    const answer = await post(token, item.runId, action, {})
-    if (answer.errors && answer.errors.length > 0)
-      return { error: answer.errors.join('\n') }
-    const runs = answer.archived ?? []
-    return {
-      archived: runs.filter((r) => r.changed).map((r) => r.runId),
-      warnings: runs.flatMap((r) => r.warnings ?? []),
-    }
+    return seriesOutcome(await post(token, item.runId, action, {}))
   } catch (error) {
-    return { error: (error as Error).message }
+    return { archived: [], warnings: [], error: (error as Error).message }
   }
 }
 
 type Outcome =
   | { kind: 'one'; outcome: ActionOutcome }
+  | {
+      kind: 'progress'
+      action: BulkRequest['action']
+      done: number
+      total: number
+    }
   | { kind: 'bulk'; outcome: BulkOutcome }
 
 /**
  * Send actions with the page's token, one POST each, and keep what the
  * last one came to until it is closed or the page changes. A bulk action
- * sends its items one after another, as the CLI does them.
+ * sends its items one after another, as the CLI does them, and shows how
+ * many have their answer until the last one does.
  */
 function useActions(token: string, page: string) {
   // Kept with the page it was made on, so another page shows none.
@@ -162,22 +167,16 @@ function useActions(token: string, page: string) {
   )
   const actMany = useCallback<BulkAct>(
     async (request) => {
-      // Sent together; the server takes its writes one at a time.
-      const answers = await Promise.all(
-        request.items.map(async (item) => ({
-          item,
-          answer: await postItem(token, request.action, item),
-        })),
+      const total = request.items.length
+      const progress = (done: number) =>
+        setOutcome({ kind: 'progress', action: request.action, done, total })
+      progress(0)
+      const outcome = await sendEach(
+        request,
+        (item) => postItem(token, request.action, item),
+        progress,
       )
-      const done: BulkOutcome['done'] = []
-      const failed: BulkOutcome['failed'] = []
-      for (const { item, answer } of answers)
-        if ('error' in answer) failed.push({ item, error: answer.error })
-        else done.push({ item, ...answer })
-      setOutcome({
-        kind: 'bulk',
-        outcome: { action: request.action, done, failed },
-      })
+      setOutcome({ kind: 'bulk', outcome })
     },
     [token, setOutcome],
   )
@@ -186,6 +185,12 @@ function useActions(token: string, page: string) {
       <ActionNotice
         outcome={outcome.outcome}
         onDismiss={() => setOutcome(null)}
+      />
+    ) : outcome?.kind === 'progress' ? (
+      <BulkProgress
+        action={outcome.action}
+        done={outcome.done}
+        total={outcome.total}
       />
     ) : outcome?.kind === 'bulk' ? (
       <BulkNotice
