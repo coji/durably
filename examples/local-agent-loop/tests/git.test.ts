@@ -30,6 +30,7 @@ import {
   removeWorktree,
   repoRoot,
   resolveCommit,
+  someUntracked,
   treeOf,
 } from '../src/engine/git.js'
 import { renderCommitMessage, squashedBranchFor } from '../src/targets/repo.js'
@@ -192,6 +193,30 @@ describe('git engine', () => {
     assert.deepEqual(await changedGitlinks(wt, commit), [
       { path: 'deps/nested', commit: recorded },
     ])
+    // Config that hides changed submodules does not hide it.
+    await git(wt, ['config', 'diff.ignoreSubmodules', 'all'])
+    assert.deepEqual(await changedGitlinks(wt, commit), [
+      { path: 'deps/nested', commit: recorded },
+    ])
+    await removeWorktree(repo, wt)
+  })
+
+  it('lists every path git clean would remove when asked for all of them', async () => {
+    const wt = join(root, 'wt-clean-list')
+    await addWorktree({
+      repo,
+      dir: wt,
+      baseCommit: base,
+      branch: 'work/clean-list',
+    })
+    // More than the 100,000 characters a bounded listing reads.
+    const names = Array.from(
+      { length: 2000 },
+      (_, i) => `${String(i).padStart(4, '0')}-${'n'.repeat(60)}.txt`,
+    )
+    for (const name of names) await writeFile(join(wt, name), 'x')
+    assert.deepEqual((await someUntracked(wt, Infinity)).sort(), names)
+    assert.equal((await someUntracked(wt, 5)).length, 5)
     await removeWorktree(repo, wt)
   })
 

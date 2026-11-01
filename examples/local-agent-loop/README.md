@@ -1192,7 +1192,8 @@ reportの要約、`demo compare` の設定ごとの行、`demo compare --trend` 
 - setupでは、エージェントのworktreeと並べて、baseのcommitの切り離したworktree
   （`runs/<id>/base-work`）を作り、同じ `setup` を実行します。候補ごとにこの
   worktreeをbaseに戻し（前の候補のテストが書いた未追跡のファイルと、ファイルを
-  1つも含まない未追跡のディレクトリも消します。
+  1つも含まない未追跡のディレクトリも、ファイルのあるディレクトリの中のものまで
+  消します。
   `setup` が終わった直後に残っていた未追跡のファイルは
   `runs/<id>/test-probe/base.json` に中身の指紋（ファイルはsha256）と一緒に記録
   してあり、それは消しません。`setup` が作った `.gitignore` に当たらないfixture

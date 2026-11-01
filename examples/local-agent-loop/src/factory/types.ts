@@ -459,7 +459,9 @@ export type TestProbeSide =
 /**
  * One test file the probe ran on the base and on the candidate, with the
  * last characters each side printed (empty when it printed nothing or never
- * started). The tails are kept here whatever the result text had room for.
+ * started) and how many of them are stderr's, absent in a record made
+ * before they were counted. The tails are kept here whatever the result
+ * text had room for.
  */
 export interface TestProbeFile {
   path: string
@@ -468,6 +470,8 @@ export interface TestProbeFile {
   candidate: TestProbeSide
   baseOutputTail: string
   candidateOutputTail: string
+  baseStderrChars?: number
+  candidateStderrChars?: number
 }
 
 /**

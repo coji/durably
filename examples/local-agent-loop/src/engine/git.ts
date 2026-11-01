@@ -575,7 +575,13 @@ export async function changedGitlinks(
   const pass = signal ? { signal } : {}
   const status = await git(
     dir,
-    ['status', '--porcelain=v1', '-z', '--untracked-files=no'],
+    [
+      'status',
+      '--porcelain=v1',
+      '-z',
+      '--untracked-files=no',
+      '--ignore-submodules=none',
+    ],
     pass,
   )
   const paths = status
@@ -624,23 +630,25 @@ export async function untrackedPaths(
  * itself reports them in a dry run. Using the same command keeps this check
  * and the clean in step: an empty directory counts, a directory holding only
  * ignored files does not, and a nested repository does. Empty when the clean
- * would remove nothing; only that and the first few names matter, so a long
- * listing is not read in full.
+ * would remove nothing; for a finite `limit` only that and the first few
+ * names matter, so a long listing is not read in full, while an infinite
+ * one reads it all.
  */
 export async function someUntracked(
   cwd: string,
   limit: number,
   signal?: AbortSignal,
 ): Promise<string[]> {
+  const cap = Number.isFinite(limit) ? 100_000 : Number.POSITIVE_INFINITY
   const out = await git(cwd, ['clean', '-ffdn'], {
     // The dry run's "Would remove" wording is translated in other locales.
     env: { LC_ALL: 'C' },
-    maxOutputChars: 100_000,
+    maxOutputChars: cap,
     ...(signal ? { signal } : {}),
   })
   const lines = out.split('\n')
   // A capped listing keeps its end, so its first line may be cut short.
-  if (out.length >= 100_000) lines.shift()
+  if (out.length >= cap) lines.shift()
   return lines
     .map((line) => /^Would remove (.+)$/.exec(line)?.[1])
     .filter((path): path is string => path !== undefined)

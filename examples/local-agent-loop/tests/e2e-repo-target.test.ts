@@ -6254,6 +6254,27 @@ describe('the test probe', { timeout: 300000 }, () => {
       assert.ok(!text.includes('Globs:'), String(n))
     }
     assert.ok(!all.includes('## test/t399.test.js'))
+    // A shorter tail in the text still keeps the end of stdout, also when
+    // stderr alone would fill it; one recorded without the split is cut at
+    // its end.
+    const split = {
+      ...files[0]!,
+      baseOutputTail: `${'o'.repeat(990)}STDOUT-END\n${'w'.repeat(989)}STDERR-END`,
+      baseStderrChars: 999,
+    }
+    const shrunk = testProbeText({
+      ...args,
+      files: [split, ...files.slice(1, 8)],
+    })
+    assert.match(shrunk, /base output, last (1000|400) characters:/)
+    assert.match(shrunk, /STDOUT-END\n/)
+    assert.match(shrunk, /STDERR-END/)
+    const old = testProbeText({
+      ...args,
+      files: [{ ...split, baseStderrChars: undefined }, ...files.slice(1, 8)],
+    })
+    assert.ok(!old.includes('STDOUT-END'))
+    assert.match(old, /STDERR-END/)
     assert.match(
       testProbeText({ ...args, files: [] }),
       /No added or modified file of this candidate matches a testProbe glob, so no test ran\./,
@@ -6606,11 +6627,13 @@ describe('the test probe', { timeout: 300000 }, () => {
       "fs.writeFileSync('gen/a.txt', 'a')",
     ].join('\n')
     // Passes only with the fixture, says whether an earlier run left its
-    // output, then leaves some, also in a directory setup made.
+    // output, then leaves some, also in a directory setup made, where an
+    // empty directory is what `git clean` does not name by itself.
     const reader = [
       "const fs = require('node:fs')",
-      "console.log(`left=${fs.existsSync('probe-out.txt')} extra=${fs.existsSync('gen/extra.txt')} out=${fs.existsSync('out')}`)",
+      "console.log(`left=${fs.existsSync('probe-out.txt')} extra=${fs.existsSync('gen/extra.txt')} out=${fs.existsSync('out')} empty=${fs.existsSync('gen/empty')}`)",
       "fs.writeFileSync('probe-out.txt', 'x')",
+      "fs.mkdirSync('gen/empty/deeper', { recursive: true })",
       "fs.mkdirSync('out/deep', { recursive: true })",
       "fs.writeFileSync('out/deep/f', 'x')",
       "fs.writeFileSync('gen/extra.txt', 'x')",
@@ -6653,13 +6676,14 @@ describe('the test probe', { timeout: 300000 }, () => {
         assertIntact: () => target.assertIntact(candidate),
         signal: new AbortController().signal,
       })
-    const clean = 'left=false extra=false out=false'
+    const clean = 'left=false extra=false out=false empty=false'
     await writeFile(join(config.workdir, 'test', 'a.test.js'), '// one\n')
     const first = await seal(1)
     const one = await probe(first)
     assert.equal(testProbeOutcomeOf(one.files[0]!), 'passed-on-both')
     assert.equal(one.files[0]?.baseOutputTail, clean)
     assert.equal(existsSync(join(base, 'probe-out.txt')), true)
+    assert.equal(existsSync(join(base, 'gen', 'empty', 'deeper')), true)
 
     await writeFile(join(config.workdir, 'test', 'a.test.js'), '// two\n')
     const second = await seal(2)

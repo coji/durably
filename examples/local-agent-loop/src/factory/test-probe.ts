@@ -139,10 +139,14 @@ function notRun(reason: string): TestProbeSide {
   return { ran: false, reason: reason.slice(0, REASON_CHARS), elapsedMs: 0 }
 }
 
-/** One side's result and its stored output tail (`storedTail`). */
+/**
+ * One side's result, its stored output tail (`storedTail`) and how many of
+ * the tail's last characters are stderr's.
+ */
 interface SideRun {
   side: TestProbeSide
   output: string
+  stderrChars: number
 }
 
 /**
@@ -164,7 +168,7 @@ async function runSide(
   signal: AbortSignal,
 ): Promise<SideRun> {
   const outside = await escapes(cwd, target.path)
-  if (outside) return { side: notRun(outside), output: '' }
+  if (outside) return { side: notRun(outside), output: '', stderrChars: 0 }
   const [command, ...args] = target.argv
   const started = Date.now()
   try {
@@ -177,7 +181,7 @@ async function runSide(
     })
     return {
       side: { ran: true, exitCode: res.code, elapsedMs: res.elapsedMs },
-      output: storedTail(res.stdout, res.stderr),
+      ...storedTail(res.stdout, res.stderr),
     }
   } catch (error) {
     if (signal.aborted || (error as Error).name === 'SpawnCancelledError')
@@ -189,7 +193,7 @@ async function runSide(
         ...notRun((error as Error).message),
         elapsedMs: Date.now() - started,
       },
-      output: storedTail(stdout, stderr),
+      ...storedTail(stdout, stderr),
     }
   }
 }
@@ -347,22 +351,36 @@ async function restoreBase(
       if (!removed) break
     }
   }
-  // What `git clean` would still remove: a directory holding a file is
-  // setup's, or a nested repository, and stays.
+  // What `git clean` would still remove: within each directory it names,
+  // the empty directories go, deepest first, while a file, setup's, and a
+  // nested repository stay.
   for (const path of await someUntracked(dir, Number.POSITIVE_INFINITY, signal))
-    if (path.endsWith('/') && (await holdsNoFile(join(dir, path))))
-      await rm(join(dir, path), { recursive: true, force: true })
+    if (path.endsWith('/')) await removeEmptyDirectories(join(dir, path))
   const now = await fingerprintPaths(dir, [...keep])
   return [...keep].every((path) => now[path] === setupUntracked[path])
 }
 
-/** True when the directory `full` holds only directories, if any. */
-async function holdsNoFile(full: string): Promise<boolean> {
-  const entries = await readdir(full, {
-    recursive: true,
-    withFileTypes: true,
-  }).catch(() => null)
-  return entries?.every((entry) => entry.isDirectory()) ?? false
+/**
+ * Removes the directory `full` and every directory below it that holds
+ * nothing once its own subdirectories are handled, never a file, a link or
+ * a nested repository. True when `full` itself went.
+ */
+async function removeEmptyDirectories(full: string): Promise<boolean> {
+  const entries = await readdir(full, { withFileTypes: true }).catch(() => null)
+  if (entries === null || entries.some((entry) => entry.name === '.git'))
+    return false
+  let empty = true
+  for (const entry of entries)
+    if (
+      !entry.isDirectory() ||
+      !(await removeEmptyDirectories(join(full, entry.name)))
+    )
+      empty = false
+  if (!empty) return false
+  return rmdir(full).then(
+    () => true,
+    () => false,
+  )
 }
 
 /** What one file came to, as the result and the report name it. */
@@ -396,32 +414,67 @@ function sideLine(name: string, side: TestProbeSide): string {
 
 /**
  * What the probe stores of a side's output: stdout's last characters, then
- * stderr's, at most `TAIL_CHARS` in all. Neither can push the other's end
- * out: one longer than half keeps what the other leaves, so a stderr full of
- * warnings does not hide the failure a runner printed to stdout. A tail
- * that was cut is exactly `TAIL_CHARS` long.
+ * stderr's, at most `TAIL_CHARS` in all, with how many of them are stderr's.
+ * A tail that was cut is exactly `TAIL_CHARS` long.
  */
-function storedTail(stdout: string, stderr: string): string {
-  const out = stdout.trimEnd()
-  const err = stderr.trimEnd()
-  if (out.length === 0 || err.length === 0)
-    return `${out}${err}`.slice(-TAIL_CHARS)
+function storedTail(
+  stdout: string,
+  stderr: string,
+): { output: string; stderrChars: number } {
+  const [output, stderrChars] = joinTails(
+    stdout.trimEnd(),
+    stderr.trimEnd(),
+    TAIL_CHARS,
+  )
+  return { output, stderrChars }
+}
+
+/**
+ * The last characters of `out`, then of `err`, at most `chars` in all, and
+ * how many of them are `err`'s. Neither can push the other's end out: one
+ * longer than half keeps what the other leaves, so a stderr full of warnings
+ * does not hide the failure a runner printed to stdout.
+ */
+function joinTails(
+  out: string,
+  err: string,
+  chars: number,
+): [text: string, errChars: number] {
+  if (out.length === 0) return [err.slice(-chars), Math.min(err.length, chars)]
+  if (err.length === 0) return [out.slice(-chars), 0]
   // One character goes to the line between them.
-  const room = TAIL_CHARS - 1
+  const room = chars - 1
   const errChars = Math.min(
     err.length,
     Math.max(room - out.length, Math.floor(room / 2)),
   )
-  return `${out.slice(-(room - errChars))}\n${err.slice(-errChars)}`
+  return [`${out.slice(-(room - errChars))}\n${err.slice(-errChars)}`, errChars]
 }
 
 /**
- * The last `chars` characters of a stored tail, or nothing. A tail shorter
- * than that is a whole output, since one is cut only at `TAIL_CHARS`.
+ * The last `chars` characters of a stored tail, or nothing, split between
+ * stdout and stderr as `joinTails` does when the tail says which of its
+ * characters are stderr's; one recorded before it did is cut at its end. A
+ * tail shorter than that is a whole output, since one is cut only at
+ * `TAIL_CHARS`.
  */
-function tailLines(name: string, tail: string, chars: number): string[] {
+function tailLines(
+  name: string,
+  tail: string,
+  stderrChars: number | undefined,
+  chars: number,
+): string[] {
   if (chars === 0 || tail.length === 0) return []
-  const shown = tail.slice(-chars)
+  const split =
+    stderrChars !== undefined && stderrChars > 0 && stderrChars < tail.length
+  const shown =
+    tail.length > chars && split
+      ? joinTails(
+          tail.slice(0, tail.length - stderrChars - 1),
+          tail.slice(-stderrChars),
+          chars,
+        )[0]
+      : tail.slice(-chars)
   return [
     shown.length === chars
       ? `${name} output, last ${chars} characters:`
@@ -490,8 +543,18 @@ export function testProbeText(args: {
           `command: ${file.command.join(' ')}`,
           sideLine('base', file.base),
           sideLine('candidate', file.candidate),
-          ...tailLines('base', file.baseOutputTail, chars),
-          ...tailLines('candidate', file.candidateOutputTail, chars),
+          ...tailLines(
+            'base',
+            file.baseOutputTail,
+            file.baseStderrChars,
+            chars,
+          ),
+          ...tailLines(
+            'candidate',
+            file.candidateOutputTail,
+            file.candidateStderrChars,
+            chars,
+          ),
         ]),
       ...(listed < files.length
         ? [
@@ -590,7 +653,7 @@ export async function runTestProbe(args: {
         const onBase =
           'dir' in base && unrunnable === undefined
             ? await runSide(target, base.dir, config.checkTimeoutMs, signal)
-            : { side: notRun(unrunnable ?? ''), output: '' }
+            : { side: notRun(unrunnable ?? ''), output: '', stderrChars: 0 }
         const onCandidate = await runSide(
           target,
           config.workdir,
@@ -604,6 +667,8 @@ export async function runTestProbe(args: {
           candidate: onCandidate.side,
           baseOutputTail: onBase.output,
           candidateOutputTail: onCandidate.output,
+          baseStderrChars: onBase.stderrChars,
+          candidateStderrChars: onCandidate.stderrChars,
         })
       }
     } finally {
