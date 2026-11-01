@@ -69,6 +69,9 @@ import { repairLabels } from '../src/factory/repair.js'
 import { ActionNotice } from '../src/ui/components/ActionNotice.js'
 import {
   BulkNotice,
+  BulkProgress,
+  sendEach,
+  seriesOutcome,
   undoItems,
   type BulkOutcome,
   type SeriesResult,
@@ -3538,7 +3541,14 @@ describe('numbers on the screens', () => {
           warnings: ['worktree /w/b: git worktree remove failed'],
         },
       ],
-      failed: [{ item: { runId: 'c', name: 'task c' }, error: 'no run c' }],
+      failed: [
+        {
+          item: { runId: 'c', name: 'task c' },
+          archived: [],
+          warnings: [],
+          error: 'no run c',
+        },
+      ],
     }
     assert.deepEqual(undoItems(outcome), [
       { runId: 'a', name: 'task a' },
@@ -3562,6 +3572,113 @@ describe('numbers on the screens', () => {
     assert.ok(text.includes('no run c'))
     assert.ok(text.includes(ACTION_DONE.worktreeLeft))
     assert.ok(text.includes('worktree /w/b: git worktree remove failed'))
+  })
+
+  it('keeps what a task archived and why git left its worktree when another of its runs failed', () => {
+    const answer: SeriesResult = {
+      archived: [
+        { runId: 'd1', changed: true, warnings: [] },
+        {
+          runId: 'd2',
+          changed: true,
+          warnings: ['worktree /w/d2: git worktree remove was stopped'],
+        },
+        { runId: 'd0', changed: false },
+      ],
+      errors: ['d3: refusing to archive d3'],
+    }
+    const result = seriesOutcome(answer)
+    assert.deepEqual(result, {
+      archived: ['d1', 'd2'],
+      warnings: ['worktree /w/d2: git worktree remove was stopped'],
+      error: 'd3: refusing to archive d3',
+    })
+    assert.deepEqual(seriesOutcome({ archived: [], errors: [] }), {
+      archived: [],
+      warnings: [],
+    })
+    const { error, ...kept } = result
+    const outcome: BulkOutcome = {
+      action: 'archive-series',
+      done: [],
+      failed: [
+        {
+          item: { runId: 'd1', name: 'task d' },
+          ...kept,
+          error: error ?? '',
+        },
+      ],
+    }
+    // The runs it did archive can be brought back; the warning and the
+    // error both show under the task's name.
+    assert.deepEqual(undoItems(outcome), [
+      { runId: 'd1', name: 'task d' },
+      { runId: 'd2', name: 'task d' },
+    ])
+    const text = htmlText(
+      renderToStaticMarkup(
+        createElement(BulkNotice, { outcome, onUndo: () => {} }),
+      ),
+    )
+    assert.ok(text.includes(BULK.archived('0')))
+    assert.ok(text.includes(BULK.undo))
+    assert.ok(text.includes(ACTION_DONE.worktreeLeft))
+    assert.ok(text.includes('worktree /w/d2: git worktree remove was stopped'))
+    assert.ok(text.includes(BULK.failed('1')))
+    assert.ok(text.includes('d3: refusing to archive d3'))
+    assert.equal(text.split('task d').length - 1, 2)
+  })
+
+  it('sends a bulk action one item at a time and counts each answer as it comes', async () => {
+    const items = [
+      { runId: 'a', name: 'task a' },
+      { runId: 'b', name: 'task b' },
+      { runId: 'c', name: 'task c' },
+    ]
+    const events: string[] = []
+    let open = 0
+    const outcome = await sendEach(
+      { action: 'archive-series', items },
+      async (item) => {
+        open += 1
+        assert.equal(open, 1, 'one request at a time')
+        events.push(`send ${item.runId}`)
+        // sleep-ok(negative): gives a second request the chance to start early
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        open -= 1
+        return item.runId === 'b'
+          ? { archived: [], warnings: [], error: 'HTTP 500' }
+          : { archived: [item.runId], warnings: [] }
+      },
+      (done) => events.push(`done ${done}`),
+    )
+    assert.deepEqual(events, [
+      'send a',
+      'done 1',
+      'send b',
+      'done 2',
+      'send c',
+      'done 3',
+    ])
+    // A failed request is no archive, and the next item is still sent.
+    assert.deepEqual(
+      outcome.done.map((d) => d.item.runId),
+      ['a', 'c'],
+    )
+    assert.deepEqual(outcome.failed, [
+      { item: items[1], archived: [], warnings: [], error: 'HTTP 500' },
+    ])
+    const shown = (action: 'archive-series' | 'unarchive', done: number) =>
+      htmlText(
+        renderToStaticMarkup(
+          createElement(BulkProgress, { action, done, total: 20 }),
+        ),
+      )
+    assert.ok(shown('archive-series', 3).includes(BULK.archiving('3', '20')))
+    assert.ok(BULK.archiving('3', '20').includes('20 件中 3 件'))
+    assert.ok(shown('archive-series', 0).includes(BULK.archivingNote))
+    assert.ok(shown('unarchive', 2).includes(BULK.unarchiving('2', '20')))
+    assert.ok(!shown('unarchive', 2).includes(BULK.archivingNote))
   })
 
   it('shows the newest stopped tasks and asks before showing the rest', () => {

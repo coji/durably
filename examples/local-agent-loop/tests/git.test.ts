@@ -20,6 +20,7 @@ import {
   DEFAULT_COMMIT_AUTHOR,
   ensureSquashedBranch,
   describeCommitChanges,
+  forceRemoveWorktree,
   diffStat,
   isDirty,
   discardWorktree,
@@ -176,6 +177,36 @@ describe('git engine', () => {
     // Discarding twice, or discarding what was never created, is a no-op.
     await discardWorktree(repo, wt, branch)
     await discardWorktree(repo, join(root, 'never-made'), 'work/never')
+  })
+
+  it('says a worktree removal stopped at its limit may be partly done, and removes it when asked again', async () => {
+    const wt = join(root, 'wt-slow')
+    await addWorktree({ repo, dir: wt, baseCommit: base, branch: 'work/slow' })
+    // Killed before git can finish: the warning names the limit and the way
+    // to continue, not git's exit code.
+    const stopped = await forceRemoveWorktree(repo, wt, 1)
+    assert.match(
+      stopped ?? '',
+      /^git worktree remove was stopped at its <0\.1s limit before it finished; the directory may be partly removed\. Archive the run again or run demo prune --apply to continue$/,
+    )
+    // The registration is kept, so asking again with the usual limit
+    // finishes the removal.
+    assert.equal(await forceRemoveWorktree(repo, wt), null)
+    assert.doesNotMatch(await git(repo, ['worktree', 'list']), /wt-slow/)
+    // A refusal that is not the limit keeps git's own words.
+    await addWorktree({
+      repo,
+      dir: wt,
+      baseCommit: base,
+      branch: 'work/slow-2',
+    })
+    await git(repo, ['worktree', 'lock', wt])
+    assert.match(
+      (await forceRemoveWorktree(repo, wt)) ?? '',
+      /failed with code 128: .*locked/,
+    )
+    await git(repo, ['worktree', 'unlock', wt])
+    assert.equal(await forceRemoveWorktree(repo, wt), null)
   })
 
   it('counts a change by files and text lines, renames and binaries included', async () => {

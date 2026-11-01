@@ -12,6 +12,7 @@ import {
   ownedChildPids,
   runChild,
   SpawnCancelledError,
+  SpawnTimeoutError,
   teeLog,
   timerDelay,
 } from '../src/engine/child.js'
@@ -212,9 +213,12 @@ describe('full-output log files', () => {
         stdoutFile: join(dir, 'missing', 'stdout.log'),
       }),
       (error: unknown) =>
-        /timed out/.test((error as Error).message) &&
+        error instanceof SpawnTimeoutError &&
+        error.timeoutMs === 300 &&
+        error.message === 'sh timed out after 300ms (child killed)' &&
         /ENOENT/.test(childLogError(error) ?? ''),
     )
+    assert.deepEqual(ownedChildPids(), [])
   })
 
   it('keeps a timeout past the timer limit from firing at once', async () => {

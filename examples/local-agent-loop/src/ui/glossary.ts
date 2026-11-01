@@ -566,6 +566,12 @@ export const BULK = {
     'どのタスクも、止まった実行だけをアーカイブします。記録はそのまま残り、終わったタスクに移ります。',
   archived: (n: string) => `${n} 件のタスクをアーカイブしました`,
   unarchived: (n: string) => `${n} 件の実行をアーカイブから戻しました`,
+  archiving: (done: string, total: string) =>
+    `タスクをアーカイブしています（${total} 件中 ${done} 件）`,
+  archivingNote:
+    '1 件ずつ、作業ツリーを片付けてから次に進みます。大きな作業ツリーは 1 件に数分かかります。',
+  unarchiving: (done: string, total: string) =>
+    `実行をアーカイブから戻しています（${total} 件中 ${done} 件）`,
   undo: 'まとめて戻す',
   failed: (n: string) => `${n} 件はできませんでした`,
 } as const

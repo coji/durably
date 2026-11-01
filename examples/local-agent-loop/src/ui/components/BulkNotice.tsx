@@ -27,15 +27,90 @@ export interface SeriesResult {
   errors?: string[]
 }
 
+/**
+ * What one item came to: the runs it newly archived and why git left a
+ * worktree or a branch behind, if it did.
+ */
+export interface BulkItemResult {
+  item: BulkItem
+  archived: string[]
+  warnings: string[]
+}
+
 export interface BulkOutcome {
   action: BulkRequest['action']
+  /** The items done. */
+  done: BulkItemResult[]
   /**
-   * The items done, each with the runs it newly archived and why git left
-   * a worktree or a branch behind, if it did.
+   * The items refused, each with the CLI's own words. A task whose
+   * `archive-series` archived some of its runs and failed on others keeps
+   * the runs it archived and their warnings here too.
    */
-  done: { item: BulkItem; archived: string[]; warnings: string[] }[]
-  /** The items refused, each with the CLI's own words. */
-  failed: { item: BulkItem; error: string }[]
+  failed: (BulkItemResult & { error: string })[]
+}
+
+/**
+ * One item's answer as the notice reads it: the runs a task's
+ * `archive-series` newly archived, every warning its runs carry, and its
+ * errors as one, if any.
+ */
+export function seriesOutcome(
+  answer: SeriesResult,
+): Omit<BulkItemResult, 'item'> & { error?: string } {
+  const runs = answer.archived ?? []
+  const errors = answer.errors ?? []
+  return {
+    archived: runs.filter((r) => r.changed).map((r) => r.runId),
+    warnings: runs.flatMap((r) => r.warnings ?? []),
+    ...(errors.length > 0 ? { error: errors.join('\n') } : {}),
+  }
+}
+
+/**
+ * Send a bulk action's items one after another, as the CLI does them, and
+ * tell `onProgress` how many have their answer after each. A failed item
+ * does not stop the rest.
+ */
+export async function sendEach(
+  request: BulkRequest,
+  send: (item: BulkItem) => Promise<ReturnType<typeof seriesOutcome>>,
+  onProgress: (done: number) => void,
+): Promise<BulkOutcome> {
+  const outcome: BulkOutcome = {
+    action: request.action,
+    done: [],
+    failed: [],
+  }
+  for (const [i, item] of request.items.entries()) {
+    // react-doctor-disable-next-line react-doctor/async-await-in-loop -- One at a time, so each answer moves the count.
+    const { error, ...result } = await send(item)
+    if (error === undefined) outcome.done.push({ item, ...result })
+    else outcome.failed.push({ item, ...result, error })
+    onProgress(i + 1)
+  }
+  return outcome
+}
+
+/** How far a bulk action has come, while it runs. */
+export function BulkProgress({
+  action,
+  done,
+  total,
+}: {
+  action: BulkRequest['action']
+  done: number
+  total: number
+}) {
+  const archive = action === 'archive-series'
+  const progress = archive ? BULK.archiving : BULK.unarchiving
+  return (
+    <Notice
+      tone="running"
+      title={progress(formatCount(done), formatCount(total))}
+    >
+      {archive ? <p>{BULK.archivingNote}</p> : null}
+    </Notice>
+  )
 }
 
 /**
@@ -43,7 +118,7 @@ export interface BulkOutcome {
  * back: the notice's way back, and nothing a person did not just archive.
  */
 export function undoItems(outcome: BulkOutcome): BulkItem[] {
-  return outcome.done.flatMap(({ item, archived }) =>
+  return [...outcome.done, ...outcome.failed].flatMap(({ item, archived }) =>
     archived.map((runId) => ({ runId, name: item.name })),
   )
 }
@@ -63,7 +138,7 @@ export function BulkNotice({
   onDismiss?: () => void
 }) {
   const { done, failed } = outcome
-  const left = done.filter((d) => d.warnings.length > 0)
+  const left = [...done, ...failed].filter((d) => d.warnings.length > 0)
   const back = outcome.action === 'archive-series' ? undoItems(outcome) : []
   const title =
     outcome.action === 'archive-series'

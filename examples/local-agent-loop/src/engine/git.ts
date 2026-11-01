@@ -11,9 +11,17 @@ import { existsSync } from 'node:fs'
 import { realpath } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 
-import { runChild } from './child.js'
+import { runChild, SpawnTimeoutError } from './child.js'
+import { formatDuration } from './format.js'
 
 const DEFAULT_TIMEOUT_MS = 120_000
+
+/**
+ * How long `git worktree remove` may take. A worktree with installed
+ * dependencies holds tens of thousands of files or more, and one such
+ * removal has taken over two minutes.
+ */
+export const WORKTREE_REMOVE_TIMEOUT_MS = 600_000
 
 export class GitError extends Error {
   constructor(
@@ -142,18 +150,23 @@ export function describeGitFailure(error: unknown): string {
  * A directory that is already gone is only pruned, so asking again after a
  * removal succeeds. Returns why git could not, or null. The directory is
  * never removed any other way: a worktree git refuses to remove is left for
- * a person to look at.
+ * a person to look at. A removal stopped at `timeoutMs` may have deleted
+ * part of the directory; the warning says so, and asking again continues.
  */
 export async function forceRemoveWorktree(
   repo: string,
   dir: string,
+  timeoutMs = WORKTREE_REMOVE_TIMEOUT_MS,
 ): Promise<string | null> {
   let failure: string | null = null
   if (existsSync(dir)) {
     try {
-      await git(repo, ['worktree', 'remove', '--force', dir])
+      await git(repo, ['worktree', 'remove', '--force', dir], { timeoutMs })
     } catch (error) {
-      failure = describeGitFailure(error)
+      failure =
+        error instanceof SpawnTimeoutError
+          ? `git worktree remove was stopped at its ${formatDuration(error.timeoutMs, 'en')} limit before it finished; the directory may be partly removed. Archive the run again or run demo prune --apply to continue`
+          : describeGitFailure(error)
     }
   }
   try {
@@ -179,7 +192,9 @@ export async function removeWorktreeRegistration(
 ): Promise<string | null> {
   let failure: string | null = null
   try {
-    await git(repo, ['worktree', 'remove', '--force', '--force', dir])
+    await git(repo, ['worktree', 'remove', '--force', '--force', dir], {
+      timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS,
+    })
   } catch (error) {
     // Also refused when git never registered it, which the list tells.
     failure = describeGitFailure(error)
