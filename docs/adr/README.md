@@ -39,48 +39,28 @@ What we considered and why we didn't do it.
 
 ## Index
 
-| ADR                                                             | Title                                         | Status   |
-| --------------------------------------------------------------- | --------------------------------------------- | -------- |
-| [0001](0001-lease-based-runtime.md)                             | Lease-based runtime model                     | Accepted |
-| [0002](0002-development-toolchain.md)                           | Managed runtime and compiler compatibility    | accepted |
-| [0003](0003-draft-pr-review-gate.md)                            | Draft pull request review gate                | accepted |
-| [0004](0004-durable-step-attempts.md)                           | Durable step attempt records                  | accepted |
-| [0005](0005-parallel-step-join.md)                              | Parallel named steps and durable join         | accepted |
-| [0006](0006-adr-acceptance-in-implementation-pr.md)             | Accept ADRs in implementation pull requests   | accepted |
-| [0007](0007-explicit-trailing-run-coalescing.md)                | Explicit trailing run coalescing              | accepted |
-| [0008](0008-active-run-coalescing-and-scoped-job-tracking.md)   | Active-run coalescing and scoped job tracking | accepted |
-| [0009](0009-cumulative-delta-review-rounds.md)                  | Cumulative delta review rounds                | accepted |
-| [0010](0010-durable-external-waits.md)                          | Durable external waits                        | accepted |
-| [0011](0011-durable-wait-deadlines.md)                          | Durable wait deadlines and lifecycle timing   | accepted |
-| [0012](0012-run-authorized-http-waits.md)                       | Run-authorized HTTP durable waits             | accepted |
-| [0013](0013-oxc-lint-and-format.md)                             | Oxlint and Oxfmt for linting and formatting   | accepted |
-| [0014](0014-react-doctor-score-gate.md)                         | React Doctor 100/100 gate                     | accepted |
-| [0015](0015-github-oidc-npm-release.md)                         | GitHub OIDC npm releases                      | accepted |
-| [0016](0016-events-follow-state-writes.md)                      | Events follow state writes directly           | accepted |
-| [0017](0017-local-agent-loop-pinned-checkout.md)                | local-agent-loop from a pinned checkout       | accepted |
-| [0018](0018-local-agent-loop-adaptive-routing.md)               | local-agent-loop adaptive routing             | proposed |
-| [0019](0019-local-agent-loop-stop-before-llm.md)                | local-agent-loop stops before any LLM call    | accepted |
-| [0020](0020-local-agent-loop-rejected-invocations.md)           | local-agent-loop rejected invocations         | accepted |
-| [0021](0021-local-agent-loop-squashed-delivery-branch.md)       | local-agent-loop squashed delivery branch     | accepted |
-| [0022](0022-local-agent-loop-external-repair-runs.md)           | local-agent-loop repair runs from findings    | accepted |
-| [0023](0023-local-agent-loop-configurable-review-invocation.md) | local-agent-loop configurable reviewers       | accepted |
-| [0024](0024-local-agent-loop-claude-effort-session-reuse.md)    | local-agent-loop effort-only repair sessions  | accepted |
-| [0025](0025-local-agent-loop-baseline-reuse.md)                 | local-agent-loop baseline result reuse        | accepted |
-| [0026](0026-local-agent-loop-spec-stages.md)                    | local-agent-loop spec stages                  | accepted |
-| [0027](0027-local-agent-loop-web-ui-writes.md)                  | local-agent-loop web UI writes                | accepted |
-| [0028](0028-local-agent-loop-worktree-retention.md)             | local-agent-loop worktree retention           | accepted |
-| [0029](0029-local-agent-loop-parallel-verification-review.md)   | local-agent-loop parallel verification review | accepted |
-| [0030](0030-local-agent-loop-verification-failed-repair.md)     | local-agent-loop verification-failed repair   | accepted |
-| [0031](0031-local-agent-loop-self-check.md)                     | local-agent-loop prompt-only self checks      | accepted |
-| [0032](0032-local-agent-loop-idle-timeout.md)                   | local-agent-loop idle timeout                 | accepted |
-| [0033](0033-local-agent-loop-series-archive.md)                 | local-agent-loop series archive               | accepted |
-| [0034](0034-local-agent-loop-stopped-call-usage.md)             | local-agent-loop stopped-call usage           | accepted |
-| [0035](0035-isolated-shannon-fullstack-audit.md)                | Isolated Shannon fullstack audit              | accepted |
-| [0036](0036-fail-closed-http-run-subscriptions.md)              | Fail-closed HTTP run subscriptions            | accepted |
-| [0037](0037-local-agent-loop-on-demand-worker.md)               | local-agent-loop on-demand worker             | accepted |
-| [0038](0038-local-agent-loop-trusted-context.md)                | local-agent-loop trusted context              | accepted |
-| [0039](0039-local-agent-loop-test-probe.md)                     | local-agent-loop test probe                   | accepted |
-| [0040](0040-local-agent-loop-review-blocker-threshold.md)       | local-agent-loop review blocker threshold     | accepted |
+| ADR                                                           | Title                                         | Status   |
+| ------------------------------------------------------------- | --------------------------------------------- | -------- |
+| [0001](0001-lease-based-runtime.md)                           | Lease-based runtime model                     | Accepted |
+| [0002](0002-development-toolchain.md)                         | Managed runtime and compiler compatibility    | accepted |
+| [0003](0003-draft-pr-review-gate.md)                          | Draft pull request review gate                | accepted |
+| [0004](0004-durable-step-attempts.md)                         | Durable step attempt records                  | accepted |
+| [0005](0005-parallel-step-join.md)                            | Parallel named steps and durable join         | accepted |
+| [0006](0006-adr-acceptance-in-implementation-pr.md)           | Accept ADRs in implementation pull requests   | accepted |
+| [0007](0007-explicit-trailing-run-coalescing.md)              | Explicit trailing run coalescing              | accepted |
+| [0008](0008-active-run-coalescing-and-scoped-job-tracking.md) | Active-run coalescing and scoped job tracking | accepted |
+| [0009](0009-cumulative-delta-review-rounds.md)                | Cumulative delta review rounds                | accepted |
+| [0010](0010-durable-external-waits.md)                        | Durable external waits                        | accepted |
+| [0011](0011-durable-wait-deadlines.md)                        | Durable wait deadlines and lifecycle timing   | accepted |
+| [0012](0012-run-authorized-http-waits.md)                     | Run-authorized HTTP durable waits             | accepted |
+| [0013](0013-oxc-lint-and-format.md)                           | Oxlint and Oxfmt for linting and formatting   | accepted |
+| [0014](0014-react-doctor-score-gate.md)                       | React Doctor 100/100 gate                     | accepted |
+| [0015](0015-github-oidc-npm-release.md)                       | GitHub OIDC npm releases                      | accepted |
+| [0016](0016-events-follow-state-writes.md)                    | Events follow state writes directly           | accepted |
+| [0035](0035-isolated-shannon-fullstack-audit.md)              | Isolated Shannon fullstack audit              | accepted |
+| [0036](0036-fail-closed-http-run-subscriptions.md)            | Fail-closed HTTP run subscriptions            | accepted |
+
+ADR-0017 to ADR-0034 and ADR-0037 to ADR-0040 were about the local agent factory (`examples/local-agent-loop`). They moved with it to [coji/durably-factory](https://github.com/coji/durably-factory/tree/main/docs/adr) and keep their numbers there.
 
 ## Prior Art
 

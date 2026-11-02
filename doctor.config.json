@@ -4,7 +4,6 @@
     "@coji/durably-react",
     "example-fullstack",
     "example-fullstack-vercel-turso",
-    "example-local-agent-loop",
     "example-spa-react-router",
     "example-spa-vite"
   ],
