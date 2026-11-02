@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { z } from 'zod'
 
 import type { CandidateChanges, ReviewSnapshots } from '../engine/types.js'
-import { IMPLEMENTER_NOTES_MAX_BYTES, THRESHOLD_EXCEPTIONS } from './events.js'
+import { asThresholdException, IMPLEMENTER_NOTES_MAX_BYTES } from './events.js'
 import type {
   RepairParentConclusion,
   StageContext,
@@ -933,8 +933,7 @@ function validFinding(
   // The reviewer's reason for a low-scored blocker is kept when it is one
   // the rule names and dropped otherwise, never failing the reply: the
   // finding stands without it, and nothing is decided by it.
-  const exception = f['thresholdException']
-  const known = THRESHOLD_EXCEPTIONS.find((e) => e === exception)
+  const known = asThresholdException(f['thresholdException'])
   return {
     ok: true,
     finding: {
