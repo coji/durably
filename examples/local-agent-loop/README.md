@@ -885,7 +885,7 @@ pnpm --filter example-local-agent-loop demo trigger \
   します。あなたが開いているチェックアウトは、まったく変わりません。
 - 作業の内容は、`--task-file`、`--task "..."`、`--issue 234` のどれか 1 つで渡します。
   `--issue` は、`gh issue view` で本文を取ります。
-- `--spec-file` は実装とレビューの全員に、`--dispositions-file`（過去のレビューの
+- `--spec-file` は実装と 2 つのレビューの全員に、`--dispositions-file`（過去のレビューの
   指摘をどう扱ったか）はレビューだけに渡します。どちらも中身を解釈しない UTF-8 の
   テキストで、1 ファイル 256 KiB までです。プロンプトでは「信頼しないデータ」として
   区切った区画に入り、factory の指示や出力の形式とは混ざりません。
@@ -2246,7 +2246,7 @@ DB を見ます。ディレクトリがなければ、DB を開く前に作り�
 変える引数や環境変数はありません。2 つのプロセスが別の DB を見ると、実行が黙って
 見えなくなるからです。
 
-### 以前の版から移行する
+### 以前の版から移行する（Upgrading）
 
 以前の版は、DB を `examples/local-agent-loop/local-agent-loop.db`（または
 `DURABLY_DB` の指す場所）に、作業物を `examples/local-agent-loop/runs/` に置いて
