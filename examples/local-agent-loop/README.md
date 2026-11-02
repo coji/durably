@@ -1430,7 +1430,7 @@ web UI では、レビューの欄と工程の時系列の詳細に、「中止�
   factory は正しいかどうかを確かめません。
 - レポートは、2 つの採点値を持ち、積が閾値より小さい `blocker` を、レビューの回と
   観点ごとに、例外ありと例外なしに分けて数えます（JSON の `belowThresholdBlockers`、
-  Markdown の `blockers below threshold` の行）。検査の失敗で使わなかった回と、検査が
+  Markdown の `blockers below threshold` の行）。検査の失敗で数えなかった回（`cancelled` と `discarded`）と、検査が
   まだ終わらず `pending` の回も含めます。`pending` の回は、走っている途中の実行の
   レポートにも、検査が終わる前に終わった実行のレポートにも出ます。閾値が 0 のとき、
   採点値がそろっていない指摘、`non-blocker` は数えません。数えるのは、レポートに残した
