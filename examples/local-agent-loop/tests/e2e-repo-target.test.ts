@@ -2621,6 +2621,8 @@ describe(
         const runs = {
           archived: await failSetup(durably, repo, failing),
           switched: await failSetup(durably, repo, failing),
+          lookalike: await failSetup(durably, repo, failing),
+          stale: await failSetup(durably, repo, failing),
           pruned: await failSetup(durably, repo, failing),
           locked: await failSetup(durably, repo, failing),
           orphan: await failSetup(durably, repo, failing),
@@ -2695,6 +2697,34 @@ describe(
           },
         )
         assert.notEqual(await branchCommit(repo, 'look-around'), null)
+        // Nor is one that only looks like it, with the run ID at its end.
+        const lookalike = `factory/investigate-${runs.lookalike.id}`
+        await git(work(runs.lookalike.id), ['switch', '-q', '-c', lookalike])
+        assert.deepEqual(
+          (
+            await archiveRun(durably, runs.lookalike.id, {
+              deleteBranches: true,
+            })
+          ).deletedBranches,
+          [],
+        )
+        assert.notEqual(await branchCommit(repo, lookalike), null)
+
+        // A registration left locked with its directory gone, as a killed
+        // `git worktree add` leaves it, goes too, with no warning.
+        await git(repo, [
+          'worktree',
+          'lock',
+          '--reason',
+          'initializing',
+          work(runs.stale.id),
+        ])
+        await rm(work(runs.stale.id), { recursive: true, force: true })
+        assert.deepEqual(
+          (await archiveRun(durably, runs.stale.id)).warnings,
+          [],
+        )
+        assert.doesNotMatch(await listed(), new RegExp(runs.stale.id))
 
         // Failed before `git worktree add`: nothing to remove, and no warning.
         assert.deepEqual(await archiveRun(durably, runs.unmade.id), {

@@ -213,7 +213,8 @@ export async function forceRemoveWorktree(
   timeoutMs = WORKTREE_REMOVE_TIMEOUT_MS,
 ): Promise<RemoveFailure | null> {
   let refused: unknown = null
-  if (existsSync(dir)) {
+  const present = existsSync(dir)
+  if (present) {
     try {
       await git(repo, ['worktree', 'remove', '--force', dir], { timeoutMs })
     } catch (error) {
@@ -227,7 +228,21 @@ export async function forceRemoveWorktree(
       ? describeRemoveFailure(refused, dir, null)
       : { message: describeGitFailure(error), byHand: false }
   }
-  if (!refused) return null
+  if (!refused) {
+    // A registration left locked, as a killed `git worktree add` leaves it,
+    // outlives the prune once its directory is gone. Nothing is left there
+    // to keep, so it goes the way the test probe's base does.
+    if (present || !(await worktreeRegistered(repo, dir).catch(() => false)))
+      return null
+    try {
+      await git(repo, ['worktree', 'remove', '--force', '--force', dir], {
+        timeoutMs,
+      })
+      return null
+    } catch (error) {
+      return { message: describeGitFailure(error), byHand: false }
+    }
+  }
   // Whether a retry can still finish it: git refuses a directory it no
   // longer lists, as after a removal stopped once dir/.git was deleted.
   const listed = await worktreeRegistered(repo, dir).catch(() => null)
