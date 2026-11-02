@@ -2620,6 +2620,7 @@ describe(
         const failing = { setupCommand: ['sh', '-c', 'exit 1'] }
         const runs = {
           archived: await failSetup(durably, repo, failing),
+          switched: await failSetup(durably, repo, failing),
           pruned: await failSetup(durably, repo, failing),
           locked: await failSetup(durably, repo, failing),
           orphan: await failSetup(durably, repo, failing),
@@ -2679,6 +2680,21 @@ describe(
           await branchCommit(repo, `factory/${runs.archived.id}`),
           null,
         )
+
+        // A branch a person checked out there is not the factory's: the
+        // worktree goes, the branch stays.
+        await git(work(runs.switched.id), ['switch', '-q', '-c', 'look-around'])
+        assert.deepEqual(
+          await archiveRun(durably, runs.switched.id, { deleteBranches: true }),
+          {
+            changed: true,
+            worktreeRemoved: true,
+            deletedBranches: [],
+            warnings: [],
+            retryable: false,
+          },
+        )
+        assert.notEqual(await branchCommit(repo, 'look-around'), null)
 
         // Failed before `git worktree add`: nothing to remove, and no warning.
         assert.deepEqual(await archiveRun(durably, runs.unmade.id), {

@@ -27,10 +27,9 @@ export interface NoticeEntry {
 
 /**
  * `entries` with `entry` in place of the one with its ID, where that one
- * was, or else added last. A new single-run notice replaces the last one,
- * and a new notice of any kind drops the answered ones of other pages,
- * since a person who acts here has left them; a bulk action still running
- * keeps its notice wherever it was started.
+ * was, or else added last. A new single-run notice replaces the last one;
+ * every other notice stays until it is closed, on the page it was made on,
+ * so a bulk action's undo is still there when a person comes back.
  */
 export function withNotice(
   entries: NoticeEntry[],
@@ -40,9 +39,7 @@ export function withNotice(
     return entries.map((e) => (e.id === entry.id ? entry : e))
   return [
     ...entries.filter(
-      (e) =>
-        !(entry.outcome.kind === 'one' && e.outcome.kind === 'one') &&
-        (e.page === entry.page || e.outcome.kind === 'progress'),
+      (e) => !(entry.outcome.kind === 'one' && e.outcome.kind === 'one'),
     ),
     entry,
   ]

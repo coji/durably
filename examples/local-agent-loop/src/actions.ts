@@ -192,13 +192,16 @@ async function unsetRepoRunFiles(durably: AgentLoopDurably, run: Run) {
   ).catch(() => new Map<string, string | null>())
   if (!paths.worktrees.some((dir) => registered.has(dir) || existsSync(dir)))
     return null
+  // Only a branch named for this run is the factory's: one a person checked
+  // out there, as when looking around, is never deleted.
   const branch = registered.get(worktree)
+  const own = branch?.startsWith('factory/') && branch.endsWith(run.id)
   return {
     repoPath: target.repoPath,
     runRoot,
     worktree,
     ...paths,
-    branches: branch ? [branch] : [],
+    branches: own && branch ? [branch] : [],
     delivered: deliveredRun(run),
   }
 }

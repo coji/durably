@@ -4186,15 +4186,19 @@ describe('numbers on the screens', () => {
     // Closing one leaves the others.
     entries = withoutNotice(entries, 2)
     assert.deepEqual(entries, [progress(1, 0), one('r4')])
-    // Only the page a notice was made on shows it. A new notice elsewhere
-    // drops the answered ones left behind, but not one still running.
+    // Only the page a notice was made on shows it. A notice made elsewhere
+    // leaves the bulk ones here, answered or still running.
     entries = withNotice(entries, answered(5))
     entries = withNotice(entries, one('r6', 'summary'))
     assert.deepEqual(noticesOn(entries, 'summary'), [one('r6', 'summary')])
-    assert.deepEqual(noticesOn(entries, 'runs'), [progress(1, 0)])
+    assert.deepEqual(noticesOn(entries, 'runs'), [progress(1, 0), answered(5)])
+    entries = withNotice(entries, progress(7, 0, 'summary'))
     entries = withNotice(entries, progress(1, 1))
-    assert.deepEqual(noticesOn(entries, 'runs'), [progress(1, 1)])
-    assert.deepEqual(noticesOn(entries, 'summary'), [one('r6', 'summary')])
+    assert.deepEqual(noticesOn(entries, 'runs'), [progress(1, 1), answered(5)])
+    assert.deepEqual(noticesOn(entries, 'summary'), [
+      one('r6', 'summary'),
+      progress(7, 0, 'summary'),
+    ])
   })
 
   it('shows the newest stopped tasks and asks before showing the rest', () => {
