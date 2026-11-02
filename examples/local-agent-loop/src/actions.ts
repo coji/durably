@@ -35,6 +35,7 @@ import {
   taskRunIds,
 } from './engine/status.js'
 import { TERMINAL_STATUSES } from './engine/terminal.js'
+import { branchFor } from './factory/job.js'
 import {
   archiveDirOf,
   archiveMarkerOf,
@@ -180,7 +181,13 @@ async function repoRunFiles(durably: AgentLoopDurably, run: Run) {
  */
 async function unsetRepoRunFiles(durably: AgentLoopDurably, run: Run) {
   const target = (
-    run.input as { target?: { kind?: string; repoPath?: string } }
+    run.input as {
+      target?: {
+        kind?: string
+        repoPath?: string
+        issue?: { number: number } | null
+      }
+    }
   ).target
   if (target?.kind !== 'repo' || !target.repoPath) return null
   const runRoot = runRootOf(durably.stateRoot, run.id)
@@ -192,13 +199,12 @@ async function unsetRepoRunFiles(durably: AgentLoopDurably, run: Run) {
   ).catch(() => new Map<string, string | null>())
   if (!paths.worktrees.some((dir) => registered.has(dir) || existsSync(dir)))
     return null
-  // Only a branch setup names for this run, `factory/<id>` or
-  // `factory/issue-<n>-<id>`, is the factory's: one a person checked out
+  // Only a branch setup could have named for this run, as `branchFor` does,
+  // or as it does for a repair, is the factory's: one a person checked out
   // there, as when looking around, is never deleted.
   const branch = registered.get(worktree)
   const own =
-    branch === `factory/${run.id}` ||
-    new RegExp(`^factory/issue-\\d+-${run.id}$`).test(branch ?? '')
+    branch === `factory/${run.id}` || branch === branchFor(run.id, target.issue)
   return {
     repoPath: target.repoPath,
     runRoot,

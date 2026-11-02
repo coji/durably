@@ -229,18 +229,13 @@ export async function forceRemoveWorktree(
       : { message: describeGitFailure(error), byHand: false }
   }
   if (!refused) {
-    // A registration left locked, as a killed `git worktree add` leaves it,
-    // outlives the prune once its directory is gone. Nothing is left there
-    // to keep, so it goes the way the test probe's base does.
+    // A locked registration outlives the prune once its directory is gone.
+    // The lock is a person's to lift, so it is named, not overridden.
     if (present || !(await worktreeRegistered(repo, dir).catch(() => false)))
       return null
-    try {
-      await git(repo, ['worktree', 'remove', '--force', '--force', dir], {
-        timeoutMs,
-      })
-      return null
-    } catch (error) {
-      return { message: describeGitFailure(error), byHand: false }
+    return {
+      message: `git still lists ${dir} as a locked worktree, though the directory is gone: run git worktree unlock ${dir} in ${repo}, then archive again`,
+      byHand: true,
     }
   }
   // Whether a retry can still finish it: git refuses a directory it no

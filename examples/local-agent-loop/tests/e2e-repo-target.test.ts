@@ -2585,7 +2585,11 @@ describe(
     const failSetup = (
       durably: Durably,
       repo: string,
-      how: { setupCommand?: string[]; baseRef?: string },
+      how: {
+        setupCommand?: string[]
+        baseRef?: string
+        issue?: { number: number; title: string; url: string }
+      },
     ) =>
       durably.jobs.agentLoop.trigger({
         provider: 'fake',
@@ -2597,7 +2601,7 @@ describe(
           spec: null,
           dispositions: null,
           inputFiles: NO_FILES,
-          issue: null,
+          issue: how.issue ?? null,
           checkCommand: ['node', '--test', 'test/**/*.test.js'],
           setupCommand: how.setupCommand ?? null,
           publish: false,
@@ -2622,6 +2626,14 @@ describe(
           archived: await failSetup(durably, repo, failing),
           switched: await failSetup(durably, repo, failing),
           lookalike: await failSetup(durably, repo, failing),
+          issued: await failSetup(durably, repo, {
+            ...failing,
+            issue: { number: 7, title: 'Decimal add', url: 'https://x/7' },
+          }),
+          renumbered: await failSetup(durably, repo, {
+            ...failing,
+            issue: { number: 7, title: 'Decimal add', url: 'https://x/7' },
+          }),
           stale: await failSetup(durably, repo, failing),
           pruned: await failSetup(durably, repo, failing),
           locked: await failSetup(durably, repo, failing),
@@ -2652,6 +2664,7 @@ describe(
           )
           // Failed after `git worktree add`, the worktree is registered with
           // its branch; failed before it, nothing is.
+          if (run === runs.issued || run === runs.renumbered) continue
           if (run === runs.unmade) {
             assert.equal(existsSync(work(run.id)), false)
             assert.doesNotMatch(await listed(), new RegExp(run.id))
@@ -2709,9 +2722,30 @@ describe(
           [],
         )
         assert.notEqual(await branchCommit(repo, lookalike), null)
+        // A run from an issue: its own `factory/issue-7-<id>` goes, and one
+        // of another issue number checked out there would stay.
+        const issued = `factory/issue-7-${runs.issued.id}`
+        assert.match(await listed(), new RegExp(`branch refs/heads/${issued}`))
+        assert.deepEqual(
+          (await archiveRun(durably, runs.issued.id, { deleteBranches: true }))
+            .deletedBranches,
+          [issued],
+        )
+        const renumbered = `factory/issue-8-${runs.renumbered.id}`
+        await git(work(runs.renumbered.id), ['switch', '-q', '-c', renumbered])
+        assert.deepEqual(
+          (
+            await archiveRun(durably, runs.renumbered.id, {
+              deleteBranches: true,
+            })
+          ).deletedBranches,
+          [],
+        )
+        assert.notEqual(await branchCommit(repo, renumbered), null)
 
-        // A registration left locked with its directory gone, as a killed
-        // `git worktree add` leaves it, goes too, with no warning.
+        // A registration left locked with its directory gone: the lock is a
+        // person's, so the warning names it, without a retry hint, and once
+        // it is lifted the archive takes the registration.
         await git(repo, [
           'worktree',
           'lock',
@@ -2720,6 +2754,14 @@ describe(
           work(runs.stale.id),
         ])
         await rm(work(runs.stale.id), { recursive: true, force: true })
+        const stale = await archiveRun(durably, runs.stale.id)
+        assert.equal(stale.retryable, false)
+        assert.equal(stale.warnings.length, 1)
+        assert.match(
+          stale.warnings[0] ?? '',
+          /git still lists \S+ as a locked worktree, though the directory is gone: run git worktree unlock \S+ in \S+, then archive again$/,
+        )
+        await git(repo, ['worktree', 'unlock', work(runs.stale.id)])
         assert.deepEqual(
           (await archiveRun(durably, runs.stale.id)).warnings,
           [],

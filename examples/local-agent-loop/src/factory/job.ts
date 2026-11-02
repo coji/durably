@@ -1082,7 +1082,8 @@ export function resolveTimeouts(
   }
 }
 
-function branchFor(
+/** The branch setup creates for a run; a repair's never has the issue. */
+export function branchFor(
   runId: string,
   issue: { number: number } | null | undefined,
 ): string {
