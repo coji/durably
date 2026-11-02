@@ -4247,6 +4247,7 @@ describe('the review blocker threshold', { timeout: 300000 }, () => {
     }
     const start = async (args: {
       threshold?: number
+      maxIterations?: number
       verdict?: boolean
       reviewOutputs?: string[]
       checkCommand?: string[]
@@ -4275,7 +4276,7 @@ describe('the review blocker threshold', { timeout: 300000 }, () => {
               ? { reviewBlockerThreshold: args.threshold }
               : {}),
           },
-          maxIterations: 1,
+          maxIterations: args.maxIterations ?? 1,
           context: 'reuse',
           review: args.verdict ? verdictReviews : findingsReviews,
           fakeScenario: {
@@ -4293,6 +4294,26 @@ describe('the review blocker threshold', { timeout: 300000 }, () => {
       body: 'a race only under a clock jump',
       likelihood: 1,
       impact: 4,
+    }
+    const belowExempt = {
+      severity: 'blocker',
+      title: 'BELOW-EXEMPT',
+      body: 'the task asks for it',
+      likelihood: 1,
+      impact: 2,
+      thresholdException: 'explicit-requirement',
+    }
+    const belowUnexplained = {
+      severity: 'blocker',
+      title: 'BELOW-UNEXPLAINED',
+      body: 'a race only under a clock jump',
+      likelihood: 2,
+      impact: 2,
+    }
+    const belowUnknown = {
+      ...belowUnexplained,
+      title: 'BELOW-UNKNOWN',
+      thresholdException: 'rare',
     }
     const recording = recordFakeReviewCalls()
     const ids: Record<string, string> = {}
@@ -4339,6 +4360,22 @@ describe('the review blocker threshold', { timeout: 300000 }, () => {
           ]),
         ],
       })
+      // Low-scored blockers the reviewer kept, one with the exception it
+      // claims and one without, beside ones the count leaves out: the
+      // round blocks, and the repair is told not to design for rare cases.
+      ids['below'] = await start({
+        threshold: 5,
+        maxIterations: 2,
+        reviewOutputs: [
+          reply([belowExempt, belowUnexplained, belowUnknown]),
+          reply([
+            { ...belowUnexplained, title: 'AT-THRESHOLD', likelihood: 5 },
+            { severity: 'blocker', title: 'ONE-SCORE', body: 'b', impact: 1 },
+          ]),
+          reply([]),
+          reply([]),
+        ],
+      })
       ids['off'] = await start({
         threshold: 0,
         reviewOutputs: [reply([]), reply([])],
@@ -4369,6 +4406,7 @@ describe('the review blocker threshold', { timeout: 300000 }, () => {
       assert.equal(await conclusion('low'), 'approved')
       assert.equal(await conclusion('high'), 'review-cap-reached')
       assert.equal(await conclusion('tests'), 'review-cap-reached')
+      assert.equal(await conclusion('below'), 'approved')
       assert.equal(await conclusion('off'), 'approved')
       assert.equal(await conclusion('legacy'), 'approved')
       assert.equal(await conclusion('verdict'), 'approved')
@@ -4459,6 +4497,73 @@ describe('the review blocker threshold', { timeout: 300000 }, () => {
       assert.deepEqual(
         blockers.map((f) => [f.title, f.likelihood, f.impact]),
         [['NO-TEST', 1, 1]],
+      )
+      // A low-scored blocker without an exception is counted as such,
+      // whatever the finding is about: the reviewer named no reason.
+      assert.deepEqual(tests.belowThresholdBlockers, [
+        { round: 1, lens: 'edge-cases', withException: 0, withoutException: 1 },
+      ])
+
+      // The low-scored blockers stayed blockers and blocked the round; the
+      // report keeps the exception the reviewer named, drops one it does
+      // not know, and counts them by round and lens, apart.
+      const below = await buildReport(durably, ids['below'] ?? '')
+      const first = below.reviewRounds[0]?.reviews ?? []
+      assert.deepEqual(
+        first.map((r) => [r.lens, r.decision]),
+        [
+          ['correctness', 'needsChanges'],
+          ['edge-cases', 'needsChanges'],
+        ],
+      )
+      assert.deepEqual(first[0]?.findings?.blocker, [
+        belowExempt,
+        belowUnexplained,
+        { ...belowUnexplained, title: 'BELOW-UNKNOWN' },
+      ])
+      assert.deepEqual(below.belowThresholdBlockers, [
+        {
+          round: 1,
+          lens: 'correctness',
+          withException: 1,
+          withoutException: 2,
+        },
+      ])
+      const belowJson = JSON.parse(reportToJson(below)) as {
+        belowThresholdBlockers: unknown
+        reviewRounds: { reviews: { findings: { blocker: object[] } }[] }[]
+      }
+      assert.deepEqual(
+        belowJson.belowThresholdBlockers,
+        below.belowThresholdBlockers,
+      )
+      assert.deepEqual(
+        belowJson.reviewRounds[0]?.reviews[0]?.findings.blocker[0],
+        belowExempt,
+      )
+      const belowMarkdown = reportToMarkdown(below)
+      assert.match(
+        belowMarkdown,
+        /^- blockers below threshold: 3 \(correctness, round 1; 1 with an exception, 2 without\)$/m,
+      )
+      assert.equal(
+        belowMarkdown.match(/^- blockers below threshold:/gm)?.length,
+        1,
+      )
+      // The repair of those blockers, continuing the conversation, is told
+      // not to design for rare cases.
+      const repairs = recording.calls.filter(
+        (c) => c.role === 'repair' && c.workdir.includes(ids['below'] ?? ''),
+      )
+      assert.equal(repairs.length, 1)
+      assert.match(
+        repairs[0]?.input ?? '',
+        /continuing the repair conversation[\s\S]*Do not design for rare or future cases nobody asked for\./,
+      )
+      // No count at a threshold of 0.
+      assert.deepEqual(
+        (await buildReport(durably, ids['off'] ?? '')).belowThresholdBlockers,
+        [],
       )
       assert.equal(
         (await buildReport(durably, ids['off'] ?? '')).reviewBlockerThreshold,

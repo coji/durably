@@ -3,7 +3,7 @@ import { describe, it } from 'node:test'
 
 import { FactoryEventSchema } from '../src/factory/events.js'
 import { decide } from '../src/factory/policy.js'
-import { reduce } from '../src/factory/reducer.js'
+import { reduce, repairsReviewFeedback } from '../src/factory/reducer.js'
 import { initialState, type FactorySetup } from '../src/factory/types.js'
 
 function profile(role: string, provider: 'fake', model: string) {
@@ -339,5 +339,70 @@ describe("the implementer's notes in the state", () => {
       code('implement', 'candidate-1', 'a'.repeat(4096)).type,
       'code.completed',
     )
+  })
+})
+
+describe('repairsReviewFeedback', () => {
+  const implemented = () =>
+    reduce(initialState(setup), {
+      type: 'code.completed',
+      role: 'implement',
+      candidate,
+      session: null,
+    })
+  const verdicts = (decision: 'pass' | 'needsChanges') => [
+    { lens: 'correctness' as const, decision, notes: 'n' },
+    { lens: 'edge-cases' as const, decision: 'pass' as const, notes: 'ok' },
+  ]
+  const failedBeside = (decision: 'pass' | 'needsChanges') =>
+    reduce(implemented(), {
+      type: 'verify-review.completed',
+      targetId: candidate.id,
+      passed: false,
+      stdout: 'fail',
+      exitCode: 1,
+      log: null,
+      reviews: null,
+      failedCheckReviews: verdicts(decision).map((v) => ({
+        ...v,
+        findings: null,
+      })),
+    })
+
+  it('is true after a review asked for changes, on its own or beside a failed check', () => {
+    const reviewed = reduce(
+      reduce(implemented(), {
+        type: 'verify.completed',
+        targetId: candidate.id,
+        passed: true,
+        stdout: 'ok',
+        exitCode: 0,
+      }),
+      {
+        type: 'review.completed',
+        targetId: candidate.id,
+        reviews: verdicts('needsChanges'),
+      },
+    )
+    assert.equal(repairsReviewFeedback(reviewed), true)
+    const both = failedBeside('needsChanges')
+    // The notes are the check's alone; the reviews say what else to repair.
+    assert.equal(both.repairNotes.length, 1)
+    assert.match(both.repairNotes[0] ?? '', /^acceptance: /)
+    assert.equal(repairsReviewFeedback(both), true)
+  })
+
+  it('is false before any review and after a failed check alone', () => {
+    assert.equal(repairsReviewFeedback(initialState(setup)), false)
+    assert.equal(repairsReviewFeedback(implemented()), false)
+    const failed = reduce(implemented(), {
+      type: 'verify.completed',
+      targetId: candidate.id,
+      passed: false,
+      stdout: 'fail',
+      exitCode: 1,
+    })
+    assert.equal(repairsReviewFeedback(failed), false)
+    assert.equal(repairsReviewFeedback(failedBeside('pass')), false)
   })
 })

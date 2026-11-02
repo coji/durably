@@ -13,6 +13,7 @@
  */
 import type { StepAttempt } from '@coji/durably'
 
+import type { ThresholdException } from '../factory/events.js'
 import { INTERRUPTED_CHECK } from './failure-details.js'
 import { retryText, type FailureClassification } from './failure-reasons.js'
 import { formatters } from './format.js'
@@ -287,6 +288,11 @@ export interface ReportFinding {
   /** The reviewer's scores of a product-behavior finding (ADR-0040). */
   likelihood?: number
   impact?: number
+  /**
+   * Why the reviewer kept a blocker below the threshold, as it said; never
+   * checked (ADR-0040).
+   */
+  thresholdException?: ThresholdException
 }
 
 /**
@@ -920,6 +926,21 @@ export interface StoppedCallUsage {
   sessionId: string | null
 }
 
+/**
+ * One review's kept blockers with both scores whose product is below the
+ * run's threshold of 1 or more (ADR-0040), split by whether the reviewer
+ * named a `thresholdException`. The reviewer was told such a finding is a
+ * non-blocker unless an exception applies; the severity stands either way.
+ * Only reviews with one or more are listed, every round included, a round
+ * beside a failed check too.
+ */
+export interface BelowThresholdBlockers {
+  round: number
+  lens: string
+  withException: number
+  withoutException: number
+}
+
 export interface LoopReport {
   runId: string
   jobName: string
@@ -943,6 +964,12 @@ export interface LoopReport {
    * existed.
    */
   reviewBlockerRuleLenses?: string[]
+  /**
+   * The blockers each review returned although their likelihood × impact is
+   * below the threshold, by round and lens; see `BelowThresholdBlockers`.
+   * Absent on a report made before it existed.
+   */
+  belowThresholdBlockers?: BelowThresholdBlockers[]
   summary: RunSummary
   triage: ReportTriage | null
   /**
@@ -1689,6 +1716,10 @@ export function reportToMarkdown(r: LoopReport): string {
       `- review blocker threshold: ${r.reviewBlockerThreshold} (${rule})`,
     )
   }
+  for (const b of r.belowThresholdBlockers ?? [])
+    lines.push(
+      `- blockers below threshold: ${b.withException + b.withoutException} (${b.lens}, round ${b.round}; ${b.withException} with an exception, ${b.withoutException} without)`,
+    )
   if (r.repairSession) {
     const { setup, confirmed } = r.repairSession
     lines.push(

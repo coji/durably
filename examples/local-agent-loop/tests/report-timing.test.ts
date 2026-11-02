@@ -4,6 +4,7 @@ import { describe, it } from 'node:test'
 import {
   asReportReview,
   asSpecReview,
+  belowThresholdBlockersOf,
   reviewBlockerRuleLensesOf,
 } from '../src/engine/build-report.js'
 import { PRICE_BASIS } from '../src/engine/pricing.js'
@@ -16,6 +17,7 @@ import {
   totalStageMs,
   type AttemptRow,
   type LoopReport,
+  type ReportFinding,
   type ReportReview,
   type ReportReviewFindings,
   type ReportReviewRound,
@@ -573,6 +575,127 @@ describe('the review blocker threshold in the Markdown header', () => {
       '- review blocker threshold: 0 (no likelihood × impact rule)',
     )
     assert.equal(header(null), undefined)
+  })
+})
+
+describe('the blockers below the threshold', () => {
+  const blocker = (
+    title: string,
+    extra: Partial<ReportFinding> = {},
+  ): ReportFinding => ({ severity: 'blocker', title, body: 'b', ...extra })
+  const review = (lens: string, blockers: ReportFinding[]): ReportReview => ({
+    lens,
+    decision: blockers.length > 0 ? 'needsChanges' : 'pass',
+    notes: 'n',
+    findings: {
+      blocker: blockers,
+      nonBlocker: [
+        {
+          ...blocker('ADVICE', { likelihood: 1, impact: 1 }),
+          severity: 'non-blocker',
+        },
+      ],
+      counts: { blocker: blockers.length, nonBlocker: 1 },
+    },
+  })
+  const rounds: ReportReviewRound[] = [
+    {
+      round: 1,
+      sequence: 4,
+      candidate: null,
+      status: 'completed',
+      reason: null,
+      reviews: [
+        review('correctness', [
+          blocker('EXEMPT', {
+            likelihood: 1,
+            impact: 4,
+            thresholdException: 'explicit-requirement',
+          }),
+          blocker('UNEXPLAINED', { likelihood: 2, impact: 2 }),
+          // At the threshold, with one score, or none: not counted.
+          blocker('AT', { likelihood: 5, impact: 1 }),
+          blocker('ONE', { likelihood: 1 }),
+          blocker('NONE'),
+        ]),
+        review('edge-cases', [blocker('HIGH', { likelihood: 9, impact: 9 })]),
+      ],
+    },
+    {
+      // A round beside a failed check counts too: its reviews reached the
+      // repair.
+      round: 2,
+      sequence: 7,
+      candidate: null,
+      status: 'discarded',
+      reason: 'verify-failed',
+      reviews: [
+        review('edge-cases', [
+          blocker('NOT-PRODUCT', {
+            likelihood: 1,
+            impact: 1,
+            thresholdException: 'not-product',
+          }),
+        ]),
+      ],
+    },
+  ]
+
+  it('counts the kept blockers with both scores below it, by round and lens, with and without an exception', () => {
+    assert.deepEqual(belowThresholdBlockersOf(5, rounds), [
+      { round: 1, lens: 'correctness', withException: 1, withoutException: 1 },
+      { round: 2, lens: 'edge-cases', withException: 1, withoutException: 0 },
+    ])
+    // Nothing without a threshold of 1 or more.
+    assert.deepEqual(belowThresholdBlockersOf(0, rounds), [])
+    assert.deepEqual(belowThresholdBlockersOf(null, rounds), [])
+  })
+
+  it('prints a line for each in the Markdown report and keeps them in the JSON one', () => {
+    const report: LoopReport = {
+      ...baseReport(),
+      reviewBlockerThreshold: 5,
+      reviewBlockerRuleLenses: ['correctness', 'edge-cases'],
+      belowThresholdBlockers: belowThresholdBlockersOf(5, rounds),
+    }
+    const lines = reportToMarkdown(report)
+      .split('\n')
+      .filter((l) => l.startsWith('- blockers below threshold:'))
+    assert.deepEqual(lines, [
+      '- blockers below threshold: 2 (correctness, round 1; 1 with an exception, 1 without)',
+      '- blockers below threshold: 1 (edge-cases, round 2; 1 with an exception, 0 without)',
+    ])
+    assert.deepEqual(
+      (JSON.parse(reportToJson(report)) as LoopReport).belowThresholdBlockers,
+      report.belowThresholdBlockers,
+    )
+    assert.doesNotMatch(
+      reportToMarkdown({ ...report, belowThresholdBlockers: [] }),
+      /blockers below threshold/,
+    )
+  })
+
+  it('reads a stored exception only when it is one the rule names', () => {
+    const stored = (thresholdException: unknown) =>
+      asReportReview({
+        lens: 'correctness',
+        decision: 'needsChanges',
+        notes: 'n',
+        findings: {
+          blocker: [
+            { severity: 'blocker', title: 't', body: 'b', thresholdException },
+          ],
+          nonBlocker: [],
+          counts: { blocker: 1, nonBlocker: 0 },
+        },
+      })?.findings?.blocker[0]
+    assert.equal(stored('not-product')?.thresholdException, 'not-product')
+    for (const value of ['rare', 1, null])
+      assert.deepEqual(stored(value), {
+        severity: 'blocker',
+        title: 't',
+        body: 'b',
+      })
   })
 })
 
