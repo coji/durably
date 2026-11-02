@@ -1219,6 +1219,8 @@ async function approvedParent(
     target: {
       kind: 'repo' as const,
       repoPath: repo,
+      // Display only: a repair, which stores none, keeps the config version.
+      name: 'calc',
       baseRef: 'HEAD',
       task: 'Fix add() so decimal inputs are not truncated.',
       spec: 'SPEC: add(0.1, 0.2) is 0.30000000000000004.',

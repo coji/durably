@@ -199,6 +199,7 @@ type RunInput = {
     selfCheck?: string[][] | null
     testProbe?: { glob: string; command: string[] }[] | null
     reviewBlockerThreshold?: number | null
+    name?: string
     commit?: {
       authorName: string | null
       authorEmail: string | null
@@ -1265,7 +1266,11 @@ describe('archive --series', { timeout: 300000 }, () => {
 
 describe('retrigger from the stored input', () => {
   it('starts one run per stopped run with its labels, a repair child with its parent, and refuses a stop unsafe to repeat', async () => {
-    const input = { target: { kind: 'repo' }, repairOf: { runId: 'parent' } }
+    // The stored input as it is, its repository's name included.
+    const input = {
+      target: { kind: 'repo', name: 'site' },
+      repairOf: { runId: 'parent' },
+    }
     const stored = {
       child: {
         id: 'child',
@@ -1981,6 +1986,51 @@ describe('parallelReview', { timeout: 180000 }, () => {
     // Setup records it only when on; a parent without it is off.
     assert.equal(repair(parent(false), setup), false)
     assert.equal(repair(parent(), setup), false)
+  })
+})
+
+describe('name', { timeout: 180000 }, () => {
+  it('stores the trimmed name at trigger, none when left out, and reloads it', async () => {
+    const named = await sandbox({ check: CHECK, name: ' artifactshare ' })
+    const input = await inputOf(
+      named,
+      await trigger(named, ['--repo', named.repo, '--task', 'x']),
+    )
+    assert.equal(input.target.name, 'artifactshare')
+    const plain = await sandbox({ check: CHECK })
+    const plainInput = await inputOf(
+      plain,
+      await trigger(plain, ['--repo', plain.repo, '--task', 'x']),
+    )
+    assert.equal('name' in plainInput.target, false)
+    // `retrigger --reload-config` reads the file as it is now.
+    await writeFile(
+      join(named.repo, 'factory.json'),
+      JSON.stringify({ check: CHECK, name: 'site' }),
+    )
+    const reloaded = await reloadTriggerInput(
+      input as unknown as Parameters<typeof reloadTriggerInput>[0],
+    )
+    assert.equal((reloaded.input.target as { name?: string }).name, 'site')
+    await writeFile(
+      join(named.repo, 'factory.json'),
+      JSON.stringify({ check: CHECK }),
+    )
+    const dropped = await reloadTriggerInput(
+      input as unknown as Parameters<typeof reloadTriggerInput>[0],
+    )
+    assert.equal('name' in dropped.input.target, false)
+  })
+
+  it('refuses an empty, blank or non-string name', async () => {
+    for (const name of ['', '   ', 1, null, ['a']]) {
+      const box = await sandbox({ check: CHECK, name })
+      await rejected(
+        box,
+        ['--repo', box.repo, '--task', 'x'],
+        /invalid factory config[\s\S]*name/,
+      )
+    }
   })
 })
 

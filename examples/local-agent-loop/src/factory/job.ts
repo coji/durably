@@ -253,6 +253,11 @@ const targetSchema = z
       kind: z.literal('repo'),
       /** Any path inside the repository to work on. */
       repoPath: z.string().min(1),
+      /**
+       * The repository's name on the web UI, from `factory.json`. Absent:
+       * the directory's name, as on a run stored before it existed.
+       */
+      name: z.string().min(1).optional(),
       baseRef: z.string().default('HEAD'),
       task: z.string().min(1),
       /** Handed to the implementer and both reviewers. */

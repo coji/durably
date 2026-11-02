@@ -732,7 +732,8 @@ Commands (run from examples/local-agent-loop):
   pnpm demo seed [--home <dir>] [--latency 20000-90000]
                                             demo data on the fake provider in a throwaway HOME
 Repository config: factory.json at the repository root, or --config <file>:
-  { "check": ["pnpm", "validate"], "setup": ["pnpm", "install"], "base": "main",
+  { "name": "<name>", "check": ["pnpm", "validate"], "setup": ["pnpm", "install"],
+    "base": "main",
     "baselineCheck": false, "baselineReuse": { "maxAgeMs": 3600000 },
     "parallelReview": false, "codexPath": "<file>",
     "selfCheck": [["pnpm", "lint"], ["pnpm", "typecheck"]],
@@ -809,6 +810,8 @@ Repository config: factory.json at the repository root, or --config <file>:
   affected.
   "codexPath" names the Codex CLI to launch, relative to the config file;
   without it, codex on PATH first, then the bundled CLI.
+  "name" (a non-empty string) is the repository's name on the web UI in
+  place of its directory's name, stored on the run at trigger.
   "commit" sets the author (name and email) of every factory commit and a
   message template in which {iteration}, {runId} and {task} (the task's first
   line) are replaced; each field is optional and none may be empty. Without
