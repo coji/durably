@@ -343,11 +343,19 @@ function reviewLines(reviews: ReportReview[], indent: string): string[] {
   ])
 }
 
-/** ` (likelihood 2, impact 3)` with the scores a finding has; else nothing. */
-function scoreAside(f: Pick<ReportFinding, 'likelihood' | 'impact'>): string {
+/**
+ * ` (likelihood 2, impact 3, exception not-product)` with the scores a finding
+ * has and the exception its reviewer named; else nothing.
+ */
+function scoreAside(
+  f: Pick<ReportFinding, 'likelihood' | 'impact' | 'thresholdException'>,
+): string {
   const scores = [
     ...(f.likelihood !== undefined ? [`likelihood ${f.likelihood}`] : []),
     ...(f.impact !== undefined ? [`impact ${f.impact}`] : []),
+    ...(f.thresholdException !== undefined
+      ? [`exception ${f.thresholdException}`]
+      : []),
   ]
   return scores.length > 0 ? ` (${scores.join(', ')})` : ''
 }
@@ -931,8 +939,9 @@ export interface StoppedCallUsage {
  * run's threshold of 1 or more (ADR-0040), split by whether the reviewer
  * named a `thresholdException`. The reviewer was told such a finding is a
  * non-blocker unless an exception applies; the severity stands either way.
- * Only reviews with one or more are listed, every round included, a round
- * beside a failed check too.
+ * Only reviews with one or more are listed, every round included: a round
+ * discarded or cancelled beside a failed check, and one still pending when
+ * the run ended, too.
  */
 export interface BelowThresholdBlockers {
   round: number

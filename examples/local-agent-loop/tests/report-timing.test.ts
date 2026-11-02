@@ -675,6 +675,22 @@ describe('the blockers below the threshold', () => {
     )
   })
 
+  it('prints the exception a finding names after its scores, and nothing for one without', () => {
+    const md = reportToMarkdown({ ...baseReport(), reviewRounds: rounds })
+    assert.match(
+      md,
+      /^ {6}- EXEMPT \(likelihood 1, impact 4, exception explicit-requirement\)$/m,
+    )
+    assert.match(
+      md,
+      /^ {6}- NOT-PRODUCT \(likelihood 1, impact 1, exception not-product\)$/m,
+    )
+    assert.match(md, /^ {6}- UNEXPLAINED \(likelihood 2, impact 2\)$/m)
+    assert.match(md, /^ {6}- ONE \(likelihood 1\)$/m)
+    assert.match(md, /^ {6}- NONE$/m)
+    assert.match(md, /^ {4}- blockers: 5$/m)
+  })
+
   it('reads a stored exception only when it is one the rule names', () => {
     const stored = (thresholdException: unknown) =>
       asReportReview({

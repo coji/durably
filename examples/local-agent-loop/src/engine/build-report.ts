@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs'
 
 import type { AnyDurably, Run } from '@coji/durably'
 
-import { THRESHOLD_EXCEPTIONS } from '../factory/events.js'
+import { asThresholdException } from '../factory/events.js'
 import { REPAIR_OF_LABEL, triageThatRuns } from '../factory/repair.js'
 import { testProbeOutcomeOf } from '../factory/test-probe.js'
 import {
@@ -228,8 +228,7 @@ function asFinding(value: unknown): ReportFinding | null {
     typeof f.body !== 'string'
   )
     return null
-  // Only a reason the rule names; anything else stored is not one.
-  const exception = THRESHOLD_EXCEPTIONS.find((e) => e === f.thresholdException)
+  const exception = asThresholdException(f.thresholdException)
   return {
     severity: f.severity,
     title: f.title,

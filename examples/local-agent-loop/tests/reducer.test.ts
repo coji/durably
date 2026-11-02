@@ -369,8 +369,8 @@ describe('repairsReviewFeedback', () => {
       })),
     })
 
-  it('is true after a review asked for changes, on its own or beside a failed check', () => {
-    const reviewed = reduce(
+  const reviewed = () =>
+    reduce(
       reduce(implemented(), {
         type: 'verify.completed',
         targetId: candidate.id,
@@ -384,7 +384,9 @@ describe('repairsReviewFeedback', () => {
         reviews: verdicts('needsChanges'),
       },
     )
-    assert.equal(repairsReviewFeedback(reviewed), true)
+
+  it('is true after a review asked for changes, on its own or beside a failed check', () => {
+    assert.equal(repairsReviewFeedback(reviewed()), true)
     const both = failedBeside('needsChanges')
     // The notes are the check's alone; the reviews say what else to repair.
     assert.equal(both.repairNotes.length, 1)
@@ -404,5 +406,20 @@ describe('repairsReviewFeedback', () => {
     })
     assert.equal(repairsReviewFeedback(failed), false)
     assert.equal(repairsReviewFeedback(failedBeside('pass')), false)
+  })
+
+  it('is false once the repair it was for completed, whichever reviews asked', () => {
+    // The next candidate is not reviewed yet: an earlier round's request
+    // for changes is not carried into the call after it.
+    for (const before of [reviewed(), failedBeside('needsChanges')]) {
+      assert.equal(repairsReviewFeedback(before), true)
+      const repaired = reduce(before, {
+        type: 'code.completed',
+        role: 'repair',
+        candidate: { ...candidate, id: 'candidate-2' },
+        session: null,
+      })
+      assert.equal(repairsReviewFeedback(repaired), false)
+    }
   })
 })
