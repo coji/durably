@@ -843,6 +843,152 @@ describe('archive and unarchive', { timeout: 120000 }, () => {
   })
 })
 
+describe('archive retry hints', { timeout: 300000 }, () => {
+  const DEMO = 'pnpm --filter example-local-agent-loop demo'
+  /**
+   * Stopped repository runs with no worker, each with a worktree added by
+   * hand where setup would have made it: none has a completed setup, so
+   * the archive finds each by git's registration.
+   */
+  async function stoppedWithWorktrees(box: Sandbox, count: number) {
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    const ids: string[] = []
+    try {
+      await durably.migrate()
+      for (let i = 0; i < count; i++) {
+        const run = await durably.jobs.agentLoop.trigger({
+          provider: 'fake',
+          target: {
+            kind: 'repo' as const,
+            repoPath: box.repo,
+            baseRef: 'HEAD',
+            task: 'Fix add() so decimal inputs are not truncated.',
+            spec: null,
+            dispositions: null,
+            inputFiles: { task: null, spec: null, dispositions: null },
+            issue: null,
+            checkCommand: CHECK,
+            setupCommand: null,
+            publish: false,
+          },
+          maxIterations: 1,
+          context: 'reuse',
+        })
+        await durably.cancel(run.id)
+        await git(box.repo, [
+          'worktree',
+          'add',
+          '-b',
+          `factory/${run.id}`,
+          join(runRootOf(box.stateRoot, run.id), 'work'),
+          'HEAD',
+        ])
+        ids.push(run.id)
+      }
+    } finally {
+      await durably.db.destroy()
+    }
+    return ids
+  }
+  const work = (box: Sandbox, id: string) =>
+    join(runRootOf(box.stateRoot, id), 'work')
+  const archive = async (
+    box: Sandbox,
+    args: string[],
+    env: Record<string, string> = {},
+  ) => {
+    const res = await demo(box, ['archive', ...args], env)
+    assert.equal(res.code, 0, res.stderr)
+    return res.stderr
+  }
+
+  it('offers a retry, with --delete-branch kept, only while asking again can remove what git refused', async () => {
+    const box = await sandbox()
+    const [locked = '', orphan = '', deleted = '', gone = '', stopped = ''] =
+      await stoppedWithWorktrees(box, 5)
+
+    // A worktree git refuses: the warning, and the same command again.
+    await git(box.repo, ['worktree', 'lock', work(box, locked)])
+    for (const [flags, again] of [
+      [['--run', locked, '--delete-branch'], `--run ${locked} --delete-branch`],
+      [['--run', locked], `--run ${locked}`],
+      [
+        ['--series', locked, '--delete-branch'],
+        `--series ${locked} --delete-branch`,
+      ],
+      [['--series', locked], `--series ${locked}`],
+    ] as const) {
+      const stderr = await archive(box, [...flags])
+      assert.match(stderr, /^warning: .*worktree .*locked/m)
+      assert.ok(
+        stderr.includes(
+          `run ${DEMO} archive ${again} again to retry what git refused\n`,
+        ),
+        stderr,
+      )
+      // The hint is the whole line, with nothing added after it.
+      assert.equal(
+        stderr.split('\n').filter((line) => line.includes('again to retry'))
+          .length,
+        1,
+      )
+    }
+    await git(box.repo, ['worktree', 'unlock', work(box, locked)])
+    assert.doesNotMatch(
+      await archive(box, ['--run', locked, '--delete-branch']),
+      /warning|again to retry/,
+    )
+    assert.equal(existsSync(work(box, locked)), false)
+
+    // A directory git no longer lists: removed by hand, so no retry hint.
+    await rm(join(work(box, orphan), '.git'))
+    await git(box.repo, ['worktree', 'prune'])
+    for (const flags of [
+      ['--run', orphan, '--delete-branch'],
+      ['--series', orphan, '--delete-branch'],
+    ]) {
+      const stderr = await archive(box, flags)
+      assert.match(
+        stderr,
+        /^warning: .*git no longer lists \S+ as a worktree, so neither archive nor pnpm --filter example-local-agent-loop demo prune --apply can remove it: remove the directory by hand$/m,
+      )
+      assert.doesNotMatch(stderr, /again to retry/)
+    }
+
+    // Deleted outside git, with its registration left or gone as well:
+    // nothing is left to remove, and nothing is said.
+    await rm(work(box, deleted), { recursive: true, force: true })
+    assert.equal(await archive(box, ['--run', deleted, '--delete-branch']), '')
+    assert.doesNotMatch(
+      await git(box.repo, ['worktree', 'list', '--porcelain']),
+      new RegExp(deleted),
+    )
+    await rm(work(box, gone), { recursive: true, force: true })
+    await git(box.repo, ['worktree', 'prune'])
+    assert.equal(await archive(box, ['--series', gone, '--delete-branch']), '')
+
+    // git removes the worktree but reports a failure: nothing is left.
+    const bin = join(box.root, 'bin')
+    await mkdir(bin)
+    const realGit = (
+      await runChild('sh', ['-c', 'command -v git'], { timeoutMs: 10000 })
+    ).stdout.trim()
+    await writeFile(
+      join(bin, 'git'),
+      `#!/bin/sh\nif [ "$1" = worktree ] && [ "$2" = remove ]; then\n  '${realGit}' "$@"\n  touch '${bin}/refused'\n  exit 1\nfi\nexec '${realGit}' "$@"\n`,
+    )
+    await chmod(join(bin, 'git'), 0o755)
+    assert.equal(
+      await archive(box, ['--run', stopped], {
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+      }),
+      '',
+    )
+    assert.ok(existsSync(join(bin, 'refused')))
+    assert.equal(existsSync(work(box, stopped)), false)
+  })
+})
+
 describe('archive --series', { timeout: 300000 }, () => {
   /** A fake subject run, a repair of `parent` when one is named. */
   const subjectRun = async (durably: AgentLoopDurably, parent?: string) =>

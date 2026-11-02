@@ -8,6 +8,7 @@
  * what came of each as a notice and the next refresh shows the run moved.
  */
 import {
+  Fragment,
   useCallback,
   useEffect,
   useRef,
@@ -18,7 +19,6 @@ import {
 import {
   ActionNotice,
   type Act,
-  type ActionOutcome,
   type ActionResult,
 } from './components/ActionNotice'
 import {
@@ -28,7 +28,6 @@ import {
   seriesOutcome,
   type BulkAct,
   type BulkItem,
-  type BulkOutcome,
   type ItemAnswer,
   type BulkRequest,
   type SeriesResult,
@@ -36,6 +35,13 @@ import {
 import { focusPageTitle } from './components/Layout'
 import { runHref } from './components/RunLink'
 import { SHELL } from './glossary'
+import {
+  noticesOn,
+  withNotice,
+  withoutNotice,
+  type NoticeEntry,
+  type NoticeOutcome,
+} from './notices'
 import { parseRoute, routeKey, withRepo, type Route } from './route'
 import {
   CompareScreen,
@@ -119,34 +125,27 @@ async function postItem(
   }
 }
 
-type Outcome =
-  | { kind: 'one'; outcome: ActionOutcome }
-  | {
-      kind: 'progress'
-      action: BulkRequest['action']
-      done: number
-      total: number
-    }
-  | { kind: 'bulk'; outcome: BulkOutcome }
-
 /**
- * Send actions with the page's token, one POST each, and keep what the
- * last one came to until it is closed or the page changes. A bulk action
- * sends its items one after another, as the CLI does them, and shows how
- * many have their answer until the last one does.
+ * Send actions with the page's token, one POST each, and keep what each
+ * came to until it is closed or the page changes (`withNotice`). A bulk
+ * action sends its items one after another, as the CLI does them, and its
+ * own notice shows how many have their answer until the last one does.
  */
 function useActions(token: string, page: string) {
-  // Kept with the page it was made on, so another page shows none.
-  const [last, setLast] = useState<{ page: string; outcome: Outcome } | null>(
-    null,
-  )
-  const outcome = last?.page === page ? last.outcome : null
-  const setOutcome = useCallback(
-    (next: Outcome | null) => setLast(next ? { page, outcome: next } : null),
+  const [entries, setEntries] = useState<NoticeEntry[]>([])
+  const lastId = useRef(0)
+  const show = useCallback(
+    (id: number, outcome: NoticeOutcome) =>
+      setEntries((now) => withNotice(now, { id, page, outcome })),
     [page],
+  )
+  const close = useCallback(
+    (id: number) => setEntries((now) => withoutNotice(now, id)),
+    [],
   )
   const act = useCallback<Act>(
     async (request) => {
+      const id = ++lastId.current
       try {
         const result = await post(
           token,
@@ -154,52 +153,59 @@ function useActions(token: string, page: string) {
           request.action,
           request.body,
         )
-        setOutcome({ kind: 'one', outcome: { request, result } })
+        show(id, { kind: 'one', outcome: { request, result } })
         return true
       } catch (error) {
-        setOutcome({
+        show(id, {
           kind: 'one',
           outcome: { request, error: (error as Error).message },
         })
         return false
       }
     },
-    [token, setOutcome],
+    [token, show],
   )
-  const actMany = useCallback<BulkAct>(
-    async (request) => {
+  // `id` is the notice it shows in: a new one, or the one whose undo it is.
+  const send = useCallback(
+    async (request: BulkRequest, id: number) => {
       const total = request.items.length
       const progress = (done: number) =>
-        setOutcome({ kind: 'progress', action: request.action, done, total })
+        show(id, { kind: 'progress', action: request.action, done, total })
       progress(0)
       const outcome = await sendEach(
         request,
         (item) => postItem(token, request.action, item),
         progress,
       )
-      setOutcome({ kind: 'bulk', outcome })
+      show(id, { kind: 'bulk', outcome })
     },
-    [token, setOutcome],
+    [token, show],
   )
+  const actMany = useCallback<BulkAct>(
+    (request) => send(request, ++lastId.current),
+    [send],
+  )
+  const shown = noticesOn(entries, page).map(({ id, outcome }) => (
+    <Fragment key={id}>
+      {outcome.kind === 'one' ? (
+        <ActionNotice outcome={outcome.outcome} onDismiss={() => close(id)} />
+      ) : outcome.kind === 'progress' ? (
+        <BulkProgress
+          action={outcome.action}
+          done={outcome.done}
+          total={outcome.total}
+        />
+      ) : (
+        <BulkNotice
+          outcome={outcome.outcome}
+          onUndo={(request) => void send(request, id)}
+          onDismiss={() => close(id)}
+        />
+      )}
+    </Fragment>
+  ))
   const notice =
-    outcome?.kind === 'one' ? (
-      <ActionNotice
-        outcome={outcome.outcome}
-        onDismiss={() => setOutcome(null)}
-      />
-    ) : outcome?.kind === 'progress' ? (
-      <BulkProgress
-        action={outcome.action}
-        done={outcome.done}
-        total={outcome.total}
-      />
-    ) : outcome?.kind === 'bulk' ? (
-      <BulkNotice
-        outcome={outcome.outcome}
-        onUndo={(request) => void actMany(request)}
-        onDismiss={() => setOutcome(null)}
-      />
-    ) : null
+    shown.length > 0 ? <div className="flex flex-col gap-3">{shown}</div> : null
   return { act, actMany, notice }
 }
 

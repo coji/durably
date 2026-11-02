@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { existsSync } from 'node:fs'
 import {
   mkdir,
   mkdtemp,
@@ -22,11 +23,11 @@ import {
   ensureSquashedBranch,
   describeCommitChanges,
   forceRemoveWorktree,
-  needsRemovalByHand,
   diffStat,
   isDirty,
   discardWorktree,
-  porcelainWorktreePaths,
+  porcelainWorktreeEntries,
+  registeredWorktrees,
   removeWorktreeRegistration,
   writePatch,
   readFileAt,
@@ -272,6 +273,60 @@ describe('git engine', () => {
     await removeWorktree(repo, wt)
   })
 
+  it('leaves a worktree in place when the removal is cancelled before it starts', async () => {
+    const wt = join(root, 'wt-cancelled')
+    await addWorktree({
+      repo,
+      dir: wt,
+      baseCommit: base,
+      branch: 'work/cancelled',
+    })
+    const controller = new AbortController()
+    controller.abort()
+    assert.equal(await removeWorktree(repo, wt, controller.signal), false)
+    assert.ok(existsSync(wt))
+    assert.equal(await removeWorktree(repo, wt), true)
+    assert.equal(existsSync(wt), false)
+  })
+
+  it('reads which worktrees git lists, with the branch each has checked out', async () => {
+    const onBranch = join(root, 'wt-listed-branch')
+    const detached = join(root, 'wt-listed-detached')
+    await addWorktree({
+      repo,
+      dir: onBranch,
+      baseCommit: base,
+      branch: 'work/listed',
+    })
+    await addWorktree({ repo, dir: detached, baseCommit: base })
+    const never = join(root, 'never-listed')
+    // Through the real path too: the temporary directory may be a link.
+    const listed = await registeredWorktrees(repo, [onBranch, detached, never])
+    assert.deepEqual(
+      [...listed],
+      [
+        [onBranch, 'work/listed'],
+        [detached, null],
+      ],
+    )
+    assert.deepEqual(
+      porcelainWorktreeEntries(
+        'worktree /r\nHEAD 1\nbranch refs/heads/main\n\nworktree /r/w\nHEAD 2\ndetached\n',
+      ),
+      [
+        { path: '/r', branch: 'main' },
+        { path: '/r/w', branch: null },
+      ],
+    )
+    await removeWorktree(repo, onBranch)
+    await removeWorktree(repo, detached)
+    await rm(join(root, 'not-a-repo'), { recursive: true, force: true })
+    await mkdir(join(root, 'not-a-repo'))
+    await assert.rejects(
+      registeredWorktrees(join(root, 'not-a-repo'), [onBranch]),
+    )
+  })
+
   it('discards a worktree and branch so preparation can be replayed', async () => {
     const wt = join(root, 'wt-replay')
     const branch = 'work/replay'
@@ -292,10 +347,10 @@ describe('git engine', () => {
     // Killed before git can finish: the warning names the limit, the
     // directory and the ways to finish, not git's exit code.
     const stopped = await forceRemoveWorktree(repo, wt, 1)
-    assert.equal(
-      stopped,
-      `git worktree remove was stopped at its <0.1s limit before it finished; ${wt} may be partly removed. git still lists it, so pnpm --filter example-local-agent-loop demo prune --apply continues the removal`,
-    )
+    assert.deepEqual(stopped, {
+      message: `git worktree remove was stopped at its <0.1s limit before it finished; ${wt} may be partly removed. git still lists it, so pnpm --filter example-local-agent-loop demo prune --apply continues the removal`,
+      byHand: false,
+    })
     // The registration is kept, so asking again with the usual limit
     // finishes the removal.
     assert.equal(await forceRemoveWorktree(repo, wt), null)
@@ -311,21 +366,18 @@ describe('git engine', () => {
     })
     await rm(join(orphan, '.git'))
     for (let i = 0; i < 2; i++) {
-      const warning = (await forceRemoveWorktree(repo, orphan)) ?? ''
-      assert.ok(needsRemovalByHand(`worktree ${warning}`), warning)
+      const failure = await forceRemoveWorktree(repo, orphan)
+      assert.ok(failure)
+      assert.equal(failure.byHand, true)
       assert.match(
-        warning,
+        failure.message,
         new RegExp(
           `git no longer lists ${orphan.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} as a worktree, so neither archive nor pnpm --filter example-local-agent-loop demo prune --apply can remove it: remove the directory by hand$`,
         ),
       )
     }
-    // Any other warning can be retried.
-    assert.equal(
-      needsRemovalByHand('worktree x: failed with code 128: locked'),
-      false,
-    )
-    // A refusal that is not the limit keeps git's own words.
+    // A refusal that is not the limit keeps git's own words, and can be
+    // retried.
     await addWorktree({
       repo,
       dir: wt,
@@ -333,10 +385,10 @@ describe('git engine', () => {
       branch: 'work/slow-2',
     })
     await git(repo, ['worktree', 'lock', wt])
-    assert.match(
-      (await forceRemoveWorktree(repo, wt)) ?? '',
-      /failed with code 128: .*locked/,
-    )
+    const locked = await forceRemoveWorktree(repo, wt)
+    assert.ok(locked)
+    assert.equal(locked.byHand, false)
+    assert.match(locked.message, /failed with code 128: .*locked/)
     await git(repo, ['worktree', 'unlock', wt])
     assert.equal(await forceRemoveWorktree(repo, wt), null)
     // The same for the test probe's base, removed with -f -f.
@@ -670,11 +722,10 @@ describe('git engine', () => {
       'prunable gitdir file points to non-existent location',
       '',
     ].join('\n')
-    assert.deepEqual(porcelainWorktreePaths(out), [
-      '/repo',
-      '/runs/run 1/base-work',
-      '/runs/gone',
-    ])
-    assert.deepEqual(porcelainWorktreePaths(''), [])
+    assert.deepEqual(
+      porcelainWorktreeEntries(out).map((entry) => entry.path),
+      ['/repo', '/runs/run 1/base-work', '/runs/gone'],
+    )
+    assert.deepEqual(porcelainWorktreeEntries(''), [])
   })
 })

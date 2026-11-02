@@ -22,7 +22,11 @@ import {
 import type { AgentLoopDurably } from './durably.js'
 import { repairParentId } from './engine/build-report.js'
 import { classifyRun } from './engine/failure-reasons.js'
-import { branchCommit, deleteBranch } from './engine/git.js'
+import {
+  branchCommit,
+  deleteBranch,
+  registeredWorktrees,
+} from './engine/git.js'
 import {
   archivable,
   deliveredRun,
@@ -31,6 +35,7 @@ import {
   taskRunIds,
 } from './engine/status.js'
 import { TERMINAL_STATUSES } from './engine/terminal.js'
+import { branchFor } from './factory/job.js'
 import {
   archiveDirOf,
   archiveMarkerOf,
@@ -130,11 +135,14 @@ export async function retriggerRun(durably: AgentLoopDurably, runId: string) {
  * repository, its worktree only when it is this run's own `runs/<id>/work`,
  * the factory branch setup recorded (`factory/issue-<n>-<id>` for a run from
  * an issue) with the squashed branch beside it, and whether the run was
- * approved and delivered. Null for any other run.
+ * approved and delivered. A run whose setup never completed, such as one
+ * whose setup command failed, has none of that recorded, so its files are
+ * read from git instead (`unsetRepoRunFiles`). Null for any other run.
  */
 async function repoRunFiles(durably: AgentLoopDurably, run: Run) {
-  const setup = (await durably.storage.getCompletedStep(run.id, 'setup'))
-    ?.output as {
+  const step = await durably.storage.getCompletedStep(run.id, 'setup')
+  if (!step) return unsetRepoRunFiles(durably, run)
+  const setup = step.output as {
     target?: {
       kind?: string
       repoPath?: string
@@ -161,6 +169,55 @@ async function repoRunFiles(durably: AgentLoopDurably, run: Run) {
   }
 }
 
+/**
+ * The files of a repository run whose setup never completed, as git's
+ * registration names them: its input's repository, its own worktrees, and
+ * only the branch git has checked out in `runs/<id>/work`, since no branch
+ * was recorded and none is guessed from the input. A worktree still on disk
+ * counts even when git no longer lists it, so its removal warns. Null when
+ * the input is not a repository, or none of the run's worktrees is
+ * registered or on disk: there is nothing to remove. A repository git
+ * cannot list, such as one that is gone, registers none.
+ */
+async function unsetRepoRunFiles(durably: AgentLoopDurably, run: Run) {
+  const target = (
+    run.input as {
+      target?: {
+        kind?: string
+        repoPath?: string
+        issue?: { number: number } | null
+      }
+    }
+  ).target
+  if (target?.kind !== 'repo' || !target.repoPath) return null
+  const runRoot = runRootOf(durably.stateRoot, run.id)
+  const worktree = repoWorkdirOf(runRoot)
+  const paths = removableRunPathsOf(runRoot)
+  const registered = await registeredWorktrees(
+    target.repoPath,
+    paths.worktrees,
+  ).catch(() => new Map<string, string | null>())
+  if (!paths.worktrees.some((dir) => registered.has(dir) || existsSync(dir)))
+    return null
+  // Only the branch setup names for this run, `factory/<id>` for a repair
+  // and as `branchFor` does otherwise, is the factory's: one a person
+  // checked out there, as when looking around, is never deleted.
+  const branch = registered.get(worktree)
+  const own =
+    branch ===
+    (repairParentId(run)
+      ? `factory/${run.id}`
+      : branchFor(run.id, target.issue))
+  return {
+    repoPath: target.repoPath,
+    runRoot,
+    worktree,
+    ...paths,
+    branches: own && branch ? [branch] : [],
+    delivered: deliveredRun(run),
+  }
+}
+
 type RepoRunFiles = NonNullable<Awaited<ReturnType<typeof repoRunFiles>>>
 
 /** The recorded branches still in the repository. */
@@ -180,7 +237,20 @@ export interface RunCleanup {
   deletedBranches: string[]
   /** Why git could not remove the worktree or delete a branch. */
   warnings: string[]
+  /**
+   * Whether asking again may clear a warning, once its cause is gone: every
+   * one but a worktree git no longer lists, which a person removes by hand.
+   */
+  retryable: boolean
 }
+
+/** A cleanup that found nothing to remove. */
+const nothingCleaned = (): RunCleanup => ({
+  worktreeRemoved: false,
+  deletedBranches: [],
+  warnings: [],
+  retryable: false,
+})
 
 /**
  * Remove a repository run's worktrees and other directories, if any are
@@ -194,23 +264,23 @@ async function cleanUpRun(
   files: RepoRunFiles,
   deleteBranches: boolean,
 ): Promise<RunCleanup> {
-  const done: RunCleanup = {
-    worktreeRemoved: false,
-    deletedBranches: [],
-    warnings: [],
-  }
+  const done = nothingCleaned()
   // Called also when the directory is gone, so a worktree deleted outside
   // git leaves no stale registration that would keep its branch checked out.
   const present = files.worktrees.some((dir) => existsSync(dir))
-  const warnings = await removeRunWorktree(files.repoPath, files.runRoot)
-  done.warnings.push(...warnings.map((warning) => `worktree ${warning}`))
-  done.worktreeRemoved = present && warnings.length === 0
+  const failures = await removeRunWorktree(files.repoPath, files.runRoot)
+  done.warnings.push(...failures.map((f) => `worktree ${f.message}`))
+  done.worktreeRemoved = present && failures.length === 0
+  let branchRefused = false
   if (deleteBranches && !files.delivered)
     for (const branch of await existingBranches(files)) {
       const warning = await deleteBranch(files.repoPath, branch)
-      if (warning) done.warnings.push(`branch ${branch}: ${warning}`)
-      else done.deletedBranches.push(branch)
+      if (warning) {
+        done.warnings.push(`branch ${branch}: ${warning}`)
+        branchRefused = true
+      } else done.deletedBranches.push(branch)
     }
+  done.retryable = branchRefused || failures.some((f) => !f.byHand)
   return done
 }
 
@@ -255,7 +325,7 @@ export async function archiveRun(
   const files = await repoRunFiles(durably, run)
   const cleanup: RunCleanup = files
     ? await cleanUpRun(files, options.deleteBranches === true)
-    : { worktreeRemoved: false, deletedBranches: [], warnings: [] }
+    : nothingCleaned()
   return { changed, ...cleanup }
 }
 
@@ -418,6 +488,8 @@ export async function planPrune(
   const now = Date.now()
   for (const run of runs) {
     if (!TERMINAL_STATUSES.includes(run.status)) continue
+    // Neither delivered nor archived: kept, so its files are not read.
+    if (!deliveredRun(run) && !archived.has(run.id)) continue
     const files = await repoRunFiles(durably, run)
     if (!files) continue
     const shelved =
