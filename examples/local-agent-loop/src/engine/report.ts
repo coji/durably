@@ -940,8 +940,9 @@ export interface StoppedCallUsage {
  * named a `thresholdException`. The reviewer was told such a finding is a
  * non-blocker unless an exception applies; the severity stands either way.
  * Only reviews with one or more are listed, every round included: a round
- * discarded or cancelled beside a failed check, and one still pending when
- * the run ended, too.
+ * discarded or cancelled beside a failed check, and one whose check has not
+ * completed and is still pending, too: in a report built while the run is
+ * still going, or for a run that ended before that check completed.
  */
 export interface BelowThresholdBlockers {
   round: number

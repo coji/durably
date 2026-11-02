@@ -691,6 +691,41 @@ describe('the blockers below the threshold', () => {
     assert.match(md, /^ {4}- blockers: 5$/m)
   })
 
+  it('keeps the exception out of the review highlights, while the finding list under each review shows it', () => {
+    const highlights = reviewHighlights(
+      rounds,
+      [],
+      ['correctness', 'edge-cases'],
+    )
+    assert.deepEqual(highlights.earlier.kept.slice(0, 2), [
+      { title: 'EXEMPT', likelihood: 1, impact: 4 },
+      { title: 'UNEXPLAINED', likelihood: 2, impact: 2 },
+    ])
+    assert.deepEqual(highlights.open.kept, [
+      { title: 'NOT-PRODUCT', likelihood: 1, impact: 1 },
+    ])
+    const md = reportToMarkdown({
+      ...baseReport(),
+      reviewRounds: rounds,
+      reviewHighlights: highlights,
+    })
+    const section = md.slice(
+      md.indexOf('## Review highlights'),
+      md.indexOf('\n## ', md.indexOf('## Review highlights') + 1),
+    )
+    assert.match(section, /^ {2}- EXEMPT \(likelihood 1, impact 4\)$/m)
+    assert.match(section, /^ {2}- NOT-PRODUCT \(likelihood 1, impact 1\)$/m)
+    assert.doesNotMatch(section, /exception/)
+    assert.match(
+      md,
+      /^ {6}- EXEMPT \(likelihood 1, impact 4, exception explicit-requirement\)$/m,
+    )
+    assert.match(
+      md,
+      /^ {6}- NOT-PRODUCT \(likelihood 1, impact 1, exception not-product\)$/m,
+    )
+  })
+
   it('reads a stored exception only when it is one the rule names', () => {
     const stored = (thresholdException: unknown) =>
       asReportReview({
