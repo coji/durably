@@ -20,8 +20,8 @@ durablyのcheckoutを特定のcommitに固定し、そこから `demo worker` �
 1. durablyを任意の場所にcloneし、使うcommitをcheckoutして `pnpm install` する。
    固定したcommitは利用側で記録する。
 2. 対象リポジトリ直下に `factory.json` を置き、`check`、必要なら `setup`、
-   `base`、役割ごとの `profiles` を書く。書式は [README](../README.md) の
-   「実際のリポジトリで動かす」にある。
+   `base`、役割ごとの `profiles` を書く。書式は
+   [「実際のリポジトリで動かす」](configuration.md)にある。
 3. 固定したcheckoutでworkerを一つ起動し、`demo trigger --repo <path> --task-file <file>`
    で渡す。workerを起動しなくても `trigger` が自動で起動するが、そのworkerは
    コマンドを実行したcheckoutのCLIで動く。固定したcheckoutのworkerで処理
