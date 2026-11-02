@@ -1855,8 +1855,13 @@ describe('the blocker threshold of a findings-json code review', () => {
       check,
       /A finding that the change does not do something the task, the spec or the owner's confirmed context explicitly asks for is also judged as you otherwise would, however rarely the case it asks about happens\./,
     )
+    // A low-scored blocker is to carry the exception the reviewer claims.
+    assert.match(
+      check,
+      /When you return a blocker whose likelihood × impact is below the threshold, add "thresholdException" to it: "not-product" when the finding is not about how the product behaves, "explicit-requirement" when it is a missed requirement the task, the spec or the owner's confirmed context explicitly states\./,
+    )
     // Every line of the rule, the one an exclusion test also checks.
-    assert.equal(RULE_LINES.length, 3)
+    assert.equal(RULE_LINES.length, 4)
     for (const line of RULE_LINES) assert.match(check, line)
     // The threshold the run fixed is the one named, at either end.
     assert.match(review('findings-json', 1), /below 1, .* 1 or more/)
@@ -1920,7 +1925,28 @@ describe('the blocker threshold of a findings-json code review', () => {
       prompt,
       /Do not design for rare or future cases nobody asked for\./,
     )
-    // Only the repair from findings is told so.
+    assert.equal(prompt.match(/rare or future cases/g)?.length, 1)
+  })
+
+  it('tells a repair of review feedback in the run the same, in a new session or the same one', () => {
+    for (const newSession of [true, false]) {
+      const prompt = codePrompt({
+        role: 'repair',
+        iteration: 2,
+        repairNotes: ['correctness: x'],
+        task: 'T',
+        rules: [],
+        newSession,
+        repairsReviewFeedback: true,
+      })
+      assert.match(
+        prompt,
+        /Do not design for rare or future cases nobody asked for\./,
+        String(newSession),
+      )
+    }
+    // Not the first implementation, nor a repair the caller did not name a
+    // repair of review feedback, such as one of a failed check alone.
     for (const other of [
       codePrompt({
         role: 'implement',
@@ -1932,10 +1958,18 @@ describe('the blocker threshold of a findings-json code review', () => {
       codePrompt({
         role: 'repair',
         iteration: 2,
-        repairNotes: ['x'],
+        repairNotes: ['acceptance: x'],
         task: 'T',
         rules: [],
         newSession: true,
+      }),
+      codePrompt({
+        role: 'repair',
+        iteration: 2,
+        repairNotes: ['acceptance: x'],
+        task: 'T',
+        rules: [],
+        repairsReviewFeedback: false,
       }),
     ])
       assert.doesNotMatch(other, /rare or future cases/)
@@ -2029,5 +2063,51 @@ describe('likelihood and impact in findings-json output', () => {
     ])
     // The repair notes stay in their format.
     assert.equal(lowBlocker.ok && lowBlocker.notes, '- t — b')
+  })
+})
+
+describe('thresholdException in findings-json output', () => {
+  const blocker = (extra: Record<string, unknown>) => ({
+    severity: 'blocker',
+    title: 't',
+    body: 'b',
+    likelihood: 1,
+    impact: 1,
+    ...extra,
+  })
+
+  it('keeps a named exception and changes nothing else', () => {
+    const parsed = parseFindingsOutput(
+      findingsReply([
+        blocker({ thresholdException: 'not-product' }),
+        blocker({ thresholdException: 'explicit-requirement' }),
+      ]),
+    )
+    assert.ok(parsed.ok)
+    assert.equal(parsed.decision, 'needsChanges')
+    assert.deepEqual(
+      parsed.findings?.blocker.map((f) => f.thresholdException),
+      ['not-product', 'explicit-requirement'],
+    )
+    assert.equal(parsed.findings?.counts.blocker, 2)
+  })
+
+  it('drops any other value and still accepts the finding', () => {
+    for (const value of [null, 'rare', 'NOT-PRODUCT', '', 1, true, [], {}]) {
+      const parsed = parseFindingsOutput(
+        findingsReply([blocker({ thresholdException: value })]),
+      )
+      assert.ok(parsed.ok, JSON.stringify(value))
+      assert.equal(parsed.decision, 'needsChanges')
+      assert.deepEqual(parsed.findings?.blocker, [
+        {
+          severity: 'blocker',
+          title: 't',
+          body: 'b',
+          likelihood: 1,
+          impact: 1,
+        },
+      ])
+    }
   })
 })

@@ -805,8 +805,10 @@ Repository config: factory.json at the repository root, or --config <file>:
   and so is a missed requirement the task, the spec or the confirmed context
   explicitly asks for, however rare its case.
   The reviewer classifies; the factory keeps the scores and never changes a
-  severity. 0 adds no such rule. Verdict reviews and spec reviews are not
-  affected.
+  severity. A blocker kept below the threshold is to name its
+  "thresholdException" (not-product or explicit-requirement), and the report
+  counts such blockers by round and lens, with and without one. 0 adds no
+  such rule. Verdict reviews and spec reviews are not affected.
   "codexPath" names the Codex CLI to launch, relative to the config file;
   without it, codex on PATH first, then the bundled CLI.
   "name" (a non-empty string) is the repository's name on the web UI in

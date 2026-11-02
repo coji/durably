@@ -114,6 +114,18 @@ export function reduce(state: FactoryState, event: FactoryEvent): FactoryState {
   }
 }
 
+/**
+ * Whether the next code call repairs review feedback: a review of the last
+ * round asked for changes, whether its notes are the repair notes or, beside
+ * a check the candidate failed, the reviews handed over apart. A repair of a
+ * failed check alone, and the first implementation, repair none.
+ */
+export function repairsReviewFeedback(state: FactoryState): boolean {
+  return [...state.reviews, ...state.failedCheckReviews].some(
+    (review) => review.decision === 'needsChanges',
+  )
+}
+
 /** Where the spec stages stand; see `specAction` for what comes next. */
 export interface SpecState {
   /** The spec as last written; null before the author ran. */

@@ -61,6 +61,18 @@ export const deliverySchema = z.object({
   squashedCommit: z.string().nullable().default(null),
 })
 
+/**
+ * Why a reviewer returned a blocker whose likelihood × impact is below the
+ * threshold (ADR-0040): the finding is not about the product's behavior, or
+ * it is a missed requirement the task, the spec or the confirmed context
+ * states. The reviewer's own claim; the factory keeps it and never checks it.
+ */
+export const THRESHOLD_EXCEPTIONS = [
+  'not-product',
+  'explicit-requirement',
+] as const
+export type ThresholdException = (typeof THRESHOLD_EXCEPTIONS)[number]
+
 const reviewFindingSchema = z.object({
   severity: z.enum(['blocker', 'non-blocker']),
   title: z.string(),
@@ -69,6 +81,7 @@ const reviewFindingSchema = z.object({
   line: z.number().optional(),
   likelihood: z.number().optional(),
   impact: z.number().optional(),
+  thresholdException: z.enum(THRESHOLD_EXCEPTIONS).optional(),
 })
 
 const reviewFindingsSchema = z.object({

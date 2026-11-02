@@ -62,6 +62,7 @@ import {
 import {
   initialSpecState,
   reduceSpec,
+  repairsReviewFeedback,
   specBlockers,
   type SpecState,
 } from './reducer.js'
@@ -227,6 +228,8 @@ export const codeStage: StageHandler = async ({
             (separateRepair || fromTimedOut) && continuedSession === null,
           fromFindings,
           fromTimedOut,
+          // Read from the reviews themselves, never from the notes' text.
+          repairsReviewFeedback: repairsReviewFeedback(state),
         }),
         workdir: target.workdir,
         timeoutMs: state.setup.agentTimeoutMs,

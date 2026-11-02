@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs'
 
 import type { AnyDurably, Run } from '@coji/durably'
 
+import { THRESHOLD_EXCEPTIONS } from '../factory/events.js'
 import { REPAIR_OF_LABEL, triageThatRuns } from '../factory/repair.js'
 import { testProbeOutcomeOf } from '../factory/test-probe.js'
 import {
@@ -47,6 +48,7 @@ import {
   stoppedCallsOf,
   usageOf,
   type AttemptRow,
+  type BelowThresholdBlockers,
   type LoopReport,
   type ReportAgentTimeouts,
   type ReportBaseline,
@@ -226,6 +228,8 @@ function asFinding(value: unknown): ReportFinding | null {
     typeof f.body !== 'string'
   )
     return null
+  // Only a reason the rule names; anything else stored is not one.
+  const exception = THRESHOLD_EXCEPTIONS.find((e) => e === f.thresholdException)
   return {
     severity: f.severity,
     title: f.title,
@@ -234,6 +238,7 @@ function asFinding(value: unknown): ReportFinding | null {
     ...(typeof f.line === 'number' ? { line: f.line } : {}),
     ...(typeof f.likelihood === 'number' ? { likelihood: f.likelihood } : {}),
     ...(typeof f.impact === 'number' ? { impact: f.impact } : {}),
+    ...(exception ? { thresholdException: exception } : {}),
   }
 }
 
@@ -647,6 +652,40 @@ export function reviewBlockerRuleLensesOf(args: {
   return REVIEW_LENSES.filter(
     (lens) =>
       args.invocations?.[lens]?.output === 'findings-json' && reached.has(lens),
+  )
+}
+
+/**
+ * The kept blockers below the threshold, by round and lens; see
+ * `BelowThresholdBlockers`. None without a threshold of 1 or more; a finding
+ * missing either score is not counted, since its product is not known.
+ */
+export function belowThresholdBlockersOf(
+  threshold: number | null,
+  rounds: ReportReviewRound[],
+): BelowThresholdBlockers[] {
+  if (threshold == null || threshold < 1) return []
+  return rounds.flatMap((round) =>
+    round.reviews.flatMap((review) => {
+      const below = (review.findings?.blocker ?? []).filter(
+        (f) =>
+          f.likelihood !== undefined &&
+          f.impact !== undefined &&
+          f.likelihood * f.impact < threshold,
+      )
+      if (below.length === 0) return []
+      const withException = below.filter(
+        (f) => f.thresholdException !== undefined,
+      ).length
+      return [
+        {
+          round: round.round,
+          lens: review.lens,
+          withException,
+          withoutException: below.length - withException,
+        },
+      ]
+    }),
   )
 }
 
@@ -1427,6 +1466,10 @@ export async function buildReport(
     agentTimeouts,
     reviewBlockerThreshold,
     reviewBlockerRuleLenses,
+    belowThresholdBlockers: belowThresholdBlockersOf(
+      reviewBlockerThreshold,
+      reviewRounds,
+    ),
     summary: summarizeRun({
       status: run.status,
       output: run.output,
