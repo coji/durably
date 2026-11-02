@@ -230,12 +230,13 @@ export async function forceRemoveWorktree(
   }
   if (!refused) {
     // A locked registration outlives the prune once its directory is gone.
-    // The lock is a person's to lift, so it is named, not overridden.
+    // The lock is a person's to lift, so it is named, not overridden; once
+    // it is, asking again takes the registration.
     if (present || !(await worktreeRegistered(repo, dir).catch(() => false)))
       return null
     return {
       message: `git still lists ${dir} as a locked worktree, though the directory is gone: run git worktree unlock ${dir} in ${repo}, then archive again`,
-      byHand: true,
+      byHand: false,
     }
   }
   // Whether a retry can still finish it: git refuses a directory it no

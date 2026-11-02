@@ -463,7 +463,9 @@ pnpm --filter example-local-agent-loop demo unarchive --run <runId>
   片付けをやり直します。`unarchive` しても worktree は元に戻りません。
   setup の途中で失敗した run（`pnpm install` の失敗など）は setup の記録がないので、
   git の登録から `runs/<runId>/work` とそこにチェックアウトしたブランチを探して
-  片付けます。登録もディレクトリもなければ、何もせず警告も出しません。
+  片付けます。消すブランチは、setup がその run に付ける名前のものだけです。人が
+  切り替えた別のブランチは残します。登録もディレクトリもなければ、何もせず警告も
+  出しません。
 - `git worktree remove` には 10 分の上限があります。依存パッケージを入れた大きな
   worktree は、消すのに数分かかることがあるためです。上限で止まったときは、worktree が
   一部だけ消えて残ることがあり、警告がそのパスとともにそう伝えます。消せなかったときは、

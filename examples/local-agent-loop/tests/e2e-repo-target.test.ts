@@ -2630,6 +2630,10 @@ describe(
             ...failing,
             issue: { number: 7, title: 'Decimal add', url: 'https://x/7' },
           }),
+          bare: await failSetup(durably, repo, {
+            ...failing,
+            issue: { number: 7, title: 'Decimal add', url: 'https://x/7' },
+          }),
           renumbered: await failSetup(durably, repo, {
             ...failing,
             issue: { number: 7, title: 'Decimal add', url: 'https://x/7' },
@@ -2664,7 +2668,7 @@ describe(
           )
           // Failed after `git worktree add`, the worktree is registered with
           // its branch; failed before it, nothing is.
-          if (run === runs.issued || run === runs.renumbered) continue
+          if ([runs.issued, runs.bare, runs.renumbered].includes(run)) continue
           if (run === runs.unmade) {
             assert.equal(existsSync(work(run.id)), false)
             assert.doesNotMatch(await listed(), new RegExp(run.id))
@@ -2731,6 +2735,15 @@ describe(
             .deletedBranches,
           [issued],
         )
+        // Nor the one a run without an issue would have had.
+        const bare = `factory/${runs.bare.id}`
+        await git(work(runs.bare.id), ['switch', '-q', '-c', bare])
+        assert.deepEqual(
+          (await archiveRun(durably, runs.bare.id, { deleteBranches: true }))
+            .deletedBranches,
+          [],
+        )
+        assert.notEqual(await branchCommit(repo, bare), null)
         const renumbered = `factory/issue-8-${runs.renumbered.id}`
         await git(work(runs.renumbered.id), ['switch', '-q', '-c', renumbered])
         assert.deepEqual(
@@ -2744,8 +2757,8 @@ describe(
         assert.notEqual(await branchCommit(repo, renumbered), null)
 
         // A registration left locked with its directory gone: the lock is a
-        // person's, so the warning names it, without a retry hint, and once
-        // it is lifted the archive takes the registration.
+        // person's, so the warning names it, and once it is lifted asking
+        // again takes the registration.
         await git(repo, [
           'worktree',
           'lock',
@@ -2755,7 +2768,7 @@ describe(
         ])
         await rm(work(runs.stale.id), { recursive: true, force: true })
         const stale = await archiveRun(durably, runs.stale.id)
-        assert.equal(stale.retryable, false)
+        assert.equal(stale.retryable, true)
         assert.equal(stale.warnings.length, 1)
         assert.match(
           stale.warnings[0] ?? '',

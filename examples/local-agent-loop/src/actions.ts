@@ -199,12 +199,15 @@ async function unsetRepoRunFiles(durably: AgentLoopDurably, run: Run) {
   ).catch(() => new Map<string, string | null>())
   if (!paths.worktrees.some((dir) => registered.has(dir) || existsSync(dir)))
     return null
-  // Only a branch setup could have named for this run, as `branchFor` does,
-  // or as it does for a repair, is the factory's: one a person checked out
-  // there, as when looking around, is never deleted.
+  // Only the branch setup names for this run, `factory/<id>` for a repair
+  // and as `branchFor` does otherwise, is the factory's: one a person
+  // checked out there, as when looking around, is never deleted.
   const branch = registered.get(worktree)
   const own =
-    branch === `factory/${run.id}` || branch === branchFor(run.id, target.issue)
+    branch ===
+    (repairParentId(run)
+      ? `factory/${run.id}`
+      : branchFor(run.id, target.issue))
   return {
     repoPath: target.repoPath,
     runRoot,
