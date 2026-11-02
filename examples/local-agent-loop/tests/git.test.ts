@@ -202,9 +202,10 @@ describe('git engine', () => {
     assert.deepEqual(await changedGitlinks(wt, commit), [
       { path: 'deps/nested', commit: recorded },
     ])
-    // Nor does it hide one from the integrity check.
-    assert.equal(await isDirty(wt, { includeUntracked: false }), true)
+    // Nor does it hide one from the integrity check, with the tracked file
+    // beside it back as committed.
     await git(wt, ['checkout', '--', 'a.txt'])
+    assert.equal(await isDirty(wt, { includeUntracked: false }), true)
     await git(nested, ['checkout', '--', 'n.txt'])
     // Only an untracked file inside it, which no reset touches: neither
     // names it, without config hiding it either.
