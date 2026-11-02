@@ -25,6 +25,7 @@ import { classifyRun, stageStep } from './failure-reasons.js'
 import { PRICE_BASIS } from './pricing.js'
 import {
   boundedDenials,
+  NOT_SENT,
   type AgentTimeout,
   type PermissionDenials,
   type VerificationLog,
@@ -613,6 +614,39 @@ function discardedReviewsOf(
       const where = stageStep(a.stepName)
       return where?.stage === 'review' && sequences.has(where.sequence)
     }),
+  )
+}
+
+/**
+ * The code reviewers the blocker threshold's rule reached (ADR-0040): with a
+ * threshold of 1 or more, each lens whose output is findings-json and that
+ * has a recorded review, or a review call that was sent. A review cancelled
+ * after its call was handed to the provider counts, since the prompt carried
+ * the rule; one superseded before anything was sent (`not-sent`, no
+ * `invocationStartedAt`) does not. Whether the model read the prompt before
+ * it was stopped is not observed.
+ */
+export function reviewBlockerRuleLensesOf(args: {
+  threshold: number | null
+  invocations: Partial<Record<string, { output?: string }>> | undefined
+  reviews: ReportReview[]
+  attempts: AttemptRow[]
+}): string[] {
+  if (args.threshold == null || args.threshold < 1) return []
+  const reached = new Set([
+    ...args.reviews.filter((r) => r.status !== 'cancelled').map((r) => r.lens),
+    ...args.attempts.flatMap((a) => {
+      const m = a.measurement
+      return m?.stage?.startsWith('review:') &&
+        m.invocationStartedAt &&
+        m.result !== NOT_SENT
+        ? [m.stage.slice('review:'.length)]
+        : []
+    }),
+  ])
+  return REVIEW_LENSES.filter(
+    (lens) =>
+      args.invocations?.[lens]?.output === 'findings-json' && reached.has(lens),
   )
 }
 
@@ -1354,23 +1388,12 @@ export async function buildReport(
   const countedRounds = reviewRounds.filter((r) => r.status === 'completed')
   const discardedReviews = discardedReviewsOf(rows, reviewRounds)
   const reviews = lastReviews(run.output, waits, countedRounds)
-  // The rule is told only to a findings-json code review (ADR-0040), and
-  // reached it only once one of its reviews is recorded. A cancelled review
-  // may never have been sent its prompt, so it does not count.
-  const reviewInvocations = setupOutput ? setupOutput.review : input?.review
-  const reviewed = new Set(
-    [...reviewRounds.flatMap((r) => r.reviews), ...reviews]
-      .filter((r) => r.status !== 'cancelled')
-      .map((r) => r.lens),
-  )
-  const reviewBlockerRuleLenses =
-    reviewBlockerThreshold != null && reviewBlockerThreshold > 0
-      ? REVIEW_LENSES.filter(
-          (lens) =>
-            reviewInvocations?.[lens]?.output === 'findings-json' &&
-            reviewed.has(lens),
-        )
-      : []
+  const reviewBlockerRuleLenses = reviewBlockerRuleLensesOf({
+    threshold: reviewBlockerThreshold,
+    invocations: setupOutput ? setupOutput.review : input?.review,
+    reviews: [...reviewRounds.flatMap((r) => r.reviews), ...reviews],
+    attempts: rows,
+  })
   const preflight = preflightOf(steps, rows)
   // Minimal preflight calls get a role row of their own, never folded into
   // the roles whose settings they checked.

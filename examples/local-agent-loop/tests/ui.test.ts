@@ -2436,6 +2436,33 @@ describe('diagnosis wording on the page', () => {
     )
   })
 
+  it("shows the scores a review's finding was given beside its title, as the highlights do", () => {
+    const finding = (
+      severity: 'blocker' | 'non-blocker',
+      title: string,
+      scores: { likelihood?: number; impact?: number },
+    ) => ({ severity, title, body: 'b', ...scores })
+    const items = [
+      ...renderToStaticMarkup(
+        createElement(ReviewFindingTitles, {
+          findings: {
+            blocker: [finding('blocker', 'BOTH', { likelihood: 2, impact: 3 })],
+            nonBlocker: [
+              finding('non-blocker', 'ONE', { impact: 4 }),
+              finding('non-blocker', 'NONE', {}),
+            ],
+            counts: { blocker: 1, nonBlocker: 2 },
+          },
+        }),
+      ).matchAll(/<li[^>]*>(.*?)<\/li>/g),
+    ].map((m) => (m[1] ?? '').replace(/<[^>]+>/g, ''))
+    assert.deepEqual(items, [
+      `BOTH${COMMON.separator}頻度 2、深刻さ 3`,
+      `ONE${COMMON.separator}深刻さ 4`,
+      'NONE',
+    ])
+  })
+
   it('calls earlier blockers fixed only after a complete, passed last round, and counts findings only', () => {
     const verdictOf = (lens: string, decision: string, round = 1) => ({
       round,

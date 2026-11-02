@@ -891,8 +891,11 @@ pnpm --filter example-local-agent-loop demo trigger \
 - 実装と修正の返答は、変更したファイルの短い要約に続けて、わざと直さなかった
   指摘や変更があるときだけ `NOTES:` の節で、どれをなぜ直さなかったかを書きます。
   節が無い返答も、空の節も、`none` や `特にありません` だけの節も、これまでどおり
-  有効です。節は、字下げも装飾もない `NOTES:` だけの行から始まります。そういう行が
-  無いときは、`## NOTES` や `**NOTES:**` のような最初の見出しから読みます。
+  有効です。節は、プロンプトのとおり大文字で `NOTES` と書いた、字下げのない最初の
+  行から始まります。`NOTES:` だけの行も、`## NOTES` や `**NOTES:**` のような見出しも
+  含みます。そういう行が無いときは `notes:` のような `NOTES:` だけの行から、それも
+  無いときは `## Notes` のような最初の見出しから読みます。`## Notes` で始めた節の
+  本文に字下げのない `NOTES:` の行があると、その行から読みます。
   factoryは決着した返答から一度だけ読み取り（UTF-8で4 KiBまで）、候補のstepに
   保存します。replayは保存した
   ものを読み、返答を読み直しません。その候補の両レビューには、TRUSTED CONTEXTの
@@ -1369,9 +1372,12 @@ reportの要約、`demo compare` の設定ごとの行、`demo compare --trend` 
   レビューの基準が変わるので、閾値は0も含めて `configVersion` に入ります。
 - reportは固定した閾値（JSONの `reviewBlockerThreshold`、Markdownの
   `review blocker threshold` の行）を出します。JSONの `reviewBlockerRuleLenses` は
-  規則が届いたレビュアー（`output` が `findings-json` で、レビューの記録があるもの）です。
+  規則が届いたレビュアー（`output` が `findings-json` で、レビューの記録があるか、
+  レビューの呼び出しを送ったもの）です。送った後に取り消したレビューも数え、
+  送る前に取り消したものは数えません。送ったかどうかは、呼び出しを渡す時点の
+  記録で見ます。モデルが読む前に止まったかどうかは分かりません。
   Markdownの行は届いたレビュアーと規則の対象外を書き、どのレビューにも届いていない
-  run（コードレビューがすべて `verdict`、または最初のレビューの前に止まったrun）では
+  run（コードレビューがすべて `verdict`、または最初のレビューを送る前に止まったrun）では
   そう書きます。
 
 ### 設定の事前確認（preflight）
@@ -2313,7 +2319,8 @@ pnpm --filter example-local-agent-loop demo report --run <runId> --format md \
   保存した指摘のタイトル、省いた件数だけを出し、本文、ファイル、行番号は出しません。
   Markdownでは、採点値のある指摘のタイトルの後ろに `(likelihood 2, impact 3)` の
   形で付けます。レビューの要点（`reviewHighlights` の各群の `kept`）の題名にも同じく
-  付けます。
+  付けます。画面では、レビューの要点と、各レビューの指摘の一覧の題名の横に、頻度と
+  深刻さを添えます。
   notesの表示は変わらないので、`blocker` の場所と本文は従来どおりnotesに出ます
 - **Verification logs**: 検証の試行ごとの終了コードと、`stdout.log` / `stderr.log` の
   パス。JSONでは `attempts[].measurement.verificationLog` で、`exitCode`、

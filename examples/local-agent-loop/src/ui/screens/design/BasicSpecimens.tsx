@@ -177,6 +177,8 @@ const FINDINGS = {
       severity: 'blocker' as const,
       title: 'The cost column still prints six decimals',
       body: '',
+      likelihood: 6,
+      impact: 4,
     },
   ],
   nonBlocker: [
@@ -237,7 +239,7 @@ export function LiveStates() {
   )
 }
 
-/** Each kind of finding counted, its kept titles, and the rest counted. */
+/** Each kind of finding counted, its kept titles and scores, and the rest counted. */
 export function FindingStates() {
   return <ReviewFindingTitles findings={FINDINGS} />
 }

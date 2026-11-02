@@ -3017,8 +3017,8 @@ describe('verification and review side by side', { timeout: 300000 }, () => {
         maxIterations: 1,
       })
       // The check fails while both reviews still run: both are cancelled.
-      // One is a findings-json review, which a cancelled call never counts
-      // as having been told the blocker rule (ADR-0040).
+      // One is a findings-json review: its call was sent before it was
+      // cancelled, so its prompt carried the blocker rule (ADR-0040).
       ids['cancelled'] = await start({
         parallelReview: true,
         waitFor: 'started',
@@ -3219,10 +3219,10 @@ describe('verification and review side by side', { timeout: 300000 }, () => {
         assert.equal(saved.cancelled, 'superseded-by-verify')
       }
       assert.equal(cancelledReport.reviewRounds[0]?.status, 'cancelled')
-      assert.deepEqual(cancelledReport.reviewBlockerRuleLenses, [])
+      assert.deepEqual(cancelledReport.reviewBlockerRuleLenses, ['edge-cases'])
       assert.match(
         reportToMarkdown(cancelledReport),
-        /review blocker threshold: \d+ \(.*reached no review/,
+        /review blocker threshold: \d+ \(the edge-cases review was told that /,
       )
       assert.equal(
         cancelledReport.reviewRounds[0]?.reason,

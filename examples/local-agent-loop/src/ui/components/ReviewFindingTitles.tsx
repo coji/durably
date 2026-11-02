@@ -3,8 +3,10 @@ import type { ReportReviewFindings } from '../../engine/report'
 import { COMMON, REVIEW } from '../glossary'
 
 /**
- * A findings review's count of each kind and the titles the report kept.
- * The body, file and line of each finding are read in the JSON report.
+ * A findings review's count of each kind and the titles the report kept,
+ * each with the scores it was given (ADR-0040), as the review highlights
+ * show them. The body, file and line of each finding are read in the JSON
+ * report.
  */
 export function ReviewFindingTitles({
   findings,
@@ -29,6 +31,7 @@ export function ReviewFindingTitles({
     titles: g.kept.map((f, at) => ({
       id: `${f.severity}:${at}`,
       title: f.title,
+      scores: REVIEW.scores(f),
     })),
   }))
   return (
@@ -45,7 +48,15 @@ export function ReviewFindingTitles({
           {g.kept.length > 0 ? (
             <ul className="text-fg-2 flex list-disc flex-col gap-1 pl-4">
               {g.titles.map((t) => (
-                <li key={t.id}>{t.title}</li>
+                <li key={t.id}>
+                  {t.title}
+                  {t.scores ? (
+                    <span className="text-fg-2 tabular-nums">
+                      {COMMON.separator}
+                      {t.scores}
+                    </span>
+                  ) : null}
+                </li>
               ))}
             </ul>
           ) : null}
