@@ -344,8 +344,8 @@ function reviewLines(reviews: ReportReview[], indent: string): string[] {
 }
 
 /**
- * ` (likelihood 2, impact 3)` with the scores a finding has, and the
- * exception its reviewer named after them; else nothing.
+ * ` (likelihood 2, impact 3, exception not-product)` with the scores a finding
+ * has and the exception its reviewer named; else nothing.
  */
 function scoreAside(
   f: Pick<ReportFinding, 'likelihood' | 'impact' | 'thresholdException'>,

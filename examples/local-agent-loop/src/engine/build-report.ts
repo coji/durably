@@ -228,7 +228,6 @@ function asFinding(value: unknown): ReportFinding | null {
     typeof f.body !== 'string'
   )
     return null
-  // Only a reason the rule names; anything else stored is not one.
   const exception = asThresholdException(f.thresholdException)
   return {
     severity: f.severity,

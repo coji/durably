@@ -67,10 +67,7 @@ export const deliverySchema = z.object({
  * it is a missed requirement the task, the spec or the confirmed context
  * states. The reviewer's own claim; the factory keeps it and never checks it.
  */
-export const THRESHOLD_EXCEPTIONS = [
-  'not-product',
-  'explicit-requirement',
-] as const
+const THRESHOLD_EXCEPTIONS = ['not-product', 'explicit-requirement'] as const
 export type ThresholdException = (typeof THRESHOLD_EXCEPTIONS)[number]
 
 /**
