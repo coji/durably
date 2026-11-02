@@ -7069,6 +7069,80 @@ describe('the test probe', { timeout: 300000 }, () => {
     await assert.rejects(probe(third), /candidate-mutated/)
   })
 
+  it('reports a nested repository a test broke on the candidate side as candidate-mutated, also when config hides nested repositories', async () => {
+    for (const hidden of [false, true]) {
+      const root = await mkdtemp(
+        join(tmpdir(), 'repo-test-probe-nested-broken-'),
+      )
+      const repo = await seedRepo(root)
+      if (hidden) await git(repo, ['config', 'diff.ignoreSubmodules', 'all'])
+      const runRoot = join(root, 'state', 'runs', 'run-1')
+      // An untracked nested repository with a committed file, which the
+      // agent's first seal commits as a gitlink.
+      const setup = [
+        "const fs = require('node:fs')",
+        "const { execFileSync } = require('node:child_process')",
+        "const g = (...a) => execFileSync('git', ['-C', 'nested', '-c', 'user.name=t', '-c', 'user.email=t@t', ...a])",
+        "fs.mkdirSync('nested', { recursive: true })",
+        "g('init', '-q')",
+        "fs.writeFileSync('nested/data.txt', 'd')",
+        "g('add', '-A')",
+        "g('commit', '-q', '-m', 'fixture')",
+      ].join('\n')
+      // On the candidate only, leaves the nested repository with an index
+      // git cannot read, so no git command can list or reset it.
+      const breaker = [
+        "const fs = require('node:fs')",
+        "if (!process.cwd().endsWith('base-work')) fs.writeFileSync('nested/.git/index', 'broken')",
+      ].join('\n')
+      const config = await prepareRepoTarget({
+        repoPath: repo,
+        baseRef: 'HEAD',
+        branch: `factory/probe-${randomUUID()}`,
+        root: runRoot,
+        task: 'x',
+        spec: null,
+        dispositions: null,
+        issue: null,
+        checkCommand: ['node', '--test'],
+        setupCommand: ['node', '-e', setup],
+        testProbe: [
+          {
+            glob: 'test/**/*.test.js',
+            command: ['node', '-e', breaker, '{files}'],
+          },
+        ],
+        checkTimeoutMs: 10000,
+        publish: false,
+        commit: DEFAULT_COMMIT_SETTINGS,
+      })
+      const target = createTarget(config)
+      await writeFile(join(config.workdir, 'test', 'a.test.js'), '// break\n')
+      const candidate = await target.seal({
+        iteration: 1,
+        runId: 'run-1',
+        attemptId: 'a',
+        signal: new AbortController().signal,
+      })
+      const failure = await runTestProbe({
+        config,
+        candidate,
+        runRoot,
+        assertIntact: () => target.assertIntact(candidate),
+        signal: new AbortController().signal,
+      }).then(
+        () => null,
+        (error: unknown) => error,
+      )
+      assert.ok(failure instanceof Error, `hidden=${hidden}`)
+      // The integrity check's failure, with git's own words, not the
+      // restore's listing.
+      assert.match(failure.message, /^candidate-mutated: /)
+      assert.match(failure.message, /index file/)
+      assert.equal((failure.cause as Error | undefined)?.name, 'GitError')
+    }
+  })
+
   it('removes empty directories a test made on the base, runs the files git could put there, and keeps the end of stdout and of stderr', async () => {
     const root = await mkdtemp(join(tmpdir(), 'repo-test-probe-paths-'))
     const repo = await seedRepo(root)
@@ -7155,6 +7229,65 @@ describe('the test probe', { timeout: 300000 }, () => {
     const two = await probeWith(2)
     assert.equal(two.files[0]?.base.ran, true)
     assert.match(two.files[0]?.baseOutputTail ?? '', /STDOUT-END empty=false\n/)
+  })
+
+  it('removes empty directories with names git quotes that a test made on the base', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-test-probe-quoted-'))
+    const repo = await seedRepo(root)
+    const runRoot = join(root, 'state', 'runs', 'run-1')
+    const base = join(runRoot, 'base-work')
+    // Says whether an earlier run left its directories, then makes them:
+    // non-ASCII names, which `git clean -n` quotes unless told not to, one
+    // inside another.
+    const reader = [
+      "const fs = require('node:fs')",
+      "console.log(`left=${fs.existsSync('空き')}`)",
+      "fs.mkdirSync('空き/ü', { recursive: true })",
+    ].join('\n')
+    const config = await prepareRepoTarget({
+      repoPath: repo,
+      baseRef: 'HEAD',
+      branch: `factory/probe-${randomUUID()}`,
+      root: runRoot,
+      task: 'x',
+      spec: null,
+      dispositions: null,
+      issue: null,
+      checkCommand: ['node', '--test'],
+      setupCommand: null,
+      testProbe: [
+        { glob: '**/*.test.js', command: ['node', '-e', reader, '{files}'] },
+      ],
+      checkTimeoutMs: 10000,
+      publish: false,
+      commit: DEFAULT_COMMIT_SETTINGS,
+    })
+    const target = createTarget(config)
+    const probeWith = async (iteration: number) => {
+      await writeFile(
+        join(config.workdir, 'test', 'a.test.js'),
+        `// ${iteration}\n`,
+      )
+      const candidate = await target.seal({
+        iteration,
+        runId: 'run-1',
+        attemptId: 'a',
+        signal: new AbortController().signal,
+      })
+      return runTestProbe({
+        config,
+        candidate,
+        runRoot,
+        assertIntact: () => target.assertIntact(candidate),
+        signal: new AbortController().signal,
+      })
+    }
+    const one = await probeWith(1)
+    assert.match(one.files[0]?.baseOutputTail ?? '', /left=false/)
+    assert.equal(existsSync(join(base, '空き', 'ü')), true)
+    // The next candidate's base has neither left when its file runs.
+    const two = await probeWith(2)
+    assert.match(two.files[0]?.baseOutputTail ?? '', /left=false/)
   })
 
   it('prunes the registration of a base worktree whose directory a dying worker had already removed, also of a run no longer recorded', async () => {

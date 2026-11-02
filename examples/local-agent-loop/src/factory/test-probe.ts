@@ -297,7 +297,8 @@ async function prepareBase(
  * gitlink, which neither puts back. Each one a test edited or committed in
  * is reset to the commit its gitlink records, one level down; its untracked
  * files stay, since no seal holds them and the check may need them. One
- * that cannot be reset is left for `assertIntact` to report.
+ * that cannot be reset, or that git cannot even read, is left for
+ * `assertIntact` to report.
  */
 async function restoreWorktree(
   dir: string,
@@ -306,7 +307,16 @@ async function restoreWorktree(
 ): Promise<void> {
   await resetHard(dir, commit, signal)
   await cleanUntracked(dir, signal)
-  for (const nested of await changedGitlinks(dir, commit, signal)) {
+  // When the listing fails, as a nested repository git cannot read makes
+  // it, no nested repository is reset, and `assertIntact`, which runs next,
+  // reports what is left as mutated.
+  const changed = await changedGitlinks(dir, commit, signal).catch(
+    (error: unknown) => {
+      if (signal?.aborted) throw error
+      return []
+    },
+  )
+  for (const nested of changed) {
     const nestedDir = join(dir, nested.path)
     // Without its own `.git`, git would reset the outer worktree instead.
     if (!existsSync(join(nestedDir, '.git'))) continue
@@ -337,23 +347,10 @@ async function restoreBase(
   for (const path of await untrackedPaths(dir, signal)) {
     if (keep.has(path)) continue
     await rm(join(dir, path), { recursive: true, force: true })
-    // The directories it was the last entry of, up to the worktree's top;
-    // `rmdir` refuses one that still holds anything.
-    for (
-      let parent = dirname(path);
-      parent !== '.' && parent !== '';
-      parent = dirname(parent)
-    ) {
-      const removed = await rmdir(join(dir, parent)).then(
-        () => true,
-        () => false,
-      )
-      if (!removed) break
-    }
   }
-  // What `git clean` would still remove: within each directory it names,
-  // the empty directories go, deepest first, while a file, setup's, and a
-  // nested repository stay.
+  // What `git clean` would still remove, the directories those removals
+  // emptied among it: within each directory it names, the empty directories
+  // go, deepest first, while a file, setup's, and a nested repository stay.
   for (const path of await someUntracked(dir, Number.POSITIVE_INFINITY, signal))
     if (path.endsWith('/')) await removeEmptyDirectories(join(dir, path))
   const now = await fingerprintPaths(dir, [...keep])

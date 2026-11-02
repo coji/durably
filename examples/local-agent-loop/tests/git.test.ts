@@ -196,11 +196,60 @@ describe('git engine', () => {
     assert.deepEqual(await changedGitlinks(wt, commit), [
       { path: 'deps/nested', commit: recorded },
     ])
-    // Config that hides changed submodules does not hide it.
+    // Config that hides changed submodules does not hide it, nor a moved
+    // `HEAD` checked below.
     await git(wt, ['config', 'diff.ignoreSubmodules', 'all'])
     assert.deepEqual(await changedGitlinks(wt, commit), [
       { path: 'deps/nested', commit: recorded },
     ])
+    // Nor does it hide one from the integrity check, with the tracked file
+    // beside it back as committed.
+    await git(wt, ['checkout', '--', 'a.txt'])
+    assert.equal(await isDirty(wt, { includeUntracked: false }), true)
+    await git(nested, ['checkout', '--', 'n.txt'])
+    // Only an untracked file inside it, which no reset touches: neither
+    // names it, without config hiding it either.
+    await git(wt, ['config', '--unset', 'diff.ignoreSubmodules'])
+    await writeFile(join(nested, 'scratch.txt'), 's\n')
+    assert.deepEqual(await changedGitlinks(wt, commit), [])
+    assert.equal(await isDirty(wt, { includeUntracked: false }), false)
+    // A commit made inside it moves its `HEAD`, which both see.
+    await git(wt, ['config', 'diff.ignoreSubmodules', 'all'])
+    await git(nested, [
+      '-c',
+      'user.name=t',
+      '-c',
+      'user.email=t@t',
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'moved',
+    ])
+    assert.deepEqual(await changedGitlinks(wt, commit), [
+      { path: 'deps/nested', commit: recorded },
+    ])
+    assert.equal(await isDirty(wt, { includeUntracked: false }), true)
+    await removeWorktree(repo, wt)
+  })
+
+  it('names the paths git clean would remove literally, whatever characters they hold', async () => {
+    const wt = join(root, 'wt-clean-names')
+    await addWorktree({
+      repo,
+      dir: wt,
+      baseCommit: base,
+      branch: 'work/clean-names',
+    })
+    await mkdir(join(wt, 'é空'))
+    await writeFile(join(wt, 'ファイル.txt'), 'x')
+    await mkdir(join(wt, 'q"t'))
+    await mkdir(join(wt, 'ü"\\'))
+    await mkdir(join(wt, 'c\x01d'))
+    assert.deepEqual(
+      (await someUntracked(wt, Infinity)).sort(),
+      ['c\x01d/', 'q"t/', 'é空/', 'ü"\\/', 'ファイル.txt'].sort(),
+    )
     await removeWorktree(repo, wt)
   })
 

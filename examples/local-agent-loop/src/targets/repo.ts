@@ -51,6 +51,7 @@ import {
   DEFAULT_COMMIT_AUTHOR,
   defaultBranch,
   describeCommitChanges,
+  describeGitFailure,
   diffStat,
   ensureSquashedBranch,
   forceRemoveWorktree,
@@ -508,10 +509,21 @@ export class RepoTarget implements Target {
     // behind (`.turbo/`, `*.tsbuildinfo`, coverage), and none of it is in the
     // commit the candidate names, so a passing check would otherwise fail the
     // run every time. Tracked changes still do count: those would mean the
-    // sealed content moved.
-    const head = await this.cleanHead(
-      `candidate-mutated: ${candidate.id} has uncommitted changes to tracked files in ${this.config.workdir}`,
-    )
+    // sealed content moved, and so does a nested repository git cannot
+    // read, since what it holds can no longer be told from the seal.
+    const dirty = await isDirty(this.config.workdir, {
+      includeUntracked: false,
+    }).catch((error: unknown) => {
+      throw new Error(
+        `candidate-mutated: ${candidate.id} cannot be checked, as git could not read the status of ${this.config.workdir} (${describeGitFailure(error)})`,
+        { cause: error },
+      )
+    })
+    if (dirty)
+      throw new Error(
+        `candidate-mutated: ${candidate.id} has uncommitted changes to tracked files in ${this.config.workdir}`,
+      )
+    const head = await resolveCommit(this.config.workdir, 'HEAD')
     const tree = await treeOf(this.config.repoPath, head)
     if (tree !== candidate.sourceHash) {
       throw new Error(
