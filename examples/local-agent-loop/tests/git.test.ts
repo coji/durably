@@ -27,7 +27,6 @@ import {
   isDirty,
   discardWorktree,
   porcelainWorktreeEntries,
-  porcelainWorktreePaths,
   registeredWorktrees,
   removeWorktreeRegistration,
   writePatch,
@@ -674,11 +673,10 @@ describe('git engine', () => {
       'prunable gitdir file points to non-existent location',
       '',
     ].join('\n')
-    assert.deepEqual(porcelainWorktreePaths(out), [
-      '/repo',
-      '/runs/run 1/base-work',
-      '/runs/gone',
-    ])
-    assert.deepEqual(porcelainWorktreePaths(''), [])
+    assert.deepEqual(
+      porcelainWorktreeEntries(out).map((entry) => entry.path),
+      ['/repo', '/runs/run 1/base-work', '/runs/gone'],
+    )
+    assert.deepEqual(porcelainWorktreeEntries(''), [])
   })
 })

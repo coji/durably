@@ -277,9 +277,7 @@ export async function removeWorktreeRegistration(
  * `dir` may be gone. Throws when git cannot list them.
  */
 async function worktreeRegistered(repo: string, dir: string): Promise<boolean> {
-  const wanted = await pathsGitMayRecord(dir)
-  const out = await git(repo, ['worktree', 'list', '--porcelain'])
-  return porcelainWorktreePaths(out).some((path) => wanted.has(path))
+  return (await registeredWorktrees(repo, [dir])).has(dir)
 }
 
 /**
@@ -322,20 +320,12 @@ export async function registeredWorktrees(
 }
 
 /**
- * The paths a `git worktree list --porcelain` output names, one per
- * `worktree <path>` line. Without `-z`, which needs git 2.36, the lines are
- * newline-separated, so a path that holds a newline cannot be read back;
- * such a path is not supported and never matches.
- */
-export function porcelainWorktreePaths(out: string): string[] {
-  return porcelainWorktreeEntries(out).map((entry) => entry.path)
-}
-
-/**
- * Each worktree a `git worktree list --porcelain` output names, with the
- * branch of its `branch refs/heads/<name>` line, or null when it has none,
- * as a detached one. A path that holds a newline is not supported, as
- * `porcelainWorktreePaths` says.
+ * Each worktree a `git worktree list --porcelain` output names, one per
+ * `worktree <path>` line, with the branch of its `branch refs/heads/<name>`
+ * line, or null when it has none, as a detached one. Without `-z`, which
+ * needs git 2.36, the lines are newline-separated, so a path that holds a
+ * newline cannot be read back; such a path is not supported and never
+ * matches.
  */
 export function porcelainWorktreeEntries(
   out: string,
