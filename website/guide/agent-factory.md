@@ -2,7 +2,7 @@
 
 Run a long-lived coding-agent workflow locally while keeping its progress, measurements, and approval state recoverable. The example drives a logged-in Codex or Claude Code CLI through implementation, verification, two independent reviews, and delivery.
 
-**Example code:** [local-agent-loop](https://github.com/coji/durably/tree/main/examples/local-agent-loop)
+**Code:** [coji/durably-factory](https://github.com/coji/durably-factory) (formerly `examples/local-agent-loop` in this repository)
 
 ## Why Make an Agent Run Durable?
 
@@ -31,12 +31,14 @@ The factory can work on two kinds of target:
 
 ## Run the Bundled Subject
 
-Install the repository dependencies, check the example, and make sure the provider CLI you plan to use is logged in:
+Clone the factory, install its dependencies, check it, and make sure the provider CLI you plan to use is logged in:
 
 ```bash
+git clone https://github.com/coji/durably-factory
+cd durably-factory
 pnpm install
-pnpm --filter example-local-agent-loop typecheck
-pnpm --filter example-local-agent-loop test:unit
+pnpm typecheck
+pnpm test:unit
 
 codex --version
 codex login
@@ -49,7 +51,7 @@ claude auth login
 Start the worker in one terminal:
 
 ```bash
-pnpm --filter example-local-agent-loop demo worker
+pnpm demo worker
 ```
 
 This step is optional: when no worker runs, `trigger` and the other commands that create work start a detached `demo worker --exit-when-idle`, which stops by itself once it has had no work for 30 seconds. Pass `--no-auto-worker` or set `LOCAL_AGENT_LOOP_NO_AUTO_WORKER=1` to switch that off.
@@ -57,14 +59,14 @@ This step is optional: when no worker runs, `trigger` and the other commands tha
 Trigger the bundled subject in another terminal, then inspect and approve its durable wait:
 
 ```bash
-pnpm --filter example-local-agent-loop demo trigger \
+pnpm demo trigger \
   --provider codex --context reuse --max-iterations 2
 
-pnpm --filter example-local-agent-loop demo status   # every run that needs attention, with the next command
-pnpm --filter example-local-agent-loop demo status --run <runId>
-pnpm --filter example-local-agent-loop demo waits --run <runId>
-pnpm --filter example-local-agent-loop demo approve --run <runId> --wait <waitId>
-pnpm --filter example-local-agent-loop demo report --run <runId> --format md
+pnpm demo status   # every run that needs attention, with the next command
+pnpm demo status --run <runId>
+pnpm demo waits --run <runId>
+pnpm demo approve --run <runId> --wait <waitId>
+pnpm demo report --run <runId> --format md
 ```
 
 Use `--provider claude` to run the same workflow through Claude Code. Use `reject` instead of `approve` to reject a candidate.
@@ -72,13 +74,13 @@ Use `--provider claude` to run the same workflow through Claude Code. Use `rejec
 To compare context placement while keeping the subject and model fixed, run both configurations and compare their reports:
 
 ```bash
-pnpm --filter example-local-agent-loop demo trigger \
+pnpm demo trigger \
   --provider codex --context reuse --model gpt-5.6-sol --effort medium
 
-pnpm --filter example-local-agent-loop demo trigger \
+pnpm demo trigger \
   --provider codex --context fresh --model gpt-5.6-sol --effort medium
 
-pnpm --filter example-local-agent-loop demo compare \
+pnpm demo compare \
   --runs <runA>,<runB>,<runC>,<runD> --format md
 ```
 
@@ -87,7 +89,7 @@ pnpm --filter example-local-agent-loop demo compare \
 Keep the worker running, then trigger a repository target. The check is fixed before the agent starts and runs without a shell:
 
 ```bash
-pnpm --filter example-local-agent-loop demo trigger \
+pnpm demo trigger \
   --provider codex --repo ~/progs/myapp --issue 234 \
   --check "pnpm validate" --setup "pnpm install --frozen-lockfile"
 ```
@@ -104,4 +106,4 @@ By default, the result is written to `~/.local/state/local-agent-loop/runs/<runI
 | `src/factory/` | The code, verify, review, approve, finish, and stop workflow.                                                |
 | `src/targets/` | Target-specific worktree or directory setup, grading, sealing, review context, and delivery.                 |
 
-When moving the factory, keep the engine and factory layers intact and adapt the target layer and local wiring. See the example's [porting guide](https://github.com/coji/durably/blob/main/examples/local-agent-loop/docs/porting.md) for the complete checklist.
+When moving the factory, keep the engine and factory layers intact and adapt the target layer and local wiring. See the factory's [porting guide](https://github.com/coji/durably-factory/blob/main/docs/porting.md) for the complete checklist.

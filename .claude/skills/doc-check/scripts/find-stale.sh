@@ -134,13 +134,13 @@ else
     ".register() chain in guides/examples" \
     '\.register({' \
     "Prefer createDurably({ jobs: {} }) in guides and examples" \
-    "$API_REF_EXCLUDE\|examples/local-agent-loop/src/"  # The agent loop registers jobs dynamically.
+    "$API_REF_EXCLUDE"
 
   check_pattern \
     "migrate() in guides/examples" \
     'await durably\.migrate()' \
     "Prefer await durably.init() in guides and examples" \
-    "$API_REF_EXCLUDE\|examples/local-agent-loop/src/\|examples/server-libsql/durable-wait.ts\|examples/server-libsql/ci-poller.ts\|examples/server-libsql/human-input.ts"  # Manual processing/restart examples intentionally do not start a worker
+    "$API_REF_EXCLUDE\|examples/server-libsql/durable-wait.ts\|examples/server-libsql/ci-poller.ts\|examples/server-libsql/human-input.ts"  # Manual processing/restart examples intentionally do not start a worker
 
   check_pattern \
     "durably.start() in guides/examples" \
