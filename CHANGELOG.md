@@ -13,13 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 #### @coji/durably
 
-- **HTTP authorization**: Configured authorization hooks now run even when `authenticate` successfully returns `undefined`. Authentication implementations must throw a `Response` to reject a request (#301).
 - **HTTP subscription data disclosure**: Global run subscriptions validate server-derived scopes before opening a stream. HTTP `run:coalesced` events no longer expose another trigger's discarded input or labels (#301).
 
 ### Changed
 
 #### @coji/durably
 
+- **Breaking: configured authorization hooks always run after successful authentication**, including when `authenticate` returns `undefined`. Throw a `Response` to reject unauthenticated requests; applications that allow anonymous requests must handle an undefined context in their hooks (#301).
+- **Breaking: malformed run-list scopes are rejected with HTTP 400.** Return only supported `RunFilter` fields from `scopeRuns`: `jobName`, `labels`, `status`, `limit`, and `offset`. Use non-empty job names, string-valued labels, valid statuses, and non-negative safe integers for pagination (#301).
 - **Breaking: authenticated global subscriptions require an explicit scope.** When `onRunAccess` is configured, provide `scopeRunsSubscribe`. Otherwise, `scopeRuns` may be used only when its result contains stream-compatible `jobName` and `labels` restrictions; defined `status`, `limit`, or `offset` restrictions are rejected. Handlers without `auth` retain their existing client-filtered behavior (#301).
 - **Breaking: empty run filters match no runs.** `getRuns()` and HTTP run lists now return no runs for `jobName: []` or `status: []`; an empty allowed-job array on a global subscription receives no events. Omit a filter to leave it unrestricted (#301).
 - **Breaking: HTTP coalesced events omit `skippedInput` and `skippedLabels`.** Trusted in-process `run:coalesced` listeners retain both fields (#301).
