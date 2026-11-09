@@ -20,6 +20,7 @@ npm install @coji/durably-react @coji/durably kysely zod sqlocal
 
 ```tsx
 import { createDurably } from '@coji/durably-react'
+
 import type { durably } from './durably.server'
 
 // Create type-safe hooks from server's Durably type

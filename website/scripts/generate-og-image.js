@@ -1,7 +1,8 @@
-import { Resvg } from '@resvg/resvg-js'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { Resvg } from '@resvg/resvg-js'
 import satori from 'satori'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
@@ -37,6 +38,7 @@ async function generateOgImage() {
       type: 'div',
       props: {
         style: {
+          boxSizing: 'border-box',
           height: '100%',
           width: '100%',
           display: 'flex',
@@ -91,7 +93,7 @@ async function generateOgImage() {
               style: {
                 display: 'flex',
                 marginTop: '48px',
-                gap: '48px',
+                columnGap: '48px',
               },
               children: [
                 {
@@ -101,7 +103,7 @@ async function generateOgImage() {
                       display: 'flex',
                       flexDirection: 'column',
                       alignItems: 'center',
-                      gap: '8px',
+                      rowGap: '8px',
                     },
                     children: [
                       {
@@ -135,7 +137,7 @@ async function generateOgImage() {
                       display: 'flex',
                       flexDirection: 'column',
                       alignItems: 'center',
-                      gap: '8px',
+                      rowGap: '8px',
                     },
                     children: [
                       {
@@ -169,7 +171,7 @@ async function generateOgImage() {
                       display: 'flex',
                       flexDirection: 'column',
                       alignItems: 'center',
-                      gap: '8px',
+                      rowGap: '8px',
                     },
                     children: [
                       {
