@@ -4,7 +4,7 @@ This workflow scans the committed examples/fullstack app and its Durably depende
 
 ## Prerequisites
 
-- Node.js 24.21.0 and pnpm 12.4.2, as declared by this repository.
+- Node.js 24.22.2 and pnpm 12.18.0, as declared by this repository.
 - Docker running locally.
 - Pi 1.2.0 or later, installed as pi, with an existing ChatGPT OAuth login. Check it with the command below; the result must be ready.
 - Access to gpt-6-sol for cyber security work through that account.

@@ -16,13 +16,12 @@ overrides:
   '@libsql/kysely-libsql>@libsql/client': 0.18.0
   # Config extraction uses the same Ajv 8 compile/validate API; deployment builds pass.
   '@vercel/static-config>ajv': 8.20.0
-  # Express 4 pins the 6.14 query parser; form submission is smoke tested.
-  'express@4>qs': 6.16.0
+  # Express 4 and body-parser 1 pin older qs patches; keep their compatible fixes.
+  'express@4>qs': 6.16.1
+  'body-parser@1>qs': 6.16.1
   # The font parser's 0.7 range needs the backported ZIP64 parsing fix.
   '@shuding/opentype.js>fflate': 0.7.5
   'satori>fflate': 0.7.5
-  # 0.28 changes install integrity checks; tsup build/declaration APIs still work.
-  'tsup>esbuild': 0.28.2
 
 allowBuilds:
   better-sqlite3: true

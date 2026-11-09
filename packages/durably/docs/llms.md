@@ -34,8 +34,8 @@ SSE responses use `Cache-Control: no-cache, no-transform` to avoid compression b
 
 ```ts
 import { createDurably } from '@coji/durably'
-import { LibsqlDialect } from '@libsql/kysely-libsql'
 import { createClient } from '@libsql/client'
+import { LibsqlDialect } from '@libsql/kysely-libsql'
 import { z } from 'zod'
 
 // --- libSQL local (single-server) ---
@@ -802,7 +802,12 @@ interface StepAttemptContext {
 }
 
 type JsonValue =
-  null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
+  | { [key: string]: JsonValue }
 
 interface StepAttempt {
   id: string
@@ -823,7 +828,12 @@ interface Run<TLabels extends Record<string, string> = Record<string, string>> {
   id: string
   jobName: string
   status:
-    'pending' | 'leased' | 'waiting' | 'completed' | 'failed' | 'cancelled'
+    | 'pending'
+    | 'leased'
+    | 'waiting'
+    | 'completed'
+    | 'failed'
+    | 'cancelled'
   input: unknown
   labels: TLabels
   output: unknown | null

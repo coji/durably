@@ -228,8 +228,8 @@ interface UseRunsClientOptions {
 ```
 
 ```tsx
-import { useRuns, TypedClientRun } from '@coji/durably-react'
 import { defineJob } from '@coji/durably'
+import { useRuns, TypedClientRun } from '@coji/durably-react'
 import { z } from 'zod'
 
 // Option 1: Generic type parameter (dashboard with multiple job types)
@@ -358,8 +358,8 @@ Import from `@coji/durably-react/spa` for browser-complete mode.
 Wraps your app and provides the Durably instance to all hooks:
 
 ```tsx
-import { DurablyProvider } from '@coji/durably-react/spa'
 import { createDurably } from '@coji/durably'
+import { DurablyProvider } from '@coji/durably-react/spa'
 import { SQLocalKysely } from 'sqlocal/kysely'
 
 // Create and initialize Durably
@@ -620,8 +620,8 @@ List runs with filtering, pagination, and real-time updates:
 An explicit empty `jobName` or `status` array returns no runs; omit the option for an unrestricted list.
 
 ```tsx
-import { useRuns, TypedRun } from '@coji/durably-react/spa'
 import { defineJob } from '@coji/durably'
+import { useRuns, TypedRun } from '@coji/durably-react/spa'
 import { z } from 'zod'
 
 // Option 1: Generic type parameter (dashboard with multiple job types)
@@ -673,8 +673,8 @@ On your server, use `createDurablyHandler`:
 // app/lib/durably.server.ts
 import { createDurably } from '@coji/durably'
 import { createDurablyHandler } from '@coji/durably'
-import { LibsqlDialect } from '@libsql/kysely-libsql'
 import { createClient } from '@libsql/client'
+import { LibsqlDialect } from '@libsql/kysely-libsql'
 
 const client = createClient({ url: 'file:local.db' })
 const dialect = new LibsqlDialect({ client })
@@ -695,6 +695,7 @@ await durably.init()
 
 // app/routes/api.durably.$.ts (React Router / Remix)
 import { durablyHandler } from '~/lib/durably.server'
+
 import type { Route } from './+types/api.durably.$'
 
 export async function loader({ request }: Route.LoaderArgs) {
