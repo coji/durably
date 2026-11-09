@@ -1,6 +1,6 @@
 {
   "name": "@coji/durably-react",
-  "version": "0.16.1",
+  "version": "0.17.0",
   "description": "React bindings for Durably - step-oriented resumable batch execution",
   "keywords": [
     "batch",
@@ -71,7 +71,7 @@
     "zod": "^4.6.7"
   },
   "peerDependencies": {
-    "@coji/durably": "^0.16.0",
+    "@coji/durably": "^0.17.0",
     "react": ">=19.0.0",
     "react-dom": ">=19.0.0"
   },

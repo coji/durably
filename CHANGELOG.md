@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-09
+
+### Fixed
+
+#### @coji/durably
+
+- **HTTP authorization**: Configured authorization hooks now run even when `authenticate` successfully returns `undefined`. Authentication implementations must throw a `Response` to reject a request (#301).
+- **HTTP subscription data disclosure**: Global run subscriptions validate server-derived scopes before opening a stream. HTTP `run:coalesced` events no longer expose another trigger's discarded input or labels (#301).
+
+### Changed
+
+#### @coji/durably
+
+- **Breaking: authenticated global subscriptions require an explicit scope.** When `onRunAccess` is configured, provide `scopeRunsSubscribe`. Otherwise, `scopeRuns` may be used only when its result contains stream-compatible `jobName` and `labels` restrictions; defined `status`, `limit`, or `offset` restrictions are rejected. Handlers without `auth` retain their existing client-filtered behavior (#301).
+- **Breaking: empty run filters match no runs.** `getRuns()` and HTTP run lists now return no runs for `jobName: []` or `status: []`; an empty allowed-job array on a global subscription receives no events. Omit a filter to leave it unrestricted (#301).
+- **Breaking: HTTP coalesced events omit `skippedInput` and `skippedLabels`.** Trusted in-process `run:coalesced` listeners retain both fields (#301).
+
+#### @coji/durably-react
+
+- **Breaking: empty `useRuns` filters match no runs.** Both SPA and fullstack hooks treat `jobName: []` or `status: []` as an empty selection and avoid realtime subscriptions. Fullstack hooks also skip the list request. Omit the option for an unrestricted list (#301).
+- **Breaking: `DurablyEvent` coalesced events no longer include `skippedInput` or `skippedLabels`**, matching the HTTP event projection (#301).
+- The optional `@coji/durably` peer now requires `^0.17.0` to keep SPA and fullstack filtering behavior aligned.
+
 ## [0.16.1] - 2026-09-23
 
 ### Fixed
